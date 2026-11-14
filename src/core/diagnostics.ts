@@ -41,6 +41,6 @@ export function diagnostic(error: unknown, stage: string): { event: string; stag
       cause = 'cause' in cause ? cause.cause : null;
     }
   }
-  if (error instanceof AppError && Number.isInteger(error.status) && error.status >= 400 && error.status <= 599) result.status = error.status;
+  if (error && typeof error === 'object' && 'status' in error && typeof error.status === 'number' && Number.isInteger(error.status) && error.status >= 400 && error.status <= 599) result.status = error.status;
   return result;
 }

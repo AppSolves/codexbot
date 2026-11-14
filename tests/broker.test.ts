@@ -6,6 +6,13 @@ import { reviewJob } from '../src/runner/main.js';
 import { snapshot } from './fixtures.js';
 
 const id = snapshot().id, secret = 'opaque-oauth-code fixture-access-token Authorization: Bearer fixture-secret';
+await test('external HTTP and Node failures retain safe status/errno without request or exception text', () => {
+  const http = Object.assign(new Error(secret), { status: 403, request: { headers: { authorization: secret } }, response: { data: secret } });
+  assert.deepEqual(diagnostic(http, 'context'), { event: 'review_failed', stage: 'context', code: 'external_or_execution_failure', status: 403 });
+  const network = new Error(secret, { cause: Object.assign(new Error(secret), { code: 'ECONNRESET' }) });
+  assert.equal(diagnostic(network, 'prepare').code, 'ECONNRESET');
+  assert.ok(!JSON.stringify(diagnostic({ status: secret, code: secret }, 'prepare')).includes(secret));
+});
 async function fixture(action: (calls: string[], logs: unknown[][]) => Promise<void>, response: () => Response = () => Response.json({ error: 'oidc_environment_mismatch', message: secret }, { status: 403 })) {
   const env = { ...process.env }, calls: string[] = [], logs: unknown[][] = [];
   process.env.ACTIONS_ID_TOKEN_REQUEST_URL = 'https://oidc.invalid/token'; process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN = secret;

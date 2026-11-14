@@ -36,6 +36,8 @@ This shares the existing bounded operator retry budget, cannot reset an ambiguou
 
 Run the manually dispatched `Trusted image cache benchmark` workflow, or CI's `cache_benchmark: true` option. It compares ordinary, cold-cached and restored builds using a fresh second builder, including setup, load and export. Its scope is separate from production caches, and it uses no credential Environment or provider. Same-host reuse of the builder image is optimistic: repeat on independent runners and include network/storage/initial cache cost. Enable `with: {docker_cache: true}` in a repository caller only when repeated measurements show a meaningful net saving; otherwise retain the ordinary build. No release-image registry is introduced.
 
+The first [GitHub-hosted benchmark](https://github.com/AppSolves/codexbot/actions/runs/43571256477) measured **14 seconds ordinary / 49 seconds cold cache / 14 seconds restored cache** on 2026-11-14. This showed no net saving even with optimistic same-host builder-image reuse. The default therefore remains off. This is one measurement, not a general performance guarantee.
+
 ## Trigger isolation
 
 Set `.codexbot.yml` to `bot: {trigger: "@CBReview", aliases: []}` or use the generated `@CBReview<repository_id>`. Matching is exact and case-insensitive; extra suffixes, quoted examples, inline code and fences do not invoke CodexBot. Legacy triggers remain supported when explicitly configured or inherited from the legacy default. They do not rename the GitHub App.

@@ -10,7 +10,7 @@ The per-finding implementation/evidence matrix is maintained in [remediation](re
 
 ## Review reliability validation — 2026-11-14
 
-`npm run check` passed strict typecheck, lint, **123 tests** and build. `npm run test:clean`, `npm run test:workers`, actionlint, `docker build --tag codexbot-review:local .`, `npm run test:sandbox`, `npm audit --audit-level=moderate`, Wrangler deploy dry-run and `git diff --check` passed. Actual workerd/D1 coverage includes migration 0003, expired-request cleanup and installation-isolated session release. The strict image scan below reported zero HIGH/CRITICAL findings; a source-only secret scan reported no findings. No real model inference was used. Remote acceptance and cache timings must be recorded separately after execution; local green checks do not establish them.
+`npm run check` passed strict typecheck, lint, **124 tests** and build. `npm run test:clean`, `npm run test:workers`, actionlint, `docker build --tag codexbot-review:local .`, `npm run test:sandbox`, `npm audit --audit-level=moderate`, Wrangler deploy dry-run and `git diff --check` passed. Actual workerd/D1 coverage includes migration 0003, expired-request cleanup and installation-isolated session release. The strict image scan below reported zero HIGH/CRITICAL findings; a source-only secret scan reported no findings. No real model inference was used. Remote acceptance and cache timings must be recorded separately after execution; local green checks do not establish them.
 
 ## Initial source-only audit snapshot — 2026-11-14
 
