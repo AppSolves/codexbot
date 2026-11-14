@@ -12,6 +12,8 @@ Review authentication, authorization, migrations and compatibility.
 
 Configure a trigger plus up to five aliases matching `@[A-Za-z0-9]{1,39}`. Matching ignores case. These are text commands and can notify unrelated GitHub users with the same name; choose distinctive aliases. Quoted examples and fenced commands do not trigger reviews. Model and reasoning effort are separate; omitted effort preserves Codex's default.
 
+Use `--model MODEL_ID` (or `--model=MODEL_ID`) to override the repository's model for one review; replace MODEL_ID with an available Codex catalog identifier. An unsupported model or effort fails without substitution or billing fallback. Missing inspection, incomplete context or an inconclusive result fails the review job while the separate publisher may still publish a safe COMMENT.
+
 Set `bot.trigger: "@CBReview"` to use the example above. The legacy default `@codexbot` remains supported; new setup chooses `@CBReview<repository_id>`. Use a name without “codex” when another Codex integration is installed. CodexBot cannot control that independent connector; see [trigger isolation and rollout](docs/review-rollout.md).
 
 ## Status

@@ -1,17 +1,17 @@
-import { mkdir, mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { client } from '../worker/github.js';
 import type { RequestSnapshot } from '../worker/store.js';
 import type { Envelope } from '../core/crypto.js';
 import { unseal, seal, sessionBinding } from '../core/crypto.js';
-import { record, requireCondition } from '../core/errors.js';
+import { record, requireCondition, AppError } from '../core/errors.js';
 import { diagnostic, FAILURE_CODES, BROKER_CODES } from '../core/diagnostics.js';
 import { OAuth, validateSession } from '../auth/oauth.js';
 import { broker, backendUrl, checkWorkload } from './broker.js';
 import { collectContext } from './context.js';
 import { isolatedReview } from './docker.js';
-import { failedReview } from '../core/review.js';
+import { failedReview, normalizeReview, validateReview, type ChangedFile } from '../core/review.js';
 
 export async function reviewJob(): Promise<void> {
   const id = process.env.CODEXBOT_REQUEST_ID ?? '';
@@ -35,6 +35,7 @@ export async function reviewJob(): Promise<void> {
     let manifest;
     try { manifest = await collectContext(github, snapshot, directory); }
     finally { await github.rest.apps.revokeInstallationAccessToken(); }
+    requireCondition(manifest.complete, 'review_context_incomplete');
     let credential: string;
     stage = 'credentials';
     if (snapshot.config.credentials.mode === 'api-key') {
@@ -62,16 +63,19 @@ export async function reviewJob(): Promise<void> {
     const sockets = join(temporary, 'sockets'); await mkdir(sockets, { mode: 0o700 });
     stage = 'analyzing';
     await broker(backend, id, 'stage', { stage: 'analyzing' });
-    const output = await isolatedReview(image, directory, credentialPath, sockets);
-    submission = { output, context_complete: manifest.complete };
+    const output = normalizeReview(await isolatedReview(image, directory, credentialPath, sockets), snapshot.head);
     stage = 'result';
+    try { validateReview(output, snapshot.head, JSON.parse(await readFile(join(directory, 'diff.json'), 'utf8')) as ChangedFile[]); }
+    catch { throw new AppError('review_output_invalid'); }
+    submission = { output, context_complete: manifest.complete };
+    requireCondition(output.complete && output.result !== 'inconclusive' && !output.quarantined && !output.output_truncated, 'review_incomplete');
     await broker(backend, id, 'result', submission);
   } catch (error) {
     const report = diagnostic(error, stage); console.error(JSON.stringify(report));
     // Always leave a deterministic non-approving result when preflight succeeded.
     const failure = { ...report, code: report.broker_code ?? (FAILURE_CODES.has(report.code) || BROKER_CODES.has(report.code) ? report.code : 'external_or_execution_failure') };
     try {
-      if (snapshot) await broker(backend, id, 'result', submission ?? { context_complete: false, output: failedReview(snapshot.head), failure });
+      if (snapshot) await broker(backend, id, 'result', { output: submission?.output ?? failedReview(snapshot.head), context_complete: false, failure });
       else await broker(backend, id, 'failure', failure);
     } catch (secondary) { console.error(JSON.stringify({ ...diagnostic(secondary, stage), event: 'failure_reporting_deferred' })); }
     // Recording a safe fallback permits publication; it never makes failed analysis a green check.

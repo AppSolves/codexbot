@@ -35,6 +35,18 @@ await test('unknown, duplicate, conflicting and malformed flags fail usefully', 
   for (const level of EFFORTS) assert.equal(parseCommand(`@CodexBotReviewTest review --effort ${level}`, '@CodexBotReviewTest')?.effort, level);
   assert.equal(parseCommand('@CodexBotReviewTest review', '@CodexBotReviewTest')?.effort, null);
 });
+await test('model overrides accept both flag forms, order and quotes without changing context or legacy commands', () => {
+  for (const flags of ['--model codex-fixture --effort high --merge', '--merge --model="codex-fixture" --effort=high', '--effort high --model=codex-fixture --merge']) {
+    const result = parseCommand(`@CBReview review ${flags} "security context"\n--model is advisory text here`, '@CBReview')!;
+    assert.equal(result.model, 'codex-fixture'); assert.equal(result.effort, 'high'); assert.equal(result.merge, true);
+    assert.equal(result.instructions, 'security context\n--model is advisory text here');
+  }
+  assert.equal(parseCommand('@CBReview review', '@CBReview')!.model, undefined);
+  assert.equal(parseCommand('@CBReview review -- --model literal', '@CBReview')!.instructions, '--model literal');
+  for (const value of ['--model', '--model=', '--model --merge', '--model "two words"', '--model "x;rm"', '--model "$(cmd)"', '--model ' + 'a'.repeat(101), '--model x --model y', '--model x --model=x']) {
+    assert.throws(() => parseCommand('@CBReview review ' + value, '@CBReview'));
+  }
+});
 await test('default-deny fallback does not veto explicit whitelist; explicit blacklist wins', () => {
   assert.equal(policyAllows('alice', { whitelist: 'alice', blacklist: '*' }), true);
   assert.equal(policyAllows('bob', { whitelist: 'alice', blacklist: '*' }), false);
