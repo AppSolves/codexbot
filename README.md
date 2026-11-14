@@ -3,7 +3,7 @@
 An Apache-2.0 GitHub App for Codex pull request reviews on repository-owned GitHub Actions runners. The Cloudflare Worker authenticates requests and publishes native reviews; it never runs Codex.
 
 ```text
-@jimmy review --effort xhigh --merge
+@codexbot review --effort xhigh --merge
 
 Review authentication, authorization, migrations and compatibility.
 ```

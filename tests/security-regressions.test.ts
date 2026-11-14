@@ -131,12 +131,12 @@ await test('capability probes distinguish supported public/private environments 
   }
 });
 await test('aliases are validated text triggers; rerun is explicit and quoted examples never invoke', () => {
-  const config = parseConfig('bot: {trigger: "@codexbot", aliases: ["@jimmy", "@myreviewer"]}'); assert.equal(config.bot.aliases.length, 2);
-  assert.throws(() => parseConfig('bot: {trigger: "@jimmy", aliases: ["@JIMMY"]}'));
+  const config = parseConfig('bot: {trigger: "@codexbot", aliases: ["@CodexBotReviewTest", "@CodexBotAuditTest"]}'); assert.equal(config.bot.aliases.length, 2);
+  assert.throws(() => parseConfig('bot: {trigger: "@CodexBotReviewTest", aliases: ["@CODEXBOTREVIEWTEST"]}'));
   assert.throws(() => parseConfig('bot: {aliases: ["@invalid-handle"]}'));
-  assert.equal(parseCommand('@jimmy review --rerun --effort high', '@jimmy')!.rerun, true);
-  assert.throws(() => parseCommand('@jimmy review --rerun --rerun', '@jimmy'));
-  for (const text of ['> @jimmy review', '```text\n@jimmy review\n```', '    @jimmy review', '@jimmy2 review', 'Someone said @jimmy review']) assert.equal(parseCommand(text, '@jimmy'), null);
+  assert.equal(parseCommand('@CodexBotReviewTest review --rerun --effort high', '@CodexBotReviewTest')!.rerun, true);
+  assert.throws(() => parseCommand('@CodexBotReviewTest review --rerun --rerun', '@CodexBotReviewTest'));
+  for (const text of ['> @CodexBotReviewTest review', '```text\n@CodexBotReviewTest review\n```', '    @CodexBotReviewTest review', '@CodexBotReviewTest2 review', 'Someone said @CodexBotReviewTest review']) assert.equal(parseCommand(text, '@CodexBotReviewTest'), null);
 });
 
 await test('strict provider schema declares all fields as required and reserves transport provenance for the host', async () => {

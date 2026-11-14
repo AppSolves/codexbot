@@ -57,12 +57,12 @@ await test('invalid signature, replay, spoofed user, forged installation and una
   assert.equal(f.calls.filter(x => x.path.endsWith('/dispatches')).length, 1);
 }));
 await test('configured handle works at webhook boundary and hosted ChatGPT cannot bypass deployment gate', async () => fixture(async (env, f) => {
-  f.config.bot.trigger = '@jimmy';
+  f.config.bot.trigger = '@CodexBotReviewTest';
   assert.equal((await worker.fetch(signed(payload('@codexbot review'), env.GITHUB_WEBHOOK_SECRET), env)).status, 200);
   assert.equal(f.calls.filter(x => x.path.endsWith('/dispatches')).length, 0);
-  assert.equal((await worker.fetch(signed(payload('@JIMMY review --effort high'), env.GITHUB_WEBHOOK_SECRET), env)).status, 202);
+  assert.equal((await worker.fetch(signed(payload('@CODEXBOTREVIEWTEST review --effort high'), env.GITHUB_WEBHOOK_SECRET), env)).status, 202);
   f.config.credentials.mode = 'chatgpt';
-  assert.equal((await worker.fetch(signed(payload('@jimmy review'), env.GITHUB_WEBHOOK_SECRET), env)).status, 403);
+  assert.equal((await worker.fetch(signed(payload('@CodexBotReviewTest review'), env.GITHUB_WEBHOOK_SECRET), env)).status, 403);
 }));
 await test('ChatGPT handoff is encrypted, lease-protected and disconnected sessions cannot publish', async () => fixture(async (env, f) => {
   env.CHATGPT_DEPLOYMENT_AUTHORIZED = 'true'; f.config.credentials.mode = 'chatgpt';

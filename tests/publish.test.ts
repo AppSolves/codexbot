@@ -46,7 +46,7 @@ await test('missing CI/human approvals, unavailable auto-merge and unauthorized 
   }
 });
 await test('duplicate publication recognizes App login independently from configurable trigger', async () => {
-  const f = githubFixture(), request = snapshot(); request.config.bot.trigger = '@jimmy';
+  const f = githubFixture(), request = snapshot(); request.config.bot.trigger = '@CodexBotReviewTest';
   await publish(f.github, request, clean(), true, 'codexbot'); await publish(f.github, request, clean(), true, 'codexbot'); assert.equal(f.state.reviews.length, 1);
   await publish(f.github, { ...request, id: 'another-request' }, clean(), true, 'codexbot'); assert.equal(f.state.reviews.length, 1);
   f.state.reviews[0]!.state = 'DISMISSED';

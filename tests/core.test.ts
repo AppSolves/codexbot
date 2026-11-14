@@ -7,28 +7,28 @@ import { validateReview, safePath, changedLines, completePatch, decision, mergeD
 import { clean, files, HEAD, snapshot } from './fixtures.js';
 
 await test('every configured handle triggers independently and case-insensitively', () => {
-  for (const handle of ['@codexbot', '@meinfreund', '@jimmy', '@myreviewer', '@B0t']) {
+  for (const handle of ['@codexbot', '@CodexBotTest', '@CodexBotReviewTest', '@CodexBotAuditTest', '@B0t']) {
     assert.equal(parseCommand(`${handle.toUpperCase()} review`, handle)?.merge, false);
     assert.equal(parseCommand('@anotherbot review', handle), null);
   }
 });
 await test('handle accepts only the requested ASCII alphanumeric format', () => {
-  for (const invalid of ['', '@', '@with space', '@bot-name', '@bot_name', '@ä', '@x!', 'jimmy', '@' + 'a'.repeat(40), '@a\n']) assert.throws(() => validateHandle(invalid));
+  for (const invalid of ['', '@', '@with space', '@bot-name', '@bot_name', '@ä', '@x!', 'CodexBotReviewTest', '@' + 'a'.repeat(40), '@a\n']) assert.throws(() => validateHandle(invalid));
   assert.equal(validateHandle('@123'), '@123');
 });
 await test('quoted examples, fences, inline code and incidental mentions do not trigger', () => {
-  for (const text of ['> @jimmy review', '```\n@jimmy review\n```', '`@jimmy review`', 'Example:\n@jimmy review', '@jimmyx review', 'Hi @jimmy review', '@jimmy reviews', '    @jimmy review', '\t@jimmy review']) assert.equal(parseCommand(text, '@jimmy'), null);
+  for (const text of ['> @CodexBotReviewTest review', '```\n@CodexBotReviewTest review\n```', '`@CodexBotReviewTest review`', 'Example:\n@CodexBotReviewTest review', '@CodexBotReviewTestx review', 'Hi @CodexBotReviewTest review', '@CodexBotReviewTest reviews', '    @CodexBotReviewTest review', '\t@CodexBotReviewTest review']) assert.equal(parseCommand(text, '@CodexBotReviewTest'), null);
 });
 await test('flags in any order, quotes and multiline context preserve review intent', () => {
-  const result = parseCommand('\n @jimmy review --merge "authentication risks" --effort=xhigh\r\n\r\nCheck RLS, callers, and compatibility.\n', '@jimmy');
+  const result = parseCommand('\n @CodexBotReviewTest review --merge "authentication risks" --effort=xhigh\r\n\r\nCheck RLS, callers, and compatibility.\n', '@CodexBotReviewTest');
   assert.deepEqual(result, { merge: true, effort: 'xhigh', instructions: 'authentication risks\n\nCheck RLS, callers, and compatibility.' });
-  assert.equal(parseCommand('@jimmy review --effort low --merge', '@jimmy')?.effort, 'low');
-  assert.equal(parseCommand('@jimmy review -- --literal context', '@jimmy')?.instructions, '--literal context');
+  assert.equal(parseCommand('@CodexBotReviewTest review --effort low --merge', '@CodexBotReviewTest')?.effort, 'low');
+  assert.equal(parseCommand('@CodexBotReviewTest review -- --literal context', '@CodexBotReviewTest')?.instructions, '--literal context');
 });
 await test('unknown, duplicate, conflicting and malformed flags fail usefully', () => {
-  for (const suffix of ['--wat', '--merge --merge', '--effort low --effort high', '--effort', '--effort balanced', '"unterminated', 'trailing\\']) assert.throws(() => parseCommand(`@jimmy review ${suffix}`, '@jimmy'));
-  for (const level of EFFORTS) assert.equal(parseCommand(`@jimmy review --effort ${level}`, '@jimmy')?.effort, level);
-  assert.equal(parseCommand('@jimmy review', '@jimmy')?.effort, null);
+  for (const suffix of ['--wat', '--merge --merge', '--effort low --effort high', '--effort', '--effort balanced', '"unterminated', 'trailing\\']) assert.throws(() => parseCommand(`@CodexBotReviewTest review ${suffix}`, '@CodexBotReviewTest'));
+  for (const level of EFFORTS) assert.equal(parseCommand(`@CodexBotReviewTest review --effort ${level}`, '@CodexBotReviewTest')?.effort, level);
+  assert.equal(parseCommand('@CodexBotReviewTest review', '@CodexBotReviewTest')?.effort, null);
 });
 await test('default-deny fallback does not veto explicit whitelist; explicit blacklist wins', () => {
   assert.equal(policyAllows('alice', { whitelist: 'alice', blacklist: '*' }), true);
@@ -56,8 +56,8 @@ await test('live repository permission and separate merge policy are mandatory',
   assert.equal(authorize('alice', 'write', allow, true), true);
 });
 await test('configuration merges safe defaults and rejects unknown or unsafe configuration', () => {
-  const config = parseConfig('bot:\n  trigger: "@jimmy"\nauthorization:\n  whitelist: alice\nreview:\n  effort: null\n');
-  assert.equal(config.bot.trigger, '@jimmy'); assert.equal(config.review.effort, null); assert.equal(config.merge.enabled, false);
+  const config = parseConfig('bot:\n  trigger: "@CodexBotReviewTest"\nauthorization:\n  whitelist: alice\nreview:\n  effort: null\n');
+  assert.equal(config.bot.trigger, '@CodexBotReviewTest'); assert.equal(config.review.effort, null); assert.equal(config.merge.enabled, false);
   for (const source of ['bot: {trigger: "@bad bot"}', 'review: {effort: balanced}', 'merge: {force: true}', 'review: {model: "x";rm"}', 'review: {enabled: true, enabled: false}', 'authorization: {whitelist: "re:(?=x)"}', 'x: &x {a: 1}\ny: *x']) assert.throws(() => parseConfig(source));
 });
 await test('structured review ties output and inline findings to exact changed lines', () => {
