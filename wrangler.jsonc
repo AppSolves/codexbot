@@ -37,7 +37,7 @@
 		"GITHUB_APP_ID": "5754181",
 		"GITHUB_APP_SLUG": "codexbot-review",
 		"TRUSTED_WORKFLOW": "AppSolves/codexbot/.github/workflows/review.yml@14183bc5196ed5a23167a096270019e07f61dce6",
-		"CHATGPT_DEPLOYMENT_AUTHORIZED": "false",
+		"CHATGPT_DEPLOYMENT_AUTHORIZED": "true",
 		"MERGE_DEPLOYMENT_AUTHORIZED": "false"
 	},
 	"d1_databases": [
