@@ -1,5 +1,7 @@
 # Deployment checklist
 
+Hosted canonical origin: **https://codexbot.appsolves.workers.dev**. Use the [staged origin migration](origin-migration.md) for the existing App/Worker; it preserves the current D1, secrets, immutable review pin and zone Bot Fight Mode. This repository prepares the change; merging or a dry-run does not deploy it.
+
 For Worker/reusable-workflow upgrades, follow [the coordinated immutable-pin upgrade](review-rollout.md), apply required migrations and set the caller pin and Worker TRUSTED_WORKFLOW to the same actual merged commit. The caller-only Environment-secret correction uses named references plus a scope guard; it keeps the existing `4ed668864cac0682e09ec49a2515a6e1893a2780` pin and needs no Worker deployment or migration. Keep merge disabled. Report validation before any production change; a temporary pin mismatch fails closed.
 
 The shared setup generator is bundled into `/v1/setup`. Publishing its corrected templates for future hosted installations requires a separately authorized Worker bundle deployment, with the existing trusted review pin preserved. The existing caller can be repaired independently; no backend deployment is performed by the fix PR.
@@ -8,12 +10,12 @@ This document is operator instructions, not evidence of an existing hosted deplo
 
 ## GitHub App
 
-Register a public GitHub App with installation access for any account, selecting repositories narrowly. [app-manifest.json](../app-manifest.json) is a settings reference; replace example URLs. Manifest-code conversion is not implemented: use GitHub's App settings or your own approved registration tooling.
+Register a public GitHub App with installation access for any account, selecting repositories narrowly. [app-manifest.json](../app-manifest.json) contains the hosted URL defaults; independent operators replace all four origin-bearing fields with their own backend. Manifest-code conversion is not implemented: use GitHub's App settings or your own approved registration tooling.
 
 | Setting | Required value |
 |---|---|
-| Homepage/setup URL | https://YOUR-WORKER/ |
-| Webhook | https://YOUR-WORKER/webhook |
+| Homepage/setup URL | https://codexbot.appsolves.workers.dev/ (or the independent backend) |
+| Webhook | https://codexbot.appsolves.workers.dev/webhook (or the independent backend) |
 | Secret | Cryptographically random, at least 32 bytes |
 | Default permissions | Metadata read; Actions write; Contents write; Pull requests write |
 | Optional automated setup | Workflows write, explicit installer consent; otherwise manual/temporary-user setup |

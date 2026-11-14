@@ -2,6 +2,8 @@
 
 An Apache-2.0 GitHub App for Codex pull request reviews on repository-owned GitHub Actions runners. The Cloudflare Worker authenticates requests and publishes native reviews; it never runs Codex.
 
+Hosted backend: **[https://codexbot.appsolves.workers.dev](https://codexbot.appsolves.workers.dev/)**. This is the CLI and generated-workflow default. The hostname migration is staged; production availability and credential acceptance must be verified during the [operator cutover](docs/origin-migration.md). Independent installations pass their own HTTPS origin with `--backend`.
+
 ```text
 @CBReview review --effort xhigh --merge
 
@@ -14,7 +16,7 @@ Set `bot.trigger: "@CBReview"` to use the example above. The legacy default `@co
 
 ## Status
 
-**Pre-release implementation; no public hosted App has been deployed by this repository setup.** Unit/integration tests exercise signed webhooks, official OAuth contracts, OIDC, actual SQLite persistence, setup PR creation and GitHub publishing against mocked external APIs. The pinned official Codex binary is tested without credentials. A separate Docker check uses synthetic inference; it does not claim to have performed a real AI review. See [validation and live acceptance](docs/validation.md).
+**Pre-release; full production review acceptance remains pending.** Unit/integration tests exercise signed webhooks, official OAuth contracts, OIDC, actual SQLite persistence, setup PR creation and GitHub publishing against mocked external APIs. The pinned official Codex binary is tested without credentials. A separate Docker check uses synthetic inference; it does not claim to have performed a real AI review. See [validation and live acceptance](docs/validation.md).
 
 Live GitHub installation, real OpenAI inference/allowance, OAuth eligibility and Cloudflare production resource usage require operator credentials and acceptance testing. Do not market this as battle-tested or deploy with automatic merge before completing those checks.
 
@@ -43,8 +45,8 @@ npm run check
 3. Create the setup PR (replace the uppercase values):
 
 ```sh
-npm run cli -- setup --repository OWNER/REPO --backend https://YOUR-WORKER \
-  --source YOUR-ORG/codexbot --ref FULL_40_CHARACTER_COMMIT_SHA
+npm run cli -- setup --repository OWNER/REPO --backend https://codexbot.appsolves.workers.dev \
+  --source AppSolves/codexbot --ref 4ed668864cac0682e09ec49a2515a6e1893a2780
 ```
 
 The source must match the Worker's trusted reusable workflow. If you prefer a temporary personal setup token to granting the App Workflows write, add `--setup-as-user`; the user credential needs Contents/Pull requests/Workflows write. No files are overwritten. See [manual setup](docs/installation.md).
@@ -53,10 +55,10 @@ The source must match the Worker's trusted reusable workflow. If you prefer a te
 
 ```sh
 # Preferred, when your deployment is eligible for OpenAI's OSS/hosted policy:
-npm run cli -- connect --repository OWNER/REPO --backend https://YOUR-WORKER
+npm run cli -- connect --repository OWNER/REPO --backend https://codexbot.appsolves.workers.dev
 
 # Alternative: set CODEXBOT_API_KEY securely in your local process environment first.
-npm run cli -- connect-api-key --repository OWNER/REPO --backend https://YOUR-WORKER
+npm run cli -- connect-api-key --repository OWNER/REPO --backend https://codexbot.appsolves.workers.dev
 ```
 
 The ChatGPT flow displays **Continue with ChatGPT** and opens an official authorization URL using a loopback callback. Manual `auth.json` export is unnecessary. API-key mode requires `credentials.mode: api-key` in trusted configuration. Do not keep both mode secrets in the Environment.

@@ -1,8 +1,17 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
-import { verifyWebhook, randomSecret, seal, unseal } from '../src/core/crypto.js';
+import { verifyWebhook, randomSecret, seal, unseal, sessionBinding } from '../src/core/crypto.js';
+import { DEFAULT_BACKEND } from '../src/core/identity.js';
 import { boundedBody } from '../src/worker/index.js';
+await test('backend migration cannot reuse or rebind old OAuth ciphertext even with the original vault key', async () => {
+  const oldBinding = sessionBinding('https://retired.invalid', 1, 2, 5), newBinding = sessionBinding(DEFAULT_BACKEND, 1, 2, 5);
+  const key = randomSecret(), encrypted = await seal({ refresh_token: 'fixture-only' }, key, oldBinding);
+  assert.deepEqual(await unseal(encrypted, key, oldBinding), { refresh_token: 'fixture-only' });
+  await assert.rejects(unseal(encrypted, key, newBinding));
+  const fresh = await seal({ refresh_token: 'fresh-fixture' }, key, newBinding);
+  await assert.rejects(unseal(fresh, key, oldBinding));
+});
 await test('GitHub HMAC requires authentic bytes, valid secret and sha256 signature', async () => {
   const body = Buffer.from('{"sender":{"login":"alice"}}'), secret = 'fixture-webhook-secret'.repeat(2);
   const signature = `sha256=${createHmac('sha256', secret).update(body).digest('hex')}`;

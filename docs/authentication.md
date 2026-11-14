@@ -1,5 +1,7 @@
 # Authentication and credential ownership
 
+The hosted canonical origin is `https://codexbot.appsolves.workers.dev`; independent operators explicitly select their own origin. OAuth AAD includes this exact origin, installation, repository and actor, and local profile files are separated by backend host. Existing ChatGPT connections require [safe revocation and fresh sign-in](origin-migration.md#chatgpt-reconnection) when the origin changes. Do not copy profiles, rebind ciphertext or accept both OIDC audiences during a cutover. API-key mode keeps its existing owning Environment; it does not have OAuth ciphertext to migrate.
+
 Reusable callers must use explicit named secret references after the environment-free `credential-scope` guard rejects nonempty repository/organization credentials under either name. The called installation/actor Environment supplies the actual credential. Literal empty grants do not enable Environment secret resolution. Named references alone would permit a global-secret fallback if an Environment secret were missing; keep the guard and its required dependency. [Credential diagnostics and rollout](review-rollout.md) explain the GitHub contract and no-inference check. No reusable-workflow/Worker pin or session format changes are needed for this caller-only correction.
 
 ## Official ChatGPT OAuth

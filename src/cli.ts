@@ -15,7 +15,7 @@ import { client, splitRepo } from './worker/github.js';
 import { setupPullRequest, ensureProtectedEnvironment } from './setup.js';
 import { backendUrl } from './runner/broker.js';
 import { repositoryCapabilities } from './capabilities.js';
-import { credentialEnvironment, publishingEnvironment } from './core/identity.js';
+import { credentialEnvironment, publishingEnvironment, DEFAULT_BACKEND } from './core/identity.js';
 import { formatCliError, requireCliResponse } from './cli-errors.js';
 
 let operation = 'parsing command-line arguments';
@@ -76,7 +76,7 @@ async function main(): Promise<void> {
   const command = parsed.positionals[0];
   requireCondition(['setup', 'connect', 'connect-api-key', 'disconnect'].includes(command ?? ''), 'usage_setup_connect_connect_api_key_or_disconnect_with_repository_and_backend');
   const repository = parsed.values.repository ?? ''; splitRepo(repository);
-  const backend = backendUrl(parsed.values.backend ?? '');
+  const backend = backendUrl(parsed.values.backend ?? DEFAULT_BACKEND);
   operation = 'reading GitHub CLI authentication';
   const token = await gh(['auth', 'token']);
   const github = client(token);

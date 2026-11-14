@@ -6,7 +6,7 @@
 	"compatibility_flags": [
 		"nodejs_compat"
 	],
-	"workers_dev": false,
+	"workers_dev": true,
 	"preview_urls": false,
 	"send_metrics": false,
 	"routes": [
@@ -33,7 +33,7 @@
 		}
 	},
 	"vars": {
-		"PUBLIC_URL": "https://codexbot.appsolves.dev",
+		"PUBLIC_URL": "https://codexbot.appsolves.workers.dev",
 		"GITHUB_APP_ID": "5754181",
 		"GITHUB_APP_SLUG": "codexbot-review",
 		"TRUSTED_WORKFLOW": "AppSolves/codexbot/.github/workflows/review.yml@4ed668864cac0682e09ec49a2515a6e1893a2780",
