@@ -7,13 +7,14 @@ import { randomUUID } from 'node:crypto';
 import { setTimeout, clearTimeout } from 'node:timers';
 import { DEFAULT_CONFIG } from '../dist/src/core/config.js';
 import { cleanupReviewContainers } from '../dist/src/runner/docker.js';
+import { ExecutionDiagnostics } from '../dist/src/core/execution.js';
 
 // Runs real pinned Codex and real container isolation with synthetic Responses SSE, no credentials/quota.
 const id = randomUUID(), volume = `codexbot-test-${id}`, proxy = `codexbot-test-proxy-${id}`, review = `codexbot-test-review-${id}`;
 const directory = resolve('.local', `sandbox-${id}`), head = 'a'.repeat(40);
 const dockerConfig = resolve('.local', 'docker'); await mkdir(dockerConfig, { recursive: true });
 process.env.DOCKER_CONFIG = dockerConfig;
-function docker(args, options = {}) { return execFileSync('docker', ['--config', dockerConfig, ...args], { encoding: 'utf8', timeout: 120_000, ...options }); }
+function docker(args, options = {}) { return execFileSync('docker', ['--config', dockerConfig, ...args], { encoding: 'utf8', stdio: 'pipe', timeout: 120_000, ...options }); }
 const result = { head_sha: head, complete: true, result: 'clean', summary: 'Synthetic protocol fixture; no real review or inference was performed.', findings: [] };
 const snapshot = { id, head, base: 'b'.repeat(40), config: DEFAULT_CONFIG, command: { effort: null, instructions: '', merge: false } };
 await mkdir(directory, { recursive: true });
@@ -33,11 +34,14 @@ const events = [
   { type: 'response.completed', response: { id: 'resp_fixture', status: 'completed', output: [item], usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } }
 ].map((event, sequence_number) => `event: ${event.type}\ndata: ${JSON.stringify({ ...event, sequence_number })}\n\n`).join('');
 const proxyScript = `import {createInferenceServer} from '/app/dist/src/runner/proxy.js';
+import {executionEnvelope} from '/app/dist/src/core/execution.js';
+let calls=0;
 globalThis.fetch = async (url, init) => {
   if(url !== 'https://api.openai.com/v1/responses' || init.headers.Authorization !== 'Bearer fixture-only') throw new Error('Invalid inference boundary');
+  if(++calls > 1) return Response.json({error:{code:'subscription_sharing_unsupported_capability',param:'tools',message:'private-fixture-provider-body'}},{status:400});
   return new Response(${JSON.stringify(events)}, {headers:{'content-type':'text/event-stream'}});
 };
-createInferenceServer('fixture-only').listen('/run/proxy/inference.sock',()=>process.stdout.write('ready\\n'));`;
+createInferenceServer('fixture-only',{},detail=>process.stderr.write(executionEnvelope(detail)+'\\n')).listen('/run/proxy/inference.sock',()=>process.stdout.write('ready\\n'));`;
 const common = ['--label', `codexbot.run=${id}`, '--network=none', '--read-only', '--cap-drop=ALL', '--security-opt=no-new-privileges', '--pids-limit=128', '--memory=2g', '--user=1000:1000', '--tmpfs=/tmp:rw,noexec,nosuid,size=128m,uid=1000', '--tmpfs=/home/codex:rw,nosuid,size=128m,uid=1000'];
 const partial = randomUUID();
 try {
@@ -66,9 +70,35 @@ try {
   docker(['create', '--name', review, ...common, '--mount', `type=bind,src=${directory},dst=/workspace,readonly`, '--mount', `type=volume,src=${volume},dst=/run/proxy,readonly`, 'codexbot-review:local', 'node', 'dist/src/runner/engine-main.js']);
   let actual;
   try { actual = docker(['start', '-a', review]); }
-  catch (error) { process.stderr.write(docker(['logs', review])); process.stderr.write(docker(['logs', proxy])); throw error; }
+  catch (error) {
+    const safe = new ExecutionDiagnostics(); safe.write(String(error.stderr ?? ''));
+    if (safe.last) process.stderr.write(JSON.stringify(safe.last) + '\n');
+  }
+  assert.ok(actual, 'Synthetic successful Codex turn did not complete; raw process output withheld.');
   assert.deepEqual(JSON.parse(actual), result);
   process.stdout.write('Pinned Codex turn, Unix-socket inference proxy and structured output verified with synthetic SSE.\n');
+  docker(['rm', review]);
+  docker(['create', '--name', review, ...common, '--mount', `type=bind,src=${directory},dst=/workspace,readonly`, '--mount', `type=volume,src=${volume},dst=/run/proxy,readonly`, 'codexbot-review:local', 'node', 'dist/src/runner/engine-main.js']);
+  let failed = false;
+  try { docker(['start', '-a', review]); }
+  catch (error) {
+    failed = true;
+    assert.equal(error.status, 1);
+    const engine = new ExecutionDiagnostics(); engine.write(String(error.stderr ?? ''));
+    assert.deepEqual(engine.last, { component: 'turn', code: 'codex_turn_failed' });
+    assert.equal(String(error.stdout ?? '').trim(), '');
+    assert.ok(!String(error.stderr ?? '').includes('private-fixture-provider-body'));
+  }
+  assert.equal(failed, true, 'Failed inference must exit nonzero with no review output');
+  // Read via Node spawn to collect the safe stderr envelope without printing raw logs.
+  const observed = new ExecutionDiagnostics();
+  await new Promise((resolveLogs, reject) => {
+    const logs = spawn('docker', ['--config', dockerConfig, 'logs', '--tail', '32', proxy], { stdio: ['ignore', 'ignore', 'pipe'] });
+    logs.stderr.setEncoding('utf8'); logs.stderr.on('data', chunk => observed.write(chunk));
+    logs.on('error', reject); logs.on('close', code => code === 0 ? resolveLogs() : reject(new Error('Synthetic proxy observation failed')));
+  });
+  assert.deepEqual(observed.last, { component: 'provider', code: 'provider_http_failed', upstream_status: 400, provider_code: 'subscription_sharing_unsupported_capability', provider_param: 'tools' });
+  process.stdout.write('Pinned Codex failed turn and proxy upstream HTTP/code diagnostics verified; no raw provider body or successful output.\n');
 } finally {
   await cleanupReviewContainers(id); await cleanupReviewContainers(partial);
   docker(['volume', 'rm', volume]); await rm(directory, { recursive: true, force: true });

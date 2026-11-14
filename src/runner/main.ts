@@ -70,12 +70,12 @@ export async function reviewJob(): Promise<void> {
     const report = diagnostic(error, stage); console.error(JSON.stringify(report));
     // Always leave a deterministic non-approving result when preflight succeeded.
     const failure = { ...report, code: report.broker_code ?? (FAILURE_CODES.has(report.code) || BROKER_CODES.has(report.code) ? report.code : 'external_or_execution_failure') };
-    if (snapshot) await broker(backend, id, 'result', submission ?? { context_complete: false, output: failedReview(snapshot.head), failure });
-    else {
-      try { await broker(backend, id, 'failure', failure); }
-      catch (secondary) { console.error(JSON.stringify({ ...diagnostic(secondary, stage), event: 'failure_reporting_deferred' })); }
-      throw error;
-    }
+    try {
+      if (snapshot) await broker(backend, id, 'result', submission ?? { context_complete: false, output: failedReview(snapshot.head), failure });
+      else await broker(backend, id, 'failure', failure);
+    } catch (secondary) { console.error(JSON.stringify({ ...diagnostic(secondary, stage), event: 'failure_reporting_deferred' })); }
+    // Recording a safe fallback permits publication; it never makes failed analysis a green check.
+    throw error;
   } finally {
     try {
       try { if (snapshot) await broker(backend, id, 'release'); }

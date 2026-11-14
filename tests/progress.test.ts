@@ -44,6 +44,23 @@ await test('published progress still observes the real workflow until completion
     assert.equal(await f.store.dueProgress(), null); assert.match(String(f.state.comments[0]!.body), /Workflow: completed \/ success/);
   } finally { f.sqlite.close(); }
 });
+await test('fallback publication never presents failed analysis as a completed AI review, even for legacy green workflows', async () => {
+  const f = fixture();
+  try {
+    await f.store.create(f.request); await dispatchRequest(f.github, f.store, f.request, 'codexbot'); await f.store.prepare(f.request.id, '123');
+    await f.store.result(f.request.id, clean(), false, '123'); await f.store.noteFailure(f.request.id, '123', 'isolated_review_failed', 'analyzing');
+    const lease = await f.store.claimPublication(f.request.id, '123'); await f.store.published(f.request.id, 99, lease);
+    for (const conclusion of ['failure', 'success']) {
+      f.state.runStatus = 'completed'; f.state.runConclusion = conclusion; f.ready();
+      // Re-observe both possible historical conclusions without fabricating the actual GitHub status.
+      f.sqlite.prepare('UPDATE requests SET workflow_status=NULL').run(); await f.update();
+      const body = String(f.state.comments[0]!.body);
+      assert.match(body, /Stage: failed/); assert.ok(body.includes(`Workflow: completed / ${conclusion}`));
+      assert.match(body, /non-approving fallback report was published; this is not a completed AI review/);
+      assert.match(body, /pullrequestreview-99/); assert.ok(!body.includes('isolated_review_failed'));
+    }
+  } finally { f.sqlite.close(); }
+});
 await test('terminal progress with an unknown workflow status remains recoverable and observation failures never claim a stale status', async () => {
   const f = fixture();
   const github = new Octokit({ request: { fetch: async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) =>

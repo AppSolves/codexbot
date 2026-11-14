@@ -3,7 +3,7 @@ import type { RequestSnapshot } from '../worker/store.js';
 import { readFile, mkdir } from 'node:fs/promises';
 import { once } from 'node:events';
 import { createSocketRelay } from './relay.js';
-import { AppError } from '../core/errors.js';
+import { executionEnvelope, executionError } from '../core/execution.js';
 import { normalizeReview } from '../core/review.js';
 const relay = createSocketRelay('/run/proxy/inference.sock');
 try {
@@ -12,5 +12,5 @@ try {
   const snapshot = JSON.parse(await readFile('/workspace/request.json', 'utf8')) as RequestSnapshot;
   const output = await runCodex(snapshot, await readFile('/workspace/manifest.json', 'utf8'));
   process.stdout.write(JSON.stringify(normalizeReview(output, snapshot.head)));
-} catch (error) { process.stderr.write(`Codex review failed: ${error instanceof AppError ? error.code : 'execution_error'}; no approval produced.\n`); process.exitCode = 1; }
+} catch (error) { process.stderr.write(`${executionEnvelope(executionError(error, 'engine', 'engine_failed').detail)}\n`); process.exitCode = 1; }
 finally { relay.closeAllConnections(); relay.close(); }
