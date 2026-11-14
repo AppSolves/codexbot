@@ -1,6 +1,6 @@
-import { createRemoteJWKSet, jwtVerify } from 'jose';
+import { createRemoteJWKSet, jwtVerify, errors } from 'jose';
 import type { JWTVerifyGetKey, JWTPayload } from 'jose';
-import { requireCondition } from '../core/errors.js';
+import { requireCondition, AppError } from '../core/errors.js';
 
 export interface WorkflowIdentity {
   repository: string; repositoryId: number; ownerId: number; defaultBranch: string;
@@ -9,12 +9,22 @@ export interface WorkflowIdentity {
 export interface Workload { runId: string; attempt: string; jti: string }
 const githubKeys = createRemoteJWKSet(new URL('https://token.actions.githubusercontent.com/.well-known/jwks'));
 export async function verifyWorkload(token: string, audience: string, expected: WorkflowIdentity, keys?: JWTVerifyGetKey): Promise<Workload> {
+  return checkClaims(await verifySignedClaims(token, audience, keys), expected);
+}
+export async function verifySignedClaims(token: string, audience: string, keys?: JWTVerifyGetKey): Promise<JWTPayload> {
   const resolver = keys ?? githubKeys;
-  const { payload } = await jwtVerify(token, resolver, {
+  let payload: JWTPayload;
+  try { ({ payload } = await jwtVerify(token, resolver, {
     issuer: 'https://token.actions.githubusercontent.com', audience, algorithms: ['RS256'],
     maxTokenAge: '10m', requiredClaims: ['exp', 'iat', 'nbf', 'jti', 'sub']
-  });
-  return checkClaims(payload, expected);
+  })); }
+  catch (error) {
+    if (error instanceof errors.JWTExpired) throw new AppError('oidc_token_expired', 401);
+    if (error instanceof errors.JWKSTimeout) throw new AppError('oidc_jwks_unavailable', 503);
+    if (error instanceof errors.JOSEError) throw new AppError('oidc_token_invalid', 401);
+    throw new AppError('oidc_jwks_unavailable', 503);
+  }
+  return payload;
 }
 export function checkClaims(claims: JWTPayload, expected: WorkflowIdentity): Workload {
   const workflowRef = `${expected.repository}/.github/workflows/codexbot.yml@refs/heads/${expected.defaultBranch}`;

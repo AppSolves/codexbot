@@ -6,6 +6,7 @@ import { publish } from './publish.js';
 import { invalidateMerge } from './merge.js';
 import type { RequestSnapshot } from './store.js';
 import { MAX_RECOVERY_ATTEMPTS } from '../core/limits.js';
+import { recoverProgress } from './progress.js';
 
 export async function processDelivery(id: string, env: Env): Promise<string> {
   const store = new Store(env.DB), delivery = await store.claimDelivery(id);
@@ -34,7 +35,8 @@ export async function recover(env: Env): Promise<void> {
     await store.cleanup(); return;
   }
   const publications = await store.duePublications();
-  for (const id of publications.length ? [] : (await store.dueDeliveries()).slice(0, 1)) {
+  const deliveries = publications.length ? [] : (await store.dueDeliveries()).slice(0, 1);
+  for (const id of deliveries) {
     try { await processDelivery(id, env); } catch { console.error(JSON.stringify({ event: 'delivery_recovery_deferred' })); }
   }
   for (const id of publications) {
@@ -68,4 +70,5 @@ export async function recover(env: Env): Promise<void> {
     }
   }
   await store.cleanup();
+  if (!publications.length && !deliveries.length) await recoverProgress(env, store);
 }

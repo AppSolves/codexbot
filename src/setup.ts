@@ -28,10 +28,13 @@ export function callerWorkflow(source: string, ref: string, backend: string): st
     request_id: { description: 'Backend-bound request id', required: true, type: 'string' },
     credential_owner: { description: 'Authenticated requester numeric GitHub id', required: true, type: 'string' },
     installation_id: { description: 'Verified installation credential namespace', required: true, type: 'string' },
-    dispatch_attempt: { description: 'Durable backend dispatch identity', required: true, type: 'string' }
+    dispatch_attempt: { description: 'Durable backend dispatch identity', required: true, type: 'string' },
+    credential_check_only: { description: 'Check Environment availability without broker admission or inference', required: false, type: 'boolean', default: false }
   } } }, permissions: {}, concurrency: { group: 'codexbot-credentials', 'cancel-in-progress': false }, jobs: {
     review: { permissions: { contents: 'read', 'id-token': 'write' }, uses: `${source}/.github/workflows/review.yml@${ref}`,
-      with: { request_id: '${{ inputs.request_id }}', credential_owner: '${{ inputs.credential_owner }}', installation_id: '${{ inputs.installation_id }}', backend } }
+      // Named empty grants enable Environment resolution without repository-secret fallback.
+      secrets: { CODEXBOT_VAULT_KEY: '', CODEXBOT_API_KEY: '' },
+      with: { request_id: '${{ inputs.request_id }}', credential_owner: '${{ inputs.credential_owner }}', installation_id: '${{ inputs.installation_id }}', credential_check_only: '${{ inputs.credential_check_only }}', backend } }
   } });
 }
 export async function setupPullRequest(github: Octokit, repository: string, source: string, ref: string, backend: string, login: string, principal: 'user' | 'installation' = 'user'): Promise<string> {
@@ -40,7 +43,7 @@ export async function setupPullRequest(github: Octokit, repository: string, sour
   requireCondition(Number.isSafeInteger(metadata.id) && metadata.id > 0, 'repository_identity_unavailable');
   const config = structuredClone(DEFAULT_CONFIG); config.authorization.whitelist = login;
   // New installations get a distinctive textual alias; existing configs retain their trigger.
-  config.bot.trigger = `@CodexBotReview${metadata.id}`;
+  config.bot.trigger = `@CBReview${metadata.id}`;
   const desired = new Map([['.github/workflows/codexbot.yml', callerWorkflow(source, ref, backend)], ['.codexbot.yml', stringify(config)]]);
   await github.rest.repos.getContent({ ...splitRepo(source), path: '.github/workflows/review.yml', ref });
   for (const path of desired.keys()) {

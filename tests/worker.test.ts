@@ -12,7 +12,7 @@ import { seal, randomSecret } from '../src/core/crypto.js';
 const keys = await generateKeyPair('RS256', { extractable: true });
 const pem = await exportPKCS8(keys.privateKey), jwk = { ...await exportJWK(keys.publicKey), kid: 'fixture', use: 'sig', alg: 'RS256' };
 async function oidc(environment: string, overrides: Record<string, unknown> = {}): Promise<string> {
-  return new SignJWT({ repository: 'owner/repo', repository_id: '2', repository_owner_id: '3', event_name: 'workflow_dispatch', ref: 'refs/heads/main', ref_type: 'branch', workflow_ref: 'owner/repo/.github/workflows/codexbot.yml@refs/heads/main', workflow_sha: WORKFLOW,
+  return new SignJWT({ repository: 'owner/repo', repository_id: '2', repository_owner_id: '3', actor: 'alice', actor_id: '5', event_name: 'workflow_dispatch', ref: 'refs/heads/main', ref_type: 'branch', workflow_ref: 'owner/repo/.github/workflows/codexbot.yml@refs/heads/main', workflow_sha: WORKFLOW,
     job_workflow_ref: `operator/codexbot/.github/workflows/review.yml@${RELEASE}`, job_workflow_sha: RELEASE, runner_environment: 'github-hosted', environment, sub: `repo:owner/repo:environment:${environment}`, run_id: '123', run_attempt: '1', jti: crypto.randomUUID(), ...overrides })
     .setProtectedHeader({ alg: 'RS256', kid: 'fixture' }).setIssuer('https://token.actions.githubusercontent.com').setAudience('https://broker.invalid').setIssuedAt().setNotBefore('0s').setExpirationTime('5m').sign(keys.privateKey);
 }
@@ -45,6 +45,45 @@ await test('signed webhook, OIDC preflight, committed result and separate public
   const published = await post('publish', 'codexbot-publish-1'); assert.equal(published.status, 200); assert.equal((await published.json() as Record<string, unknown>).event, 'APPROVE');
   assert.equal((await post('publish', 'codexbot-publish-1')).status, 200); assert.equal(f.state.reviews.length, 1);
   for (const issued of f.calls.filter(x => x.path.endsWith('/access_tokens'))) assert.deepEqual(issued.body.repository_ids, [2]);
+}));
+await test('manual administrator OIDC diagnostic is read-only and never authorizes the privileged review broker', async () => fixture(async (env, f) => {
+  f.state.permission = 'admin'; f.state.runActor = { id: 5, type: 'User', login: 'alice' };
+  const check = async (overrides: Record<string, unknown> = {}) => worker.fetch(new Request('https://broker.invalid/v1/workload/check', { method: 'POST', headers: { Authorization: `Bearer ${await oidc('codexbot-1-5', overrides)}` } }), env);
+  const response = await check(); assert.equal(response.status, 200); assert.deepEqual(await response.json(), { status: 'verified', scope: 'diagnostic_only' });
+  for (const call of f.calls.filter(x => x.path.endsWith('/access_tokens'))) assert.deepEqual(call.body.permissions, { contents: 'read', pull_requests: 'read', actions: 'read' });
+  assert.equal((await env.DB.prepare('SELECT count(*) AS n FROM requests').first<{ n: number }>())!.n, 0);
+  assert.equal((await check({ job_workflow_sha: HEAD })).status, 403);
+  assert.equal((await check({ actor_id: '6' })).status, 403);
+  f.state.permission = 'write'; assert.equal((await check()).status, 403); f.state.permission = 'admin';
+  await worker.fetch(signed(payload(), env.GITHUB_WEBHOOK_SECRET), env);
+  const id = (f.calls.find(x => x.path.endsWith('/dispatches'))!.body.inputs as Record<string, string>).request_id;
+  const admitted = await worker.fetch(new Request(`https://broker.invalid/v1/requests/${id}/prepare`, { method: 'POST', headers: { Authorization: `Bearer ${await oidc('codexbot-1-5')}` }, body: '{}' }), env);
+  assert.equal(admitted.status, 403); assert.equal((await admitted.json() as Record<string, unknown>).error, 'workflow_not_dispatched_by_this_app');
+}));
+await test('verified runner failure finalizes an unprepared request; foreign Environment or arbitrary failure text is denied', async () => fixture(async (env, f) => {
+  await worker.fetch(signed(payload(), env.GITHUB_WEBHOOK_SECRET), env);
+  const id = (f.calls.find(x => x.path.endsWith('/dispatches'))!.body.inputs as Record<string, string>).request_id!;
+  const post = async (environment: string, body: unknown) => worker.fetch(new Request(`https://broker.invalid/v1/requests/${id}/failure`, { method: 'POST', headers: { Authorization: `Bearer ${await oidc(environment)}` }, body: JSON.stringify(body) }), env);
+  assert.equal((await post('codexbot-1-6', { stage: 'environment', code: 'missing_environment_credentials' })).status, 403);
+  assert.equal((await post('codexbot-1-5', { stage: 'environment', code: 'opaque-sensitive-provider-error' })).status, 400);
+  assert.equal((await post('codexbot-1-5', { stage: 'environment', code: 'missing_environment_credentials' })).status, 200);
+  const { row } = await new Store(env.DB).get(id); assert.equal(row.state, 'failed'); assert.equal(row.failure_code, 'missing_environment_credentials'); assert.equal(row.run_id, '123');
+  assert.equal(f.state.reviews.length, 0);
+}));
+await test('analysis progress is stage/run bound and failed review jobs can only publish a non-approving report', async () => fixture(async (env, f) => {
+  await worker.fetch(signed(payload(), env.GITHUB_WEBHOOK_SECRET), env);
+  const id = (f.calls.find(x => x.path.endsWith('/dispatches'))!.body.inputs as Record<string, string>).request_id!;
+  const post = async (operation: string, stage: string, body: unknown = {}) => worker.fetch(new Request(`https://broker.invalid/v1/requests/${id}/${operation}`, { method: 'POST', headers: { Authorization: `Bearer ${await oidc(stage)}` }, body: JSON.stringify(body) }), env);
+  assert.equal((await post('stage', 'codexbot-1-5', { stage: 'analyzing' })).status, 409);
+  assert.equal((await post('prepare', 'codexbot-1-5')).status, 200);
+  assert.equal((await post('stage', 'codexbot-1-5', { stage: 'completed' })).status, 400);
+  assert.equal((await post('stage', 'codexbot-1-5', { stage: 'analyzing' })).status, 200);
+  assert.equal((await post('result', 'codexbot-1-5', { output: clean(), context_complete: true, failure: { stage: 'analyzing', code: 'isolated_review_failed' } })).status, 400);
+  assert.equal((await new Store(env.DB).get(id)).row.result, null);
+  assert.equal((await post('result', 'codexbot-1-5', { output: clean(), context_complete: true })).status, 200);
+  const response = await post('publish', 'codexbot-publish-1', { review_job_failed: true }); assert.equal(response.status, 200);
+  assert.equal((await response.json() as Record<string, unknown>).event, 'COMMENT');
+  assert.equal((await new Store(env.DB).get(id)).row.context_complete, 0);
 }));
 await test('invalid signature, replay, spoofed user, forged installation and unauthorized merge cannot dispatch', async () => fixture(async (env, f) => {
   assert.equal((await worker.fetch(signed(payload(), 'wrong-secret'), env)).status, 401);

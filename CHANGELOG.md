@@ -2,6 +2,11 @@
 
 ## Unreleased — security remediation pass
 
+- Explicitly forward only named Environment credential grants; add a credential-only availability diagnostic, safe runner/broker/OIDC failure codes and failed-job publication safeguards.
+- Add migration 0003 with recoverable, App-owned progress comments, verified run status, failure metadata and bounded operator reconciliation. Existing sessions remain valid.
+- Add opt-in source-scoped Buildx caching and a credential-free cache benchmark; execute review images by content ID. Keep cache off until measurements justify its cost.
+- New setup triggers use @CBReview plus repository ID; document independent OpenAI connector settings without changing App identity or removing legacy parsing.
+
 - Generate Cloudflare Env from the pinned Wrangler configuration before every build/typecheck. CI tests an independent source checkout without generated declarations.
 - Resolve commit objects to tree SHAs; fetch essential changed files/instructions first. Separate complete diff, essential context and bounded supplementary coverage. Cache immutable trees/blobs only inside the authorized collection.
 - Add migration 0002: durable webhook/outbox receipts, stable dispatch attempts, exact run-name reconciliation, quotas, publication leases/checkpoints and installation-bound sessions. Existing sessions require reconnect; pending legacy requests are invalidated. See docs/operations.md.

@@ -7,6 +7,7 @@ import type { GitHubCredentials } from './github.js';
 import { Store } from './store.js';
 import type { RequestSnapshot } from './store.js';
 import { dispatchRequest } from './dispatch.js';
+import { updateProgress } from './progress.js';
 
 export interface BackendConfig extends GitHubCredentials { DB: D1Database; PUBLIC_URL: string; GITHUB_APP_SLUG: string; TRUSTED_WORKFLOW: string; CHATGPT_DEPLOYMENT_AUTHORIZED: string }
 /** Persist only fields needed for recovery; never copy issue/PR bodies or unrelated metadata. */
@@ -109,13 +110,16 @@ export async function ingest(event: string, payload: unknown, requestId: string,
   const { data: pr } = await github.rest.pulls.get({ ...repo, pull_number: prNumber });
   if (automatic) requireCondition(record(record(input.pull_request).head).sha === pr.head.sha, 'stale_pr_event_head', 409);
   requireCondition(pr.state === 'open' && !pr.draft && pr.base.repo.id === liveRepo.id && pr.changed_files <= 200, 'pr_not_reviewable');
+  requireCondition(Number.isSafeInteger(pr.commits) && pr.commits > 0 && Number.isSafeInteger(pr.changed_files) && pr.changed_files >= 0, 'invalid_pr_counts');
   let snapshot: RequestSnapshot = {
     id: requestId, installationId: Number(installation.id), repositoryId: liveRepo.id, ownerId: liveRepo.owner.id,
     repository: liveRepo.full_name, defaultBranch: liveRepo.default_branch, workflowSha: branch.commit.sha,
-    head: pr.head.sha, base: pr.base.sha, pr: prNumber, actor: sender.login, actorId: Number(sender.id), command, config, createdAt: Date.now()
+    head: pr.head.sha, base: pr.base.sha, pr: prNumber, actor: sender.login, actorId: Number(sender.id), command, config, createdAt: Date.now(), commits: pr.commits, changedFiles: pr.changed_files
   };
   snapshot = await store.create(snapshot, env.TRUSTED_WORKFLOW);
   requireCondition(snapshot.head === pr.head.sha && snapshot.base === pr.base.sha && snapshot.workflowSha === branch.commit.sha, 'request_context_changed', 409);
+  try { await updateProgress(github, store, snapshot, env.GITHUB_APP_SLUG, Number(env.GITHUB_APP_ID)); }
+  catch { console.error(JSON.stringify({ event: 'progress_update_deferred', request_id: snapshot.id })); }
   await dispatchRequest(github, store, snapshot, env.GITHUB_APP_SLUG);
   return 'dispatched';
 }

@@ -1,5 +1,7 @@
 # Deployment checklist
 
+For existing deployments, follow [the coordinated immutable-pin upgrade](review-rollout.md) before deploying this revision. Apply additive migration 0003, update the caller's named Environment secret grants, and set its workflow pin and Worker TRUSTED_WORKFLOW to the same actual merged commit. Keep merge disabled. Report validation before the production change; a temporary mismatch fails closed.
+
 This document is operator instructions, not evidence of an existing hosted deployment. Do not register, deploy, publish a release or use paid inference without your own authorization.
 
 ## GitHub App

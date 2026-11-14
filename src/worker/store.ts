@@ -9,11 +9,15 @@ import { MAX_REVIEW_BYTES, MAX_RECOVERY_ATTEMPTS, RECOVERY_LEASE_MS, REQUEST_LIF
 export interface RequestSnapshot {
   id: string; installationId: number; repositoryId: number; ownerId: number; repository: string; defaultBranch: string;
   workflowSha: string; head: string; base: string; pr: number; actor: string; actorId: number; command: ReviewCommand; config: Config; createdAt: number;
+  commits?: number; changedFiles?: number;
 }
 export interface RequestRow {
   id: string; snapshot: string; state: string; run_id: string | null; review_id: number | null; result: string | null; context_complete: number;
   dispatch_attempt: string | null; dispatch_phase: string; dispatch_started: number | null;
   publish_phase: string; publish_attempts: number; publish_lease: string | null; publish_until: number; next_publish: number; review_phase: string; merge_phase: string;
+  progress_comment_id: number | null; progress_phase: string; progress_lease: string | null; progress_until: number; progress_attempts: number; progress_next_at: number;
+  progress_hash: string | null; progress_reported_stage: string | null; progress_stage: string; failure_code: string | null; failure_stage: string | null; failure_status: number | null;
+  workflow_status: string | null; workflow_conclusion: string | null; workflow_checked_at: number;
 }
 export interface DeliveryRow { id: string; event: string; payload: string; request_id: string; attempts: number; lease: string }
 export function retryDelay(attempt: number): number {
@@ -140,7 +144,7 @@ export class Store {
       .bind(merged ? 'merged' : 'cancelled', merged ? 'published' : 'failed', merged ? 'published' : 'failed', id).run();
   }
   async operations(repository: number, installation: number): Promise<unknown> {
-    const requests = await this.db.prepare('SELECT id,state,dispatch_phase,publish_phase,merge_phase,publish_attempts,run_id,review_id FROM requests WHERE repository_id=? AND installation_id=? ORDER BY created_at DESC LIMIT 25').bind(repository, installation).all();
+    const requests = await this.db.prepare('SELECT id,state,dispatch_phase,publish_phase,merge_phase,publish_attempts,run_id,review_id,progress_comment_id,progress_phase,progress_attempts,failure_code,failure_stage,failure_status FROM requests WHERE repository_id=? AND installation_id=? ORDER BY created_at DESC LIMIT 25').bind(repository, installation).all();
     const deliveries = await this.db.prepare(`SELECT id,phase,attempts,error_code,request_id FROM deliveries WHERE json_extract(payload,'$.repository.id')=? AND json_extract(payload,'$.installation.id')=? ORDER BY created_at DESC LIMIT 25`).bind(repository, installation).all();
     return { requests: requests.results, deliveries: deliveries.results };
   }
@@ -150,9 +154,16 @@ export class Store {
       .bind(id, repository, installation).run();
     if (result.meta.changes) return;
     const publication = await this.db.prepare(`UPDATE requests SET state='publishing',publish_phase='retryable',publish_until=0,next_publish=0,publish_attempts=0,operator_retries=operator_retries+1
-      WHERE id=? AND repository_id=? AND installation_id=? AND publish_phase IN ('failed','retryable') AND merge_phase NOT IN ('cancelled','cancelling') AND operator_retries<2 AND created_at>? AND result IS NOT NULL`)
+      WHERE id=? AND repository_id=? AND installation_id=? AND publish_phase IN ('failed','retryable') AND publish_attempts>0 AND merge_phase NOT IN ('cancelled','cancelling') AND operator_retries<2 AND created_at>? AND result IS NOT NULL`)
       .bind(id, repository, installation, Date.now() - REQUEST_LIFETIME_MS).run();
     requireCondition(publication.meta.changes === 1, 'retry_not_allowed_or_limit_reached', 409);
+  }
+  async operatorRetryProgress(id: string, repository: number, installation: number): Promise<void> {
+    // Never reset an ambiguous POST to pending or recreate a deleted comment.
+    const result = await this.db.prepare(`UPDATE requests SET progress_attempts=0,progress_next_at=0,operator_retries=operator_retries+1 WHERE id=? AND repository_id=? AND installation_id=?
+      AND progress_until<? AND progress_phase!='deleted' AND progress_attempts>=? AND operator_retries<2 AND created_at>?`)
+      .bind(id, repository, installation, Date.now(), MAX_RECOVERY_ATTEMPTS, Date.now() - 7 * 86_400_000).run();
+    requireCondition(result.meta.changes === 1, 'progress_retry_not_allowed_or_limit_reached', 409);
   }
   async cancellable(id: string, repository: number, installation: number): Promise<RequestSnapshot> {
     // Claim cancellation atomically before remote cleanup; a publisher cannot acquire afterwards.
@@ -200,13 +211,64 @@ export class Store {
     await this.db.prepare('UPDATE sessions SET lease_request=NULL,lease_until=0 WHERE repository_id=? AND actor_id=? AND installation_id=? AND lease_request=?')
       .bind(snapshot.repositoryId, snapshot.actorId, snapshot.installationId, snapshot.id).run();
   }
+  async progressRequest(id: string): Promise<{ row: RequestRow; snapshot: RequestSnapshot } | null> {
+    const row = await this.db.prepare('SELECT * FROM requests WHERE id=?').bind(id).first<RequestRow>();
+    return row ? { row, snapshot: JSON.parse(row.snapshot) as RequestSnapshot } : null;
+  }
+  async stage(id: string, runId: string, stage: 'analyzing'): Promise<void> {
+    const result = await this.db.prepare(`UPDATE requests SET progress_stage=? WHERE id=? AND run_id=? AND state='running'`).bind(stage, id, runId).run();
+    requireCondition(result.meta.changes === 1, 'request_not_running', 409);
+  }
+  async failRun(id: string, runId: string, code: string, stage: string, status: number | null = null): Promise<boolean> {
+    const result = await this.db.prepare(`UPDATE requests SET state='failed',publish_phase='failed',progress_stage='failed',failure_code=?,failure_stage=?,failure_status=?,run_id=COALESCE(run_id,?)
+      WHERE id=? AND state IN ('created','dispatched','running','reviewed') AND (run_id IS NULL OR run_id=?) AND publish_attempts=0`)
+      .bind(code, stage, status, runId, id, runId).run(); return result.meta.changes === 1;
+  }
+  async noteFailure(id: string, runId: string, code: string, stage: string, status: number | null = null): Promise<void> {
+    await this.db.prepare(`UPDATE requests SET failure_code=?,failure_stage=?,failure_status=?,context_complete=CASE WHEN ?='review_job_failed' THEN 0 ELSE context_complete END WHERE id=? AND run_id=?`)
+      .bind(code, stage, status, code, id, runId).run();
+  }
+  async observeRun(id: string, runId: string, status: string, conclusion: string | null): Promise<boolean> {
+    const result = await this.db.prepare(`UPDATE requests SET run_id=COALESCE(run_id,?),workflow_status=?,workflow_conclusion=?,workflow_checked_at=? WHERE id=? AND (run_id IS NULL OR run_id=?)`)
+      .bind(runId, status, conclusion, Date.now(), id, runId).run(); return result.meta.changes === 1;
+  }
+  async claimProgress(id: string): Promise<string | null> {
+    const lease = crypto.randomUUID(), now = Date.now();
+    const result = await this.db.prepare(`UPDATE requests SET progress_lease=?,progress_until=? WHERE id=? AND progress_until<? AND progress_next_at<=? AND progress_attempts<? AND progress_phase NOT IN ('deleted','disabled')`)
+      .bind(lease, now + RECOVERY_LEASE_MS, id, now, now, MAX_RECOVERY_ATTEMPTS).run();
+    return result.meta.changes === 1 ? lease : null;
+  }
+  async progressCreating(id: string, lease: string): Promise<void> {
+    const result = await this.db.prepare(`UPDATE requests SET progress_phase='creating' WHERE id=? AND progress_lease=? AND progress_until>? AND progress_comment_id IS NULL AND progress_phase='pending'`)
+      .bind(id, lease, Date.now()).run(); requireCondition(result.meta.changes === 1, 'progress_creation_lease_lost', 409);
+  }
+  async progressWriteAllowed(id: string, lease: string): Promise<void> {
+    const row = await this.db.prepare('SELECT 1 FROM requests WHERE id=? AND progress_lease=? AND progress_until>?').bind(id, lease, Date.now()).first();
+    requireCondition(row, 'progress_update_lease_lost', 409);
+  }
+  async progressSaved(id: string, lease: string, commentId: number, hash: string, stage: string, keepFailures = false): Promise<void> {
+    const result = await this.db.prepare(`UPDATE requests SET progress_comment_id=?,progress_phase='ready',progress_hash=?,progress_reported_stage=?,progress_attempts=CASE WHEN ? THEN progress_attempts ELSE 0 END,progress_until=0,progress_next_at=? WHERE id=? AND progress_lease=? AND progress_until>?`)
+      .bind(commentId, hash, stage, keepFailures ? 1 : 0, Date.now() + 15_000, id, lease, Date.now()).run(); requireCondition(result.meta.changes === 1, 'progress_update_lease_lost', 409);
+  }
+  async progressDeferred(id: string, lease: string, options: { deleted?: boolean; definitive?: boolean; failed?: boolean } = {}): Promise<void> {
+    await this.db.prepare(`UPDATE requests SET progress_phase=CASE WHEN ? THEN 'deleted' WHEN ? AND progress_comment_id IS NULL THEN 'pending' ELSE progress_phase END,
+      progress_until=0,progress_attempts=progress_attempts+?,progress_next_at=? WHERE id=? AND progress_lease=?`)
+      .bind(options.deleted ? 1 : 0, options.definitive ? 1 : 0, options.failed ? 1 : 0, Date.now() + (options.failed ? 60_000 : 15_000), id, lease).run();
+  }
+  async dueProgress(): Promise<string | null> {
+    const row = await this.db.prepare(`SELECT id FROM requests WHERE progress_until<? AND progress_next_at<=? AND progress_attempts<? AND progress_phase NOT IN ('deleted','disabled')
+      AND created_at>? AND NOT (state IN ('published','failed') AND progress_phase='ready' AND progress_reported_stage=CASE WHEN state='failed' OR failure_code IS NOT NULL THEN 'failed' ELSE 'completed' END
+        AND (COALESCE(workflow_status,'')='completed' OR (run_id IS NULL AND created_at<?)))
+      ORDER BY progress_next_at,created_at LIMIT 1`).bind(Date.now(), Date.now(), MAX_RECOVERY_ATTEMPTS, Date.now() - 7 * 86_400_000, Date.now() - REQUEST_LIFETIME_MS).first<{ id: string }>();
+    return row?.id ?? null;
+  }
   async cleanup(): Promise<void> {
     await this.db.batch([
-      this.db.prepare(`UPDATE sessions SET lease_request=NULL,lease_until=0 WHERE lease_request IS NOT NULL AND (lease_until<? OR EXISTS(SELECT 1 FROM requests WHERE requests.id=sessions.lease_request AND requests.state IN ('published','failed')))`)
-        .bind(Date.now()),
       this.db.prepare(`UPDATE deliveries SET phase='failed',lease_until=0 WHERE phase='processing' AND lease_until<? AND attempts>=?`).bind(Date.now(), MAX_RECOVERY_ATTEMPTS),
       this.db.prepare(`UPDATE requests SET state='failed',publish_phase='failed' WHERE state='publishing' AND publish_until<? AND publish_attempts>=?`).bind(Date.now(), MAX_RECOVERY_ATTEMPTS),
-      this.db.prepare(`UPDATE requests SET state='failed',publish_phase='failed' WHERE state IN ('created','dispatched','running','reviewed','publishing') AND created_at<? AND merge_phase NOT IN ('queued','arming','cancelling')`).bind(Date.now() - REQUEST_LIFETIME_MS),
+      this.db.prepare(`UPDATE requests SET state='failed',publish_phase='failed',failure_code=COALESCE(failure_code,'request_expired') WHERE state IN ('created','dispatched','running','reviewed','publishing') AND created_at<? AND merge_phase NOT IN ('queued','arming','cancelling')`).bind(Date.now() - REQUEST_LIFETIME_MS),
+      this.db.prepare(`UPDATE sessions SET lease_request=NULL,lease_until=0 WHERE lease_request IS NOT NULL AND (lease_until<? OR EXISTS(SELECT 1 FROM requests WHERE requests.id=sessions.lease_request AND requests.state IN ('published','failed')))`)
+        .bind(Date.now()),
       this.db.prepare('DELETE FROM deliveries WHERE created_at<?').bind(Date.now() - 7 * 86_400_000),
       this.db.prepare("DELETE FROM requests WHERE created_at<? AND merge_phase NOT IN ('queued','arming','cancelling')").bind(Date.now() - 7 * 86_400_000), this.db.prepare('DELETE FROM legacy_sessions')]);
   }

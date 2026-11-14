@@ -7,7 +7,8 @@ export function githubFixture() {
     reviewDecision: 'APPROVED', autoMergeAllowed: true, reviews: [] as Record<string, unknown>[], installationId: 1, suspended: false, merged: false,
     ci: 'SUCCESS', guarded: false, requiredHumans: 1, rules: [] as Record<string, unknown>[], autoMergeOwner: null as string | null,
     humans: [{ id: 80, state: 'APPROVED', commit_id: HEAD, user: { id: 6, login: 'bob', type: 'User' } }] as Record<string, unknown>[],
-    checks: [] as Record<string, unknown>[], contextTruncated: false };
+    checks: [] as Record<string, unknown>[], contextTruncated: false, comments: [] as Record<string, unknown>[], runStatus: 'in_progress', runConclusion: null as string | null,
+    runActor: { id: 42, type: 'Bot', login: 'codexbot[bot]' } };
   const calls: { method: string; path: string; body: Record<string, unknown> }[] = [];
   const fetcher: typeof fetch = async (input, init) => {
     const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
@@ -25,7 +26,18 @@ export function githubFixture() {
     if (path === '/repos/owner/repo/contents/.codexbot.yml') return ok({ type: 'file', size: 1000, content: Buffer.from(stringify(config)).toString('base64') });
     if (path.includes('/collaborators/') && path.endsWith('/permission')) { const login = decodeURIComponent(path.split('/').at(-2)!); return ok({ permission: state.permission, user: { id: login === 'alice' ? state.userId : 6, login, type: 'User' } }); }
     if (path === '/users/alice' || path === '/user') return ok({ id: state.userId, login: 'alice', type: 'User' });
-    if (path === '/repos/owner/repo/pulls/4') return ok({ number: 4, head: { sha: state.head }, base: { sha: state.base, ref: 'main', repo }, user: { id: state.author === 'alice' ? 5 : 7, login: state.author }, state: state.merged ? 'closed' : 'open', merged: state.merged, draft: false, changed_files: 1 });
+    if (path === '/repos/owner/repo/pulls/4') return ok({ number: 4, head: { sha: state.head }, base: { sha: state.base, ref: 'main', repo }, user: { id: state.author === 'alice' ? 5 : 7, login: state.author }, state: state.merged ? 'closed' : 'open', merged: state.merged, draft: false, changed_files: 1, commits: 1 });
+    if (path === '/repos/owner/repo/issues/4/comments') {
+      if (method === 'GET') return ok(state.comments);
+      const comment = { ...body, id: 1000 + state.comments.length, user: { type: 'Bot', login: 'codexbot[bot]' }, performed_via_github_app: { id: 42 }, issue_url: 'https://api.github.com/repos/owner/repo/issues/4' };
+      state.comments.push(comment); return ok(comment, 201);
+    }
+    if (/\/repos\/owner\/repo\/issues\/comments\/\d+$/.test(path)) {
+      const comment = state.comments.find(x => String(x.id) === path.split('/').at(-1));
+      if (!comment) return ok({ message: 'Not Found' }, 404);
+      if (method === 'PATCH') Object.assign(comment, body);
+      return ok(comment);
+    }
     if (path === '/repos/owner/repo/pulls/4/files') return ok(files);
     if (path === '/repos/owner/repo/pulls/4/reviews') {
       if (method === 'GET') return ok([...state.humans, ...state.reviews]);
@@ -47,7 +59,7 @@ export function githubFixture() {
     }
     if (path === '/repos/owner/repo/actions/workflows/codexbot.yml/dispatches') return new Response(null, { status: 204 });
     const lastDispatch = calls.filter(x => x.path.endsWith('/dispatches')).at(-1)?.body.inputs as Record<string, string> | undefined;
-    const run = { id: 123, event: 'workflow_dispatch', head_sha: WORKFLOW, path: '.github/workflows/codexbot.yml', repository: repo, run_attempt: 1, actor: { type: 'Bot', login: 'codexbot[bot]' }, display_title: `CodexBot ${lastDispatch?.request_id} ${lastDispatch?.dispatch_attempt}` };
+    const run = { id: 123, status: state.runStatus, conclusion: state.runConclusion, event: 'workflow_dispatch', head_sha: WORKFLOW, path: '.github/workflows/codexbot.yml', repository: repo, run_attempt: 1, actor: state.runActor, display_title: `CodexBot ${lastDispatch?.request_id} ${lastDispatch?.dispatch_attempt}` };
     if (path === '/repos/owner/repo/actions/runs/123') return ok(run);
     if (path === '/repos/owner/repo/actions/workflows/codexbot.yml/runs') return ok({ workflow_runs: lastDispatch ? [run] : [] });
     if (path.endsWith('/check-runs') && method === 'GET') return ok({ total_count: state.checks.length, check_runs: state.checks });
