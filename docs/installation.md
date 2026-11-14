@@ -36,14 +36,31 @@ concurrency:
   group: codexbot-credentials
   cancel-in-progress: false
 jobs:
+  credential-scope:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 1
+    permissions: {}
+    steps:
+      - name: Reject credentials outside protected Environments
+        shell: bash
+        env:
+          CODEXBOT_SHARED_CREDENTIAL_PRESENT: ${{ secrets.CODEXBOT_VAULT_KEY != '' || secrets.CODEXBOT_API_KEY != '' }}
+        run: |
+          node --input-type=module <<'JS'
+          if (process.env.CODEXBOT_SHARED_CREDENTIAL_PRESENT !== 'false') {
+            console.error(JSON.stringify({event: 'review_failed', stage: 'environment', code: 'non_environment_credentials_forbidden'}));
+            process.exitCode = 1;
+          }
+          JS
   review:
+    needs: [credential-scope]
     permissions:
       contents: read
       id-token: write
     uses: YOUR-ORG/codexbot/.github/workflows/review.yml@FULL_COMMIT_SHA
     secrets:
-      CODEXBOT_VAULT_KEY: ''
-      CODEXBOT_API_KEY: ''
+      CODEXBOT_VAULT_KEY: ${{ secrets.CODEXBOT_VAULT_KEY }}
+      CODEXBOT_API_KEY: ${{ secrets.CODEXBOT_API_KEY }}
     with:
       request_id: ${{ inputs.request_id }}
       credential_owner: ${{ inputs.credential_owner }}
@@ -54,7 +71,7 @@ jobs:
 
 Use the exact filename .github/workflows/codexbot.yml and the backend's trusted immutable source pin. Do not add secrets: inherit, fork-head checkout, repository hooks or PR-controlled commands. The reusable workflow resolves its own source from GitHub's TLS-delivered workload identity; the backend independently verifies the signed claims/run before releasing anything.
 
-The two explicit empty secret grants are required: the called job resolves its own installation/actor Environment. They do not copy a repository/organization secret into the job. Do not replace them with a shared key or blanket inheritance. The reusable workflow declares the two optional secret names; exactly one owning Environment credential must be present. The credential-only diagnostic checks availability and a read-only administrator workload, without building an image, acquiring a session or running Codex. See [coordinated upgrades](review-rollout.md).
+Use the two named secret references, not literal empty grants. The `credential-scope` job must have no Environment and must succeed before the reusable workflow starts. It passes only a boolean to its process and rejects nonempty repository/organization credentials under either name, preventing fallback to shared keys. Do not remove this guard, add `always()` to its dependent job or use blanket inheritance. Exactly one credential must exist in the owning protected Environment. The credential-only diagnostic checks availability and a read-only administrator workload, without building an image, acquiring a session or running Codex. See [credential semantics and existing-caller migration](review-rollout.md#credential-diagnosis).
 
 ## Credentials
 

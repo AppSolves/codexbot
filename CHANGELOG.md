@@ -2,6 +2,8 @@
 
 ## Unreleased — security remediation pass
 
+- Correct Environment secret forwarding: generate named references after a required environment-free caller guard rejects repository/organization credentials. Empty literals did not enable Environment lookup; named references alone would allow fallback. Existing callers must update through a PR; reusable/Worker pins and credentials remain unchanged. See docs/review-rollout.md.
+
 - Explicitly forward only named Environment credential grants; add a credential-only availability diagnostic, safe runner/broker/OIDC failure codes and failed-job publication safeguards.
 - Add migration 0003 with recoverable, App-owned progress comments, verified run status, failure metadata and bounded operator reconciliation. Existing sessions remain valid.
 - Add opt-in source-scoped Buildx caching and a credential-free cache benchmark; execute review images by content ID. Keep cache off until measurements justify its cost.

@@ -1,6 +1,6 @@
 # Authentication and credential ownership
 
-Reusable callers must explicitly grant the two optional secret names with empty values; the called installation/actor Environment supplies the actual credential. No repository-key fallback or blanket inheritance is supported. [Credential diagnostics and rollout](review-rollout.md) include a no-inference availability check. Migration 0003 does not change encryption/session formats or require reconnecting.
+Reusable callers must use explicit named secret references after the environment-free `credential-scope` guard rejects nonempty repository/organization credentials under either name. The called installation/actor Environment supplies the actual credential. Literal empty grants do not enable Environment secret resolution. Named references alone would permit a global-secret fallback if an Environment secret were missing; keep the guard and its required dependency. [Credential diagnostics and rollout](review-rollout.md) explain the GitHub contract and no-inference check. No reusable-workflow/Worker pin or session format changes are needed for this caller-only correction.
 
 ## Official ChatGPT OAuth
 

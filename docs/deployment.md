@@ -1,6 +1,6 @@
 # Deployment checklist
 
-For existing deployments, follow [the coordinated immutable-pin upgrade](review-rollout.md) before deploying this revision. Apply additive migration 0003, update the caller's named Environment secret grants, and set its workflow pin and Worker TRUSTED_WORKFLOW to the same actual merged commit. Keep merge disabled. Report validation before the production change; a temporary mismatch fails closed.
+For Worker/reusable-workflow upgrades, follow [the coordinated immutable-pin upgrade](review-rollout.md), apply required migrations and set the caller pin and Worker TRUSTED_WORKFLOW to the same actual merged commit. The caller-only Environment-secret correction uses named references plus a scope guard; it keeps the existing `4ed668864cac0682e09ec49a2515a6e1893a2780` pin and needs no Worker deployment or migration. Keep merge disabled. Report validation before any production change; a temporary pin mismatch fails closed.
 
 This document is operator instructions, not evidence of an existing hosted deployment. Do not register, deploy, publish a release or use paid inference without your own authorization.
 
