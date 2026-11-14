@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { requireCondition } from '../core/errors.js';
 import type { InferenceLimits } from './proxy.js';
-import { ExecutionDiagnostics, ExecutionError, executionError } from '../core/execution.js';
+import { ExecutionDiagnostics, ExecutionError, executionError, executionFailure } from '../core/execution.js';
 
 export async function docker(args: string[], maxBytes = 100_000, diagnostics = new ExecutionDiagnostics()): Promise<string> {
   const child = spawn('docker', args, { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -15,7 +15,10 @@ export async function docker(args: string[], maxBytes = 100_000, diagnostics = n
     child.on('error', () => { clearTimeout(timeout); reject(new ExecutionError({ component: 'docker', code: 'docker_unavailable' })); });
     child.on('close', (code, signal) => {
       clearTimeout(timeout);
-      if (code !== 0 || size > maxBytes || timedOut) reject(new ExecutionError((!timedOut && size <= maxBytes ? diagnostics.last : null) ?? { component: 'docker',
+      // The unprivileged reviewer cannot attest to provider HTTP; only separate proxy logs can.
+      const engine = diagnostics.last && ['engine','codex_process','codex_rpc','model','turn'].includes(diagnostics.last.component)
+        ? executionFailure({ ...diagnostics.last, upstream_status: null, provider_code: null, provider_param: null }) : null;
+      if (code !== 0 || size > maxBytes || timedOut) reject(new ExecutionError((!timedOut && size <= maxBytes ? engine : null) ?? { component: 'docker',
         code: timedOut ? 'container_timeout' : size > maxBytes ? 'container_output_limit' : code !== null && [125,126,127].includes(code) ? 'container_start_failed' : 'container_exit_failed',
         ...(code !== null ? { exit_code: code } : {}), ...(signal ? { signal } : {}) }));
       else resolve(Buffer.concat(chunks).toString('utf8'));

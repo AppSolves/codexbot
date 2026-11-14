@@ -41,19 +41,20 @@ await test('execution projection discards arbitrary fields/text and never labels
   assert.ok(!JSON.stringify(parser.last).includes(sensitive));
 });
 await test('Docker diagnostics distinguish startup, exit, output bounds, and sanitized engine failure after stderr drains', async () => {
-  for (const [exit, code] of [[125, 'container_start_failed'], [126, 'container_start_failed'], [127, 'container_start_failed'], [137, 'container_exit_failed'], [0, 'container_output_limit'], [1, 'codex_turn_failed']] as const) {
+  for (const [exit, code] of [[125, 'container_start_failed'], [126, 'container_start_failed'], [127, 'container_start_failed'], [137, 'container_exit_failed'], [0, 'container_output_limit'], [1, 'codex_turn_failed'], [2, 'container_exit_failed']] as const) {
     const spawn = mock.method(childProcess, 'spawn', () => {
       const process = child();
       queueMicrotask(() => {
         process.stderr.write(sensitive + '\n');
         process.emit('exit', exit, null);
-        if (exit === 1) process.stderr.write(executionEnvelope({ component: 'turn', code }) + '\n');
+        if (exit === 1) process.stderr.write(executionEnvelope({ component: 'turn', code, upstream_status: 401, provider_code: 'invalid_api_key' }) + '\n');
+        if (exit === 2) process.stderr.write(executionEnvelope({ component: 'provider', code: 'provider_http_failed', upstream_status: 401 }) + '\n');
         if (exit === 0) process.stdout.write('x'.repeat(101));
         process.stdout.end(); process.stderr.end(); process.emit('close', exit, null);
       });
       return process;
     }); syncBuiltinESMExports();
-    try { await assert.rejects(docker(['run'], 100), error => { assert.ok(error instanceof ExecutionError); assert.equal(error.detail.code, code); assert.ok(!JSON.stringify(diagnostic(error, 'analyzing')).includes(sensitive)); return true; }); }
+    try { await assert.rejects(docker(['run'], 100), error => { assert.ok(error instanceof ExecutionError); assert.equal(error.detail.code, code); assert.equal(error.detail.upstream_status, undefined); assert.equal(error.detail.provider_code, undefined); assert.ok(!JSON.stringify(diagnostic(error, 'analyzing')).includes(sensitive)); return true; }); }
     finally { spawn.mock.restore(); syncBuiltinESMExports(); }
   }
 });
