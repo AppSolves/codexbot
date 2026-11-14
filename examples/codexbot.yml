@@ -1,0 +1,34 @@
+version: 1
+bot:
+  trigger: "@codexbot"
+  aliases: [] # Text commands; an alias can notify an unrelated GitHub account.
+authorization:
+  whitelist: "" # Add authorized GitHub logins. Each uses their own credential.
+  blacklist: "*" # Default deny fallback. Other explicit exclusions win.
+review:
+  enabled: true
+  auto_review: false
+  auto_approve: true # Set false for initial advisory acceptance.
+  request_changes: true
+  model: null
+  effort: null
+  blocking_confidence: 0.9
+  advisory_confidence: 0.7
+merge:
+  enabled: false
+  method: squash
+  minimum_human_approvals: 1
+  guard_check: "CodexBot reviewed commit"
+  authorization:
+    whitelist: ""
+    blacklist: "*"
+credentials:
+  mode: chatgpt # Or api-key. No automatic paid fallback.
+quotas:
+  user_per_day: 10
+  repository_per_day: 40
+  installation_per_day: 200
+  concurrent_repository: 1
+  concurrent_installation: 4
+  cooldown_seconds: 60
+  reruns_per_day: 2

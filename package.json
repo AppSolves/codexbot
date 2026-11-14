@@ -1,0 +1,49 @@
+{
+  "name": "codexbot",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Self-hostable GitHub App for isolated Codex pull request reviews",
+  "license": "Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "prebuild": "npm run worker:types",
+    "pretypecheck": "npm run worker:types",
+    "build": "node node_modules/typescript/bin/tsc -p tsconfig.build.json",
+    "typecheck": "node node_modules/typescript/bin/tsc --noEmit",
+    "lint": "node node_modules/eslint/bin/eslint.js .",
+    "test": "node --import tsx --test tests/*.test.ts",
+    "test:sandbox": "node tests/sandbox-check.mjs",
+    "test:workers": "node tests/workers-runtime.mjs",
+    "test:clean": "node tests/clean-checkout.mjs",
+    "acceptance:provider": "node scripts/provider-acceptance.mjs",
+    "acceptance:github": "node scripts/github-acceptance.mjs",
+    "ops": "node scripts/operations.mjs",
+    "check": "npm run typecheck && npm run lint && npm test && npm run build",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "worker:types": "node node_modules/wrangler/bin/wrangler.js types --strict-vars=false --include-runtime=false",
+    "cli": "node --import tsx src/cli.ts"
+  },
+  "dependencies": {
+    "@openai/codex": "0.169.0",
+    "@octokit/rest": "22.0.1",
+    "ajv": "8.20.0",
+    "jose": "6.2.17",
+    "re2js": "2.10.0",
+    "yaml": "2.9.1"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20261113.1",
+    "@eslint/js": "10.0.1",
+    "@types/node": "26.6.6",
+    "eslint": "10.15.0",
+    "tsx": "4.23.15",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.72.2",
+    "wrangler": "4.162.0"
+  },
+  "overrides": { "minimatch": "11.0.8" }
+}

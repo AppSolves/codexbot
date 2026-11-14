@@ -1,0 +1,46 @@
+# Operations and migration runbook
+
+## Upgrade from the initial schema/workflow
+
+1. Pause webhook dispatch. Cancel/drain old Actions runs and inspect/cancel any existing App-owned native auto-merge in GitHub. Preserve a private D1 backup; it contains ciphertext and private review/prompt metadata.
+2. Apply migrations in filename order with pinned Wrangler: `node node_modules/wrangler/bin/wrangler.js d1 migrations apply codexbot --remote`. D1 applies each migration transactionally and records it once. Never re-execute individual ALTER statements manually. Fresh local/runtime tests apply both production migrations.
+3. Migration 0002 adds receipt/outbox and publication state, quotas and a session table keyed by installation/repository/actor. It invalidates legacy in-flight requests. The old encrypted session table is quarantined and purged at the first cleanup. **Every ChatGPT user must reconnect**; the Worker cannot safely re-encrypt old AAD without their key. Reuse the local issued client/host profile, not a shared token. Revoke superseded sessions in ChatGPT settings if needed. Existing API-key secrets remain in their old GitHub Environments but are never reused automatically. All users, including API-key users, must explicitly provision the new installation-scoped Environment; then remove/revoke obsolete secrets.
+4. Deploy the reviewed new Worker and select a real immutable source commit. Update each caller workflow through a reviewed PR: add required string inputs `dispatch_attempt` and `installation_id`, pass installation_id to the reusable workflow, and run-name `CodexBot ${{ inputs.request_id }} ${{ inputs.dispatch_attempt }}`. Keep the new reusable workflow pinned and match backend TRUSTED_WORKFLOW. Old dispatch inputs/workflow names intentionally cannot acquire credentials under the new attempt-binding protocol.
+5. Keep CHATGPT_DEPLOYMENT_AUTHORIZED and MERGE_DEPLOYMENT_AUTHORIZED false until their separate external gates pass. Reconnect using the CLI's capability/installation preflight. Private Free repositories cannot store credentials through this topology. Protect the default branch first; preserve Environment reviewers and set a default-branch-only custom deployment policy.
+6. Complete advisory acceptance in a disposable repository before re-enabling normal approvals. Automated merge now requires an independently approved human review and protected branch. For pending CI, configure the App-bound required guard and explicitly consent to Checks write/Administration read. Do not grant bypass rights.
+
+## Recovery state machines
+
+Receipts: pending → processing (lease) → done, retryable or failed. D1 receipt identity and signed-body digest are independent unique constraints. Acknowledging a duplicate does not declare dispatch complete; cron continues outstanding work. The signed payload is bounded to 80 KB and deleted on successful processing. A larger webhook is rejected before receipt insertion. Requests and receipts are retained seven days; active review requests expire after one hour.
+
+Dispatch persists an attempt UUID before its POST. A lost response is reconciled from the exact App-authored run name, SHA, repository and event, not ordering. Retry delay is bounded exponential backoff plus cryptographic jitter (under 305 seconds). At most five automatic attempts occur. Negative run listings are allowed to converge for two minutes before a bounded resend of the same attempt. If two workflows were accepted, the request's run-ID CAS authorizes only one; the other cannot get a read token or encrypted session. There is no claim of exactly-once workflow creation.
+
+Publishing: reviewed → publishing (two-minute lease) → published, retryable or terminal failed. Pending GitHub reviews provide a stable reconciliation resource, including lost creation/submission responses. Review submission and merge disposition have separate checkpoints. The cron resumes abandoned publication after its lease/backoff. Five failed attempts exhaust automatic recovery. Identical result resubmission is safe; replacement output is denied. Same-run prepare has one bounded retry for a lost response; other runs/Actions review reruns cannot borrow it.
+
+Queued merge intent is reconciled until its one-hour deadline. The App's required guard remains pending until live CI, head/base, identity, connection, policy and human approvals are checked again. Native intent is disabled before guard release; the final expected-head merge repeats checks. Known failed checks, revoked credentials/authorization, stale commits, blocking findings and expiry invalidate owned intent. Expired queued records are preserved until cancellation is reconciled. A revoked installation can prevent API cleanup; the pending guard still prevents merge and the operator must clear the stale intent in GitHub. Merge queues are manual-only.
+
+Cron runs every minute and handles at most one dispatch **or** publication/merge recovery operation plus indexed cleanup. This is deliberately modest shared-backend throughput; measure real CPU/subrequest/D1 use before claiming a Free-plan production workload. Configure Paid or reduce tenant quotas when required. Session ciphertext remains until disconnect/uninstall; backups have independent retention.
+
+## Repository-admin recovery commands
+
+Build first and authenticate gh with narrowly scoped repository-admin access. The API checks live admin status, active installation and repository identity; it accepts no browser cookies/CORS. It returns IDs/phases/counts, never ciphertext, results, prompts or tokens.
+
+```sh
+npm run build
+npm run ops -- --repository OWNER/REPO --backend https://YOUR-WORKER
+npm run ops -- --repository OWNER/REPO --backend https://YOUR-WORKER --retry DELIVERY_OR_REQUEST_ID
+npm run ops -- --repository OWNER/REPO --backend https://YOUR-WORKER --cancel REQUEST_ID
+```
+
+An explicit operator retry is permitted twice per item and logged with numeric actor/repository/installation IDs. It does not bypass authorization, SHA validation, publication markers, age or workload identity. Old/expired requests require a new comment; `--rerun` is bounded separately. Never manually reset a run binding, rotate a session version backwards, force-push a setup branch or delete a published review to hide an ambiguous effect.
+
+Inspect GitHub's actual App-owned pending/submitted review and commit, workflow run and auto-merge owner when diagnosing failures. Do not dump raw provider errors, source, envelopes, token bodies or Authorization headers. OAuth refresh with uncertain provider/persistence outcome requires reconnect; reusing an old refresh token is unsafe. Disconnect/revoke in ChatGPT settings if remote revocation cannot be confirmed.
+
+## Incident controls
+
+Pause dispatch and disable merge configuration/backend gate, cancel GitHub-owned auto-merge and hold the required guard, revoke affected credentials, rotate App/webhook secrets if compromised, and preserve privacy-safe metadata privately. Merely disabling the Worker does not cancel an already-enabled native auto-merge; clear it in GitHub. Remove sensitive logs/artifacts and investigate prior exposure without assuming deletion revokes credentials.
+
+Cancellation atomically blocks new publication claims before remote cleanup. It refuses an active publication lease, is installation/repository scoped, discards only the matching App-owned PENDING review, cancels owned merge intent and releases the session. Submitted reviews remain audit evidence. A cancelled/cancelling request cannot be revived through retry; correct cleanup failures by repeating cancellation, then use a new authorized comment if needed.
+
+
+A newer authorized same-PR rereview supersedes an older queued merge at the last durable write authorization. Expired-intent cleanup uses its own bounded lease/backoff; an unavailable old installation cannot monopolize recovery forever. After five failed cancellation attempts, the guard stays held and an administrator must clear the intent in GitHub or repeat explicit cancellation with restored access.

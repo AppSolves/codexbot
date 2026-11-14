@@ -1,0 +1,92 @@
+name: CodexBot isolated review
+on:
+  workflow_call:
+    inputs:
+      request_id: { required: true, type: string }
+      credential_owner: { required: true, type: string }
+      installation_id: { required: true, type: string }
+      backend: { required: true, type: string }
+permissions: {}
+jobs:
+  source:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    permissions:
+      id-token: write
+    outputs:
+      repository: ${{ steps.identity.outputs.repository }}
+      ref: ${{ steps.identity.outputs.ref }}
+    steps:
+      - id: identity
+        name: Resolve this immutable reusable workflow
+        shell: bash
+        run: |
+          node --input-type=module <<'JS'
+          import { appendFileSync } from 'node:fs';
+          const url = new URL(process.env.ACTIONS_ID_TOKEN_REQUEST_URL);
+          url.searchParams.set('audience', 'codexbot-source');
+          const response = await fetch(url, {headers: {Authorization: `Bearer ${process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN}`}});
+          if (!response.ok) throw new Error('OIDC unavailable');
+          const {value} = await response.json();
+          // Token obtained directly from GitHub over TLS, never from workflow inputs.
+          const claims = JSON.parse(Buffer.from(value.split('.')[1], 'base64url'));
+          const match = /^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/.github\/workflows\/review.yml@([a-f0-9]{40})$/.exec(claims.job_workflow_ref);
+          if (!match) throw new Error('Reusable workflow must be pinned to a full commit SHA');
+          appendFileSync(process.env.GITHUB_OUTPUT, `repository=${match[1]}\nref=${match[2]}\n`);
+          JS
+  review:
+    needs: source
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    environment: codexbot-${{ inputs.installation_id }}-${{ inputs.credential_owner }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: ${{ needs.source.outputs.repository }}
+          ref: ${{ needs.source.outputs.ref }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24.22.3'
+      - run: npm ci --ignore-scripts
+      - run: npm run build
+      - name: Build trusted review image
+        run: docker build --tag codexbot-review:local .
+      - name: Review exact commit in isolated container
+        run: node dist/src/runner/main.js review
+        env:
+          CODEXBOT_BACKEND: ${{ inputs.backend }}
+          CODEXBOT_REQUEST_ID: ${{ inputs.request_id }}
+          CODEXBOT_CREDENTIAL_OWNER: ${{ inputs.credential_owner }}
+          CODEXBOT_INSTALLATION_ID: ${{ inputs.installation_id }}
+          CODEXBOT_IMAGE: codexbot-review:local
+          CODEXBOT_VAULT_KEY: ${{ secrets.CODEXBOT_VAULT_KEY }}
+          CODEXBOT_API_KEY: ${{ secrets.CODEXBOT_API_KEY }}
+  publish:
+    needs: [source, review]
+    if: ${{ needs.review.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    environment: codexbot-publish-${{ inputs.installation_id }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: ${{ needs.source.outputs.repository }}
+          ref: ${{ needs.source.outputs.ref }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24.22.3'
+      - run: npm ci --ignore-scripts
+      - run: npm run build
+      - name: Publish validated result through the App backend
+        run: node dist/src/runner/main.js publish
+        env:
+          CODEXBOT_BACKEND: ${{ inputs.backend }}
+          CODEXBOT_REQUEST_ID: ${{ inputs.request_id }}

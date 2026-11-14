@@ -1,0 +1,102 @@
+import type { Octokit } from '@octokit/rest';
+import { authorize } from '../core/policy.js';
+import { decision, publicText, validateReview, failedReview, completePatch, normalizeReview, findingDisposition } from '../core/review.js';
+import { sha256 } from '../core/crypto.js';
+import { requireCondition, AppError } from '../core/errors.js';
+import { splitRepo, permission, trustedConfig, verifyActor } from './github.js';
+import type { RequestSnapshot } from './store.js';
+import { controlMerge, invalidateMerge } from './merge.js';
+import type { MergeOptions } from './merge.js';
+import { REQUEST_LIFETIME_MS } from '../core/limits.js';
+
+export interface PublishOptions { merge?: MergeOptions; checkpoint?: (id: number, phase: 'pending' | 'submitted', merge: string) => Promise<void>; beforeWrite?: () => Promise<void> }
+export async function discardPendingReview(github: Octokit, snapshot: RequestSnapshot, appSlug: string): Promise<void> {
+  const repo = splitRepo(snapshot.repository), marker = `<!-- codexbot:${snapshot.id}:${snapshot.head} -->`;
+  let pages = 0;
+  const reviews = await github.paginate(github.rest.pulls.listReviews, { ...repo, pull_number: snapshot.pr, per_page: 100 }, response => {
+    requireCondition(++pages <= 3, 'pending_review_history_requires_manual_inspection'); return response.data;
+  });
+  for (const review of reviews.filter(x => x.state === 'PENDING' && x.commit_id === snapshot.head && x.user?.type === 'Bot' && x.user.login === `${appSlug}[bot]` && x.body?.includes(marker))) {
+    await github.rest.pulls.deletePendingReview({ ...repo, pull_number: snapshot.pr, review_id: review.id });
+  }
+}
+export async function publish(github: Octokit, snapshot: RequestSnapshot, output: unknown, contextComplete: boolean, appSlug: string, options: PublishOptions = {}): Promise<{ reviewId: number; event: string; merge: string }> {
+  const repo = splitRepo(snapshot.repository);
+  const { data: current } = await github.rest.pulls.get({ ...repo, pull_number: snapshot.pr });
+  requireCondition(current.head.sha === snapshot.head && current.base.sha === snapshot.base && (current.state === 'open' || (current.merged && snapshot.command.merge)) && !current.draft, 'stale_or_closed_pull_request', 409);
+  const { data: repository } = await github.rest.repos.get(repo);
+  requireCondition(repository.id === snapshot.repositoryId && repository.owner.id === snapshot.ownerId, 'repository_identity_changed', 403);
+  const { data: trustedBranch } = await github.rest.repos.getBranch({ ...repo, branch: repository.default_branch });
+  requireCondition(repository.default_branch === snapshot.defaultBranch && trustedBranch.commit.sha === snapshot.workflowSha, 'trusted_policy_or_workflow_revision_changed', 409);
+  const config = await trustedConfig(github, snapshot.repository, repository.default_branch);
+  await verifyActor(github, snapshot.actor, snapshot.actorId);
+  const livePermission = await permission(github, snapshot.repository, snapshot.actor);
+  requireCondition(config.review.enabled && authorize(snapshot.actor, livePermission, config.authorization), 'review_authorization_revoked', 403);
+  const files = await github.paginate(github.rest.pulls.listFiles, { ...repo, pull_number: snapshot.pr, per_page: 100 });
+  requireCondition(files.length === current.changed_files && files.length <= 200, 'diff_incomplete');
+  let review;
+  try { review = validateReview(normalizeReview(output, snapshot.head), snapshot.head, files); }
+  catch (error) { if (!(error instanceof AppError)) throw error; review = failedReview(snapshot.head); }
+  contextComplete = contextComplete && files.every(completePatch);
+  const computedEvent = decision(review, config, contextComplete);
+  const event = current.user?.login === `${appSlug}[bot]` ? 'COMMENT' : computedEvent;
+  const marker = `<!-- codexbot:${snapshot.id}:${snapshot.head} -->`;
+  const fingerprint = `<!-- codexbot-result:${await sha256(JSON.stringify({ review, event, contextComplete, mergeIntent: snapshot.command.merge ? snapshot.actor : null }))} -->`;
+  let historyPages = 0;
+  const reviews = await github.paginate(github.rest.pulls.listReviews, { ...repo, pull_number: snapshot.pr, per_page: 100 }, response => {
+    requireCondition(++historyPages <= 10, 'review_history_limit_requires_reconciliation');
+    return response.data;
+  });
+  // Only this App's review is evidence of publication. PR text cannot forge a receipt.
+  const expectedState = { APPROVE: 'APPROVED', REQUEST_CHANGES: 'CHANGES_REQUESTED', COMMENT: 'COMMENTED' }[event];
+  for (const stale of reviews.filter(x => x.state === 'PENDING' && x.commit_id !== snapshot.head && x.user?.type === 'Bot' && x.user.login === `${appSlug}[bot]` && /<!-- codexbot:[a-f0-9-]{36}:[a-f0-9]{40} -->/.test(x.body ?? ''))) {
+    await github.rest.pulls.deletePendingReview({ ...repo, pull_number: snapshot.pr, review_id: stale.id });
+  }
+  const assertPublicationAllowed = async () => {
+    requireCondition(Date.now() - snapshot.createdAt < REQUEST_LIFETIME_MS, 'request_expired', 410);
+    const { data: latest } = await github.rest.pulls.get({ ...repo, pull_number: snapshot.pr });
+    requireCondition(latest.head.sha === snapshot.head && latest.base.sha === snapshot.base && latest.state === 'open' && !latest.draft, 'head_changed_before_publish', 409);
+    const { data: branch } = await github.rest.repos.getBranch({ ...repo, branch: snapshot.defaultBranch });
+    requireCondition(branch.commit.sha === snapshot.workflowSha, 'trusted_policy_or_workflow_revision_changed', 409);
+    const liveConfig = await trustedConfig(github, snapshot.repository, branch.commit.sha);
+    await verifyActor(github, snapshot.actor, snapshot.actorId);
+    requireCondition(JSON.stringify(liveConfig) === JSON.stringify(config) && liveConfig.review.enabled && authorize(snapshot.actor, await permission(github, snapshot.repository, snapshot.actor), liveConfig.authorization), 'review_authorization_revoked', 403);
+  };
+  const existing = reviews.find(x => (x.body?.includes(marker) || x.body?.includes(fingerprint)) && [expectedState, 'PENDING'].includes(x.state) && x.user?.type === 'Bot' && x.user?.login === `${appSlug}[bot]` && x.commit_id === snapshot.head);
+  let reviewId: number;
+  if (existing) {
+    reviewId = existing.id;
+  } else {
+    requireCondition(!current.merged, 'merged_without_reconcilable_review', 409);
+    requireCondition(!reviews.some(x => x.body?.includes(marker) && x.user?.login === `${appSlug}[bot]` && x.state !== 'DISMISSED'), 'published_review_policy_changed', 409);
+    // Recheck immediately before the write; commit_id always pins this review even across a race.
+    await assertPublicationAllowed();
+    await options.beforeWrite?.();
+    const { data } = await github.rest.pulls.createReview({ ...repo, pull_number: snapshot.pr, commit_id: snapshot.head,
+      body: `${marker}\n${fingerprint}\nCodexBot review of \`${snapshot.head}\`\n\n${publicText(review.summary)}\n\nCompleteness: ${review.complete && contextComplete ? 'complete' : 'limited — automated approval disabled'}. Decision: ${event}.\n\nMerge intent: ${snapshot.command.merge ? `explicitly requested by ${publicText(snapshot.actor)}` : 'not requested'}.`,
+      comments: review.findings.map(f => ({ path: f.path, line: f.line, side: f.side, body: `**${f.severity.toUpperCase()}: ${publicText(f.title)}**\n\n${publicText(f.explanation)}\n\n${publicText(f.remediation)}\n\nConfidence: ${f.confidence}; policy: ${findingDisposition(f, config)}.` }))
+    });
+    reviewId = data.id;
+  }
+  await options.checkpoint?.(reviewId, existing?.state === expectedState ? 'submitted' : 'pending', 'pending');
+  if (existing?.state !== expectedState) {
+    // A pending review is a resumable resource. Lost submit responses reconcile to its final state.
+    await assertPublicationAllowed();
+    await options.beforeWrite?.();
+    await github.rest.pulls.submitReview({ ...repo, pull_number: snapshot.pr, review_id: reviewId, event });
+  }
+  await options.checkpoint?.(reviewId, 'submitted', 'pending');
+  if (current.merged) { await options.checkpoint?.(reviewId, 'submitted', 'merged'); return { reviewId, event, merge: 'merged' }; }
+  if (!snapshot.command.merge || event !== 'APPROVE') return { reviewId, event, merge: 'not_requested_or_not_approved' };
+  let merge: string;
+  try { merge = await controlMerge(github, snapshot, config, appSlug, options.merge ?? { enabled: false, appId: 0 }, async () => {
+    await options.checkpoint?.(reviewId, 'submitted', 'arming');
+    await options.beforeWrite?.();
+  }); }
+  catch (error) {
+    if (options.merge?.enabled) await invalidateMerge(github, snapshot, appSlug, options.merge.appId);
+    throw error;
+  }
+  await options.checkpoint?.(reviewId, 'submitted', merge);
+  return { reviewId, event, merge };
+}

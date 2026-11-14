@@ -1,0 +1,21 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "codexbot",
+  "main": "src/worker/index.ts",
+  "compatibility_date": "2026-11-13",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "send_metrics": false,
+  "secrets": { "required": ["GITHUB_PRIVATE_KEY", "GITHUB_WEBHOOK_SECRET"] },
+  "observability": { "enabled": true, "logs": { "enabled": true, "invocation_logs": false }, "traces": { "enabled": true, "head_sampling_rate": 0.01 } },
+  "vars": {
+    "PUBLIC_URL": "https://codexbot.example.com",
+    "GITHUB_APP_ID": "",
+    "GITHUB_APP_SLUG": "codexbot",
+    "TRUSTED_WORKFLOW": "",
+    "CHATGPT_DEPLOYMENT_AUTHORIZED": "false",
+    "MERGE_DEPLOYMENT_AUTHORIZED": "false"
+  },
+  "d1_databases": [{ "binding": "DB", "database_name": "codexbot", "database_id": "00000000-0000-0000-0000-000000000000", "migrations_dir": "migrations" }],
+  "triggers": { "crons": ["* * * * *"] }
+}

@@ -1,0 +1,6 @@
+{
+  "extends": "./tsconfig.json",
+  "include": ["src/**/*.ts", "worker-configuration.d.ts"],
+  "exclude": ["tests"],
+  "compilerOptions": { "sourceMap": false, "declaration": true }
+}

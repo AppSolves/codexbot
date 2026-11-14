@@ -1,0 +1,41 @@
+name: CI
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with: { persist-credentials: false }
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with: { node-version: '24.22.3' }
+      - name: Verify and run pinned actionlint
+        shell: bash
+        run: |
+          archive="$RUNNER_TEMP/actionlint.tar.gz"
+          curl --fail --location --max-time 60 --output "$archive" https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+          printf '%s  %s\n' '8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8' "$archive" | sha256sum --check --status
+          tar -xzf "$archive" -C "$RUNNER_TEMP" actionlint
+          "$RUNNER_TEMP/actionlint" -color
+      - run: npm ci --ignore-scripts
+      - name: Verify generated Env is reproducible from a clean source tree
+        run: npm run test:clean
+      - run: npm run check
+      - run: npm run test:workers
+      - run: docker build --tag codexbot-review:local .
+      - run: npm run test:sandbox
+      - name: Verify pinned Trivy and reject vulnerable runtime images
+        shell: bash
+        run: |
+          archive="$RUNNER_TEMP/trivy.tar.gz"
+          curl --fail --location --max-time 90 --output "$archive" https://github.com/aquasecurity/trivy/releases/download/v0.76.2/trivy_0.76.2_Linux-64bit.tar.gz
+          printf '%s  %s\n' 'bc0fc726e017b8927a62b2d3531d7a84ee01769daf5c99ed866dced54089fdbf' "$archive" | sha256sum --check --status
+          tar -xzf "$archive" -C "$RUNNER_TEMP" trivy
+          "$RUNNER_TEMP/trivy" image --image-src docker --scanners vuln --severity HIGH,CRITICAL --exit-code 1 --skip-java-db-update --skip-version-check --no-progress --offline-scan --timeout 2m --db-repository ghcr.io/aquasecurity/trivy-db:2 --format json --output "$RUNNER_TEMP/image-vulnerabilities.json" codexbot-review:local
+      - run: npm audit --audit-level=moderate
+      - run: node node_modules/wrangler/bin/wrangler.js deploy --dry-run --outdir .local/worker
+        env: { WRANGLER_SEND_METRICS: 'false' }

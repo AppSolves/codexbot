@@ -1,0 +1,10 @@
+{
+  "name": "CodexBot",
+  "url": "https://YOUR-WORKER.example",
+  "hook_attributes": { "url": "https://YOUR-WORKER.example/webhook", "active": true },
+  "redirect_url": "https://YOUR-WORKER.example/",
+  "setup_url": "https://YOUR-WORKER.example/",
+  "public": true,
+  "default_permissions": { "metadata": "read", "contents": "write", "pull_requests": "write", "actions": "write" },
+  "default_events": ["issue_comment", "pull_request"]
+}

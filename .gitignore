@@ -1,0 +1,15 @@
+node_modules/
+dist/
+.wrangler/
+.dev.vars
+.env
+.env.*
+!.env.example
+coverage/
+.local/
+*.pem
+auth.json
+*.session.json
+*.key
+*.tsbuildinfo
+worker-configuration.d.ts
