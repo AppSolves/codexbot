@@ -64,6 +64,7 @@ await test('upstream 2xx requires a real SSE body; only classified response meta
   const cases: { status: number; type: string | null; body: string | null; category: string; approvedCode?: boolean }[] = [
     { status: 200, type: 'text/event-stream', body: 'data: {"type":"response.completed"}\n\n', category: 'event-stream' },
     { status: 201, type: 'Text/Event-Stream; charset=utf-8', body: 'data: {"type":"response.completed"}\n\n', category: 'event-stream' },
+    { status: 200, type: null, body: 'event: response.created\ndata: {"type":"response.created"}\n\nevent: response.completed\ndata: {"type":"response.completed"}\n\n', category: 'missing' },
     { status: 200, type: 'application/json; charset=utf-8', body: json, category: 'json', approvedCode: true },
     { status: 202, type: 'application/problem+json', body: json, category: 'json', approvedCode: true },
     { status: 200, type: 'application/json', body: JSON.stringify({ status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: secret }] }] }), category: 'json' },
@@ -91,7 +92,7 @@ await test('upstream 2xx requires a real SSE body; only classified response meta
     server.listen(0, '127.0.0.1'); await once(server, 'listening'); const address = server.address(); assert.ok(address && typeof address !== 'string');
     try {
       const result = await fetch(`http://127.0.0.1:${address.port}/v1/responses`, { method: 'POST', body: JSON.stringify({ model: 'fixture', store: false, stream: true, input: [] }) });
-      const output = await result.text(), valid = input.category === 'event-stream' && input.body !== null;
+      const output = await result.text(), valid = (input.category === 'event-stream' || (input.category === 'missing' && input.body?.startsWith('event:'))) && input.body !== null;
       assert.equal(result.status, valid ? input.status : 403);
       if (valid) { assert.match(output, /response.completed/); assert.deepEqual(diagnostics, []); }
       else assert.deepEqual(diagnostics, [{ component: 'provider', code: 'provider_stream_content_type_invalid', upstream_status: input.status,
