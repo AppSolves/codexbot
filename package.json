@@ -22,8 +22,8 @@
     "acceptance:github": "node scripts/github-acceptance.mjs",
     "ops": "node scripts/operations.mjs",
     "check": "npm run typecheck && npm run lint && npm test && npm run build",
-    "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
+    "dev": "node node_modules/wrangler/bin/wrangler.js dev",
+    "deploy": "node node_modules/wrangler/bin/wrangler.js deploy",
     "worker:types": "node node_modules/wrangler/bin/wrangler.js types --strict-vars=false --include-runtime=false",
     "cli": "node --import tsx src/cli.ts"
   },
