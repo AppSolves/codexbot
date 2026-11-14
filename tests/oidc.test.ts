@@ -14,10 +14,10 @@ await test('OIDC cryptographically rejects forged signatures, expiry, issuer and
   const keys = await generateKeyPair('RS256'), wrong = await generateKeyPair('RS256');
   const jwt = await new SignJWT(claims).setProtectedHeader({ alg: 'RS256' }).setIssuer('https://token.actions.githubusercontent.com').setAudience('https://broker.invalid').setIssuedAt().setNotBefore('0s').setExpirationTime('5m').sign(keys.privateKey);
   assert.equal((await verifyWorkload(jwt, 'https://broker.invalid', expected, () => keys.publicKey)).runId, '123');
-  await assert.rejects(verifyWorkload(jwt, 'https://other.invalid', expected, () => keys.publicKey));
+  await assert.rejects(verifyWorkload(jwt, 'https://other.invalid', expected, () => keys.publicKey), { code: 'oidc_token_invalid', status: 401 });
   await assert.rejects(verifyWorkload(jwt, 'https://broker.invalid', expected, () => wrong.publicKey));
   const expired = await new SignJWT(claims).setProtectedHeader({ alg: 'RS256' }).setIssuer('https://token.actions.githubusercontent.com').setAudience('https://broker.invalid').setIssuedAt(1).setNotBefore(1).setExpirationTime(2).sign(keys.privateKey);
-  await assert.rejects(verifyWorkload(expired, 'https://broker.invalid', expected, () => keys.publicKey));
+  await assert.rejects(verifyWorkload(expired, 'https://broker.invalid', expected, () => keys.publicKey), { code: 'oidc_token_expired', status: 401 });
   const wrongIssuer = await new SignJWT(claims).setProtectedHeader({ alg: 'RS256' }).setIssuer('https://attacker.invalid').setAudience('https://broker.invalid').setIssuedAt().setNotBefore('0s').setExpirationTime('5m').sign(keys.privateKey);
   await assert.rejects(verifyWorkload(wrongIssuer, 'https://broker.invalid', expected, () => keys.publicKey));
 });

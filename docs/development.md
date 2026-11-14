@@ -1,5 +1,7 @@
 # Development and local validation
 
+For the current reliability changes, `node --import tsx --test tests/broker.test.ts tests/progress.test.ts tests/worker.test.ts tests/workflows.test.ts` runs the focused contracts. Full check also exercises them. [The rollout guide](review-rollout.md) describes provider-free credential and cache diagnostics; neither is a substitute for real inference acceptance.
+
 Use Node 24. Dependency, Codex, Wrangler, Action and container versions are pinned. npm ci --ignore-scripts installs the packaged official native Codex binary without executing lifecycle scripts. The lockfile records integrity; the minimatch override avoids the audited transitive advisory and is checked by lint/tests.
 
 ```sh

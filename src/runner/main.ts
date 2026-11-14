@@ -6,28 +6,37 @@ import type { RequestSnapshot } from '../worker/store.js';
 import type { Envelope } from '../core/crypto.js';
 import { unseal, seal, sessionBinding } from '../core/crypto.js';
 import { record, requireCondition } from '../core/errors.js';
+import { diagnostic, FAILURE_CODES, BROKER_CODES } from '../core/diagnostics.js';
 import { OAuth, validateSession } from '../auth/oauth.js';
-import { broker, backendUrl } from './broker.js';
+import { broker, backendUrl, checkWorkload } from './broker.js';
 import { collectContext } from './context.js';
 import { isolatedReview } from './docker.js';
 import { failedReview } from '../core/review.js';
 
 export async function reviewJob(): Promise<void> {
-  const backend = backendUrl(process.env.CODEXBOT_BACKEND ?? ''), id = process.env.CODEXBOT_REQUEST_ID ?? '';
-  const temporary = await mkdtemp(join(tmpdir(), 'codexbot-'));
+  const id = process.env.CODEXBOT_REQUEST_ID ?? '';
+  let backend = '', temporary: string | undefined;
   let snapshot: RequestSnapshot | null = null;
-  let submission: { output: unknown; context_complete: boolean } | null = null;
+  let submission: { output: unknown; context_complete: boolean; failure?: ReturnType<typeof diagnostic> } | null = null;
+  let stage = 'environment';
   try {
+    backend = backendUrl(process.env.CODEXBOT_BACKEND ?? '');
+    temporary = await mkdtemp(join(tmpdir(), 'codexbot-'));
+    requireCondition(process.env.CODEXBOT_VAULT_KEY || process.env.CODEXBOT_API_KEY, 'missing_environment_credentials');
+    requireCondition(!(process.env.CODEXBOT_VAULT_KEY && process.env.CODEXBOT_API_KEY), 'ambiguous_environment_credentials');
+    stage = 'prepare';
     const prepared = record(await broker(backend, id, 'prepare'));
     snapshot = prepared.snapshot as RequestSnapshot;
     requireCondition(snapshot.id === id && String(snapshot.actorId) === process.env.CODEXBOT_CREDENTIAL_OWNER && String(snapshot.installationId) === process.env.CODEXBOT_INSTALLATION_ID, 'credential_owner_mismatch');
     requireCondition(typeof prepared.read_token === 'string', 'missing_read_token');
     const github = client(prepared.read_token);
     const directory = join(temporary, 'context');
+    stage = 'context';
     let manifest;
     try { manifest = await collectContext(github, snapshot, directory); }
     finally { await github.rest.apps.revokeInstallationAccessToken(); }
     let credential: string;
+    stage = 'credentials';
     if (snapshot.config.credentials.mode === 'api-key') {
       requireCondition(process.env.CODEXBOT_API_KEY && !process.env.CODEXBOT_VAULT_KEY, 'api_key_missing_or_ambiguous_credentials');
       credential = process.env.CODEXBOT_API_KEY;
@@ -51,27 +60,46 @@ export async function reviewJob(): Promise<void> {
     // Context is private source, readable only by the dedicated container uid via a read-only bind.
     const image = process.env.CODEXBOT_IMAGE; requireCondition(image, 'review_image_missing');
     const sockets = join(temporary, 'sockets'); await mkdir(sockets, { mode: 0o700 });
+    stage = 'analyzing';
+    await broker(backend, id, 'stage', { stage: 'analyzing' });
     const output = await isolatedReview(image, directory, credentialPath, sockets);
     submission = { output, context_complete: manifest.complete };
+    stage = 'result';
     await broker(backend, id, 'result', submission);
-  } catch {
+  } catch (error) {
+    const report = diagnostic(error, stage); console.error(JSON.stringify(report));
     // Always leave a deterministic non-approving result when preflight succeeded.
-    if (snapshot) await broker(backend, id, 'result', submission ?? { context_complete: false, output: failedReview(snapshot.head) });
-    else throw new Error('review_preflight_failed');
+    const failure = { ...report, code: report.broker_code ?? (FAILURE_CODES.has(report.code) || BROKER_CODES.has(report.code) ? report.code : 'external_or_execution_failure') };
+    if (snapshot) await broker(backend, id, 'result', submission ?? { context_complete: false, output: failedReview(snapshot.head), failure });
+    else {
+      try { await broker(backend, id, 'failure', failure); }
+      catch (secondary) { console.error(JSON.stringify({ ...diagnostic(secondary, stage), event: 'failure_reporting_deferred' })); }
+      throw error;
+    }
   } finally {
     try {
-      try { await broker(backend, id, 'release'); }
-      catch {
+      try { if (snapshot) await broker(backend, id, 'release'); }
+      catch (error) {
         // A durable result must still reach the separately protected publisher.
         // Backend cleanup releases terminal/expired leases; surface the cleanup failure explicitly.
-        process.stderr.write('CodexBot session release failed; backend lease cleanup is required.\n');
+        console.error(JSON.stringify({ ...diagnostic(error, 'release'), event: 'session_release_deferred' }));
       }
-    } finally { await rm(temporary, { recursive: true, force: true }); }
+    } finally { if (temporary) await rm(temporary, { recursive: true, force: true }); }
   }
 }
-if (process.argv[2] === 'review') {
-  try { await reviewJob(); } catch { process.stderr.write('CodexBot review failed; no approval or merge authorized.\n'); process.exitCode = 1; }
+if (process.argv[2] === 'check') {
+  try {
+    requireCondition(Boolean(process.env.CODEXBOT_VAULT_KEY) !== Boolean(process.env.CODEXBOT_API_KEY), 'missing_environment_credentials');
+    const checked = record(await checkWorkload(process.env.CODEXBOT_BACKEND ?? ''));
+    requireCondition(checked.status === 'verified' && checked.scope === 'diagnostic_only', 'review_preflight_failed');
+    console.info(JSON.stringify({ event: 'workload_diagnostic_verified', scope: 'no_session_no_inference' }));
+  } catch (error) { console.error(JSON.stringify(diagnostic(error, 'prepare'))); process.exitCode = 1; }
+} else if (process.argv[2] === 'review') {
+  try { await reviewJob(); } catch { process.exitCode = 1; }
 } else if (process.argv[2] === 'publish') {
-  try { const result = record(await broker(process.env.CODEXBOT_BACKEND ?? '', process.env.CODEXBOT_REQUEST_ID ?? '', 'publish')); process.stdout.write(`CodexBot publication: ${String(result.event ?? result.status)}; merge: ${String(result.merge ?? 'unchanged')}\n`); }
-  catch { process.stderr.write('CodexBot publication failed; inspect backend diagnostic codes.\n'); process.exitCode = 1; }
+  try {
+    const result = record(await broker(process.env.CODEXBOT_BACKEND ?? '', process.env.CODEXBOT_REQUEST_ID ?? '', 'publish', { review_job_failed: process.env.CODEXBOT_REVIEW_JOB_SUCCEEDED !== 'true' }));
+    requireCondition(result.status !== 'review_failed', 'review_preflight_failed');
+    process.stdout.write('CodexBot publication request completed.\n');
+  } catch (error) { console.error(JSON.stringify(diagnostic(error, 'publish'))); process.exitCode = 1; }
 }

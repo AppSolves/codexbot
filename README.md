@@ -3,12 +3,14 @@
 An Apache-2.0 GitHub App for Codex pull request reviews on repository-owned GitHub Actions runners. The Cloudflare Worker authenticates requests and publishes native reviews; it never runs Codex.
 
 ```text
-@codexbot review --effort xhigh --merge
+@CBReview review --effort xhigh --merge
 
 Review authentication, authorization, migrations and compatibility.
 ```
 
 Configure a trigger plus up to five aliases matching `@[A-Za-z0-9]{1,39}`. Matching ignores case. These are text commands and can notify unrelated GitHub users with the same name; choose distinctive aliases. Quoted examples and fenced commands do not trigger reviews. Model and reasoning effort are separate; omitted effort preserves Codex's default.
+
+Set `bot.trigger: "@CBReview"` to use the example above. The legacy default `@codexbot` remains supported; new setup chooses `@CBReview<repository_id>`. Use a name without “codex” when another Codex integration is installed. CodexBot cannot control that independent connector; see [trigger isolation and rollout](docs/review-rollout.md).
 
 ## Status
 
@@ -59,7 +61,9 @@ npm run cli -- connect-api-key --repository OWNER/REPO --backend https://YOUR-WO
 
 The ChatGPT flow displays **Continue with ChatGPT** and opens an official authorization URL using a loopback callback. Manual `auth.json` export is unnecessary. API-key mode requires `credentials.mode: api-key` in trusted configuration. Do not keep both mode secrets in the Environment.
 
-5. Review and merge the setup PR. Configure whitelist/merge policies and an optional custom handle in `.codexbot.yml`. Protect both the default branch and credential/publishing Environments. Comment using the handle from your setup PR. New setup chooses `@CodexBotReview<repository_id>` to reduce collisions; existing/manual `@codexbot` configurations remain supported.
+5. Review and merge the setup PR. Configure whitelist/merge policies and an optional custom handle in `.codexbot.yml`. Protect both the default branch and credential/publishing Environments. Comment using the handle from your setup PR. New setup chooses `@CBReview<repository_id>` to reduce collisions; existing/manual `@codexbot` configurations remain supported.
+
+Accepted requests receive one editable App-owned progress comment, separate from the native review. It shows verified commit/file counts, a request identifier, confirmed lifecycle/run status and the final native-review link. Temporary comment/API failures are reconciled without borrowing credentials or duplicating ambiguous POSTs. Image caching is opt-in pending measurement; [the rollout guide](docs/review-rollout.md) explains both controls.
 
 ### ChatGPT hosting restrictions
 

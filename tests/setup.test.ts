@@ -7,7 +7,8 @@ import { RELEASE } from './fixtures.js';
 await test('generated workflow pins reusable code, has minimal permissions and never shares secrets', () => {
   const yaml = callerWorkflow('operator/codexbot', RELEASE, 'https://self.invalid');
   const workflow = parse(yaml) as { permissions: unknown; jobs: { review: { uses: string; secrets?: unknown; permissions: unknown; with: { backend: string } } } };
-  assert.equal(workflow.jobs.review.uses, `operator/codexbot/.github/workflows/review.yml@${RELEASE}`); assert.equal(workflow.jobs.review.secrets, undefined);
+  assert.equal(workflow.jobs.review.uses, `operator/codexbot/.github/workflows/review.yml@${RELEASE}`);
+  assert.deepEqual(workflow.jobs.review.secrets, { CODEXBOT_VAULT_KEY: '', CODEXBOT_API_KEY: '' });
   assert.deepEqual(workflow.permissions, {}); assert.equal(workflow.jobs.review.with.backend, 'https://self.invalid');
   assert.match(yaml, /dispatch_attempt/); assert.throws(() => callerWorkflow('operator/codexbot', 'main', 'https://self.invalid'));
 });
@@ -47,7 +48,7 @@ await test('automatic setup preserves existing workflows and creates only a dedi
   await assert.rejects(setup()); assert.equal(f.writes.length, 0);
   f.setExisting(false); assert.equal(await setup(), 'https://github.com/owner/repo/pull/1');
   const tree = f.writes.find(x => x.path.endsWith('/git/trees'))!.body.tree as unknown[]; assert.equal(tree.length, 2);
-  assert.ok(JSON.stringify(tree).includes('@CodexBotReview2'));
+  assert.ok(JSON.stringify(tree).includes('@CBReview2'));
   assert.equal(f.writes.filter(x => x.path.endsWith('/git/refs')).length, 1); assert.equal(f.writes.some(x => x.body.force === true), false);
   assert.equal(await setup(), 'https://github.com/owner/repo/pull/1'); assert.equal(f.writes.filter(x => x.path.endsWith('/pulls')).length, 1);
 });

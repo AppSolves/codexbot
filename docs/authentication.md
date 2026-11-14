@@ -1,5 +1,7 @@
 # Authentication and credential ownership
 
+Reusable callers must explicitly grant the two optional secret names with empty values; the called installation/actor Environment supplies the actual credential. No repository-key fallback or blanket inheritance is supported. [Credential diagnostics and rollout](review-rollout.md) include a no-inference availability check. Migration 0003 does not change encryption/session formats or require reconnecting.
+
 ## Official ChatGPT OAuth
 
 CodexBot uses the documented OSS public-client flow, not a borrowed Codex client ID or an undocumented ChatGPT endpoint. [Registration/sign-in](https://developers.openai.com/siwc/token-sharing-open-source/sign-in), [sessions](https://developers.openai.com/siwc/token-sharing-open-source/profiles-and-sessions), [app-server](https://developers.openai.com/siwc/token-sharing-open-source/codex-app-server) and [deployment transfer](https://developers.openai.com/siwc/token-sharing-open-source/self-hosted-vms) define the contract.

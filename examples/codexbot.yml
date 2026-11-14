@@ -1,6 +1,6 @@
 version: 1
 bot:
-  trigger: "@codexbot"
+  trigger: "@CBReview"
   aliases: [] # Text commands; an alias can notify an unrelated GitHub account.
 authorization:
   whitelist: "" # Add authorized GitHub logins. Each uses their own credential.

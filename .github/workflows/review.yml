@@ -6,6 +6,11 @@ on:
       credential_owner: { required: true, type: string }
       installation_id: { required: true, type: string }
       backend: { required: true, type: string }
+      credential_check_only: { required: false, type: boolean, default: false }
+      docker_cache: { required: false, type: boolean, default: false }
+    secrets:
+      CODEXBOT_VAULT_KEY: { required: false }
+      CODEXBOT_API_KEY: { required: false }
 permissions: {}
 jobs:
   source:
@@ -43,6 +48,22 @@ jobs:
       contents: read
       id-token: write
     steps:
+      - name: Verify Environment credential availability
+        shell: bash
+        run: |
+          node --input-type=module <<'JS'
+          const vault = Boolean(process.env.CODEXBOT_VAULT_KEY);
+          const api = Boolean(process.env.CODEXBOT_API_KEY);
+          if (vault === api) {
+            console.error(JSON.stringify({event: 'review_failed', stage: 'environment', code: vault ? 'ambiguous_environment_credentials' : 'missing_environment_credentials'}));
+            process.exitCode = 1;
+          } else {
+            console.log(JSON.stringify({event: 'credential_availability_verified', mode: vault ? 'chatgpt' : 'api-key'}));
+          }
+          JS
+        env:
+          CODEXBOT_VAULT_KEY: ${{ secrets.CODEXBOT_VAULT_KEY }}
+          CODEXBOT_API_KEY: ${{ secrets.CODEXBOT_API_KEY }}
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ needs.source.outputs.repository }}
@@ -51,23 +72,70 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '24.22.3'
+          package-manager-cache: false
       - run: npm ci --ignore-scripts
       - run: npm run build
-      - name: Build trusted review image
-        run: docker build --tag codexbot-review:local .
+      - name: Verify read-only OIDC and Environment diagnostic
+        if: ${{ inputs.credential_check_only }}
+        run: node dist/src/runner/main.js check
+        env:
+          CODEXBOT_BACKEND: ${{ inputs.backend }}
+          CODEXBOT_VAULT_KEY: ${{ secrets.CODEXBOT_VAULT_KEY }}
+          CODEXBOT_API_KEY: ${{ secrets.CODEXBOT_API_KEY }}
+      - name: Build trusted review image without cache overhead
+        if: ${{ !inputs.credential_check_only && !inputs.docker_cache }}
+        run: docker build --tag "codexbot-review:$TRUSTED_REV" .
+        env:
+          TRUSTED_REV: ${{ needs.source.outputs.ref }}
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        if: ${{ !inputs.credential_check_only && inputs.docker_cache }}
+        with:
+          version: v0.39.0
+          driver-opts: image=moby/buildkit@sha256:c5f8862f52499773af85bc07695b2379ef08e8002352b0df2c4864c91d78dabe
+      - name: Build trusted review image with scoped cache
+        if: ${{ !inputs.credential_check_only && inputs.docker_cache }}
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: Dockerfile
+          load: true
+          push: false
+          tags: codexbot-review:${{ needs.source.outputs.ref }}
+          cache-from: type=gha,version=2,scope=codexbot-${{ github.repository_id }}-${{ needs.source.outputs.ref }}-${{ hashFiles('Dockerfile', 'package.json', 'package-lock.json', '.dockerignore') }},timeout=10s
+          cache-to: type=gha,version=2,scope=codexbot-${{ github.repository_id }}-${{ needs.source.outputs.ref }}-${{ hashFiles('Dockerfile', 'package.json', 'package-lock.json', '.dockerignore') }},mode=min,timeout=10s,ignore-error=true
+        env:
+          DOCKER_BUILD_RECORD_UPLOAD: 'false'
+          DOCKER_BUILD_SUMMARY: 'false'
+      - id: image
+        name: Bind execution to the built image ID
+        if: ${{ !inputs.credential_check_only }}
+        shell: bash
+        run: |
+          node --input-type=module <<'JS'
+          import {execFileSync} from 'node:child_process';
+          import {appendFileSync} from 'node:fs';
+          const ref = process.env.TRUSTED_REV;
+          if (!/^[a-f0-9]{40}$/.test(ref)) throw new Error('Invalid trusted source revision');
+          const id = execFileSync('docker', ['image', 'inspect', `codexbot-review:${ref}`, '--format', '{{.Id}}'], {encoding:'utf8'}).trim();
+          if (!/^sha256:[a-f0-9]{64}$/.test(id)) throw new Error('Invalid built image identity');
+          appendFileSync(process.env.GITHUB_OUTPUT, `id=${id}\n`);
+          JS
+        env:
+          TRUSTED_REV: ${{ needs.source.outputs.ref }}
       - name: Review exact commit in isolated container
+        if: ${{ !inputs.credential_check_only }}
         run: node dist/src/runner/main.js review
         env:
           CODEXBOT_BACKEND: ${{ inputs.backend }}
           CODEXBOT_REQUEST_ID: ${{ inputs.request_id }}
           CODEXBOT_CREDENTIAL_OWNER: ${{ inputs.credential_owner }}
           CODEXBOT_INSTALLATION_ID: ${{ inputs.installation_id }}
-          CODEXBOT_IMAGE: codexbot-review:local
+          CODEXBOT_IMAGE: ${{ steps.image.outputs.id }}
           CODEXBOT_VAULT_KEY: ${{ secrets.CODEXBOT_VAULT_KEY }}
           CODEXBOT_API_KEY: ${{ secrets.CODEXBOT_API_KEY }}
   publish:
     needs: [source, review]
-    if: ${{ needs.review.result == 'success' }}
+    if: ${{ always() && !inputs.credential_check_only && needs.source.result == 'success' && (needs.review.result == 'success' || needs.review.result == 'failure') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     environment: codexbot-publish-${{ inputs.installation_id }}
@@ -90,3 +158,4 @@ jobs:
         env:
           CODEXBOT_BACKEND: ${{ inputs.backend }}
           CODEXBOT_REQUEST_ID: ${{ inputs.request_id }}
+          CODEXBOT_REVIEW_JOB_SUCCEEDED: ${{ needs.review.result == 'success' }}

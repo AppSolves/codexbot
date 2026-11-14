@@ -30,6 +30,7 @@ on:
       credential_owner: { required: true, type: string }
       installation_id: { required: true, type: string }
       dispatch_attempt: { required: true, type: string }
+      credential_check_only: { required: false, type: boolean, default: false }
 permissions: {}
 concurrency:
   group: codexbot-credentials
@@ -40,14 +41,20 @@ jobs:
       contents: read
       id-token: write
     uses: YOUR-ORG/codexbot/.github/workflows/review.yml@FULL_COMMIT_SHA
+    secrets:
+      CODEXBOT_VAULT_KEY: ''
+      CODEXBOT_API_KEY: ''
     with:
       request_id: ${{ inputs.request_id }}
       credential_owner: ${{ inputs.credential_owner }}
       installation_id: ${{ inputs.installation_id }}
       backend: https://YOUR-WORKER
+      credential_check_only: ${{ inputs.credential_check_only }}
 ```
 
 Use the exact filename .github/workflows/codexbot.yml and the backend's trusted immutable source pin. Do not add secrets: inherit, fork-head checkout, repository hooks or PR-controlled commands. The reusable workflow resolves its own source from GitHub's TLS-delivered workload identity; the backend independently verifies the signed claims/run before releasing anything.
+
+The two explicit empty secret grants are required: the called job resolves its own installation/actor Environment. They do not copy a repository/organization secret into the job. Do not replace them with a shared key or blanket inheritance. The reusable workflow declares the two optional secret names; exactly one owning Environment credential must be present. The credential-only diagnostic checks availability and a read-only administrator workload, without building an image, acquiring a session or running Codex. See [coordinated upgrades](review-rollout.md).
 
 ## Credentials
 

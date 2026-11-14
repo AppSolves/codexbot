@@ -1,5 +1,7 @@
 # Security and trust boundaries
 
+Progress comments and image caching have separate bounded trust surfaces; see [the review rollout guide](review-rollout.md). Public progress contains no prompts/model text/internal error details. Comment ownership and run identity are independently verified. Ambiguous POSTs are reconciled instead of repeated, and deleted comments are not recreated. Optional caches contain only the trusted image build inputs, are scoped to source/content/repository, and never contain PR context, user credentials or model output.
+
 Untrusted data includes PR/fork code, comments, prompts, model output and API metadata until validated. Trusted components are protected default-branch/release code, repository administrators, GitHub/Actions/OIDC, the Worker/D1 operator, pinned dependencies, Docker/kernel isolation and OpenAI's official endpoints.
 
 | Boundary | Control | Residual limit |

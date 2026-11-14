@@ -1,0 +1,72 @@
+name: Trusted image cache benchmark
+on:
+  workflow_dispatch:
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      DOCKER_BUILD_RECORD_UPLOAD: 'false'
+      DOCKER_BUILD_SUMMARY: 'false'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with: { node-version: '24.22.3', package-manager-cache: false }
+      - run: npm ci --ignore-scripts
+      - run: npm run build
+      - name: Measure ordinary build
+        shell: bash
+        run: |
+          cache_start=$(date +%s)
+          docker build --tag codexbot-benchmark:baseline .
+          echo "$(( $(date +%s) - cache_start ))" > "$RUNNER_TEMP/baseline-seconds"
+          docker image rm codexbot-benchmark:baseline
+          date +%s > "$RUNNER_TEMP/cold-start"
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          name: codexbot-cache-cold
+          cleanup: false
+          version: v0.39.0
+          driver-opts: image=moby/buildkit@sha256:c5f8862f52499773af85bc07695b2379ef08e8002352b0df2c4864c91d78dabe
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          load: true
+          push: false
+          tags: codexbot-benchmark:cold
+          cache-to: type=gha,version=2,scope=codexbot-benchmark-${{ github.run_id }}-${{ github.run_attempt }},mode=min,timeout=90s
+      - name: Discard builder and loaded image before measuring a cache restore
+        shell: bash
+        run: |
+          echo "$(( $(date +%s) - $(cat "$RUNNER_TEMP/cold-start") ))" > "$RUNNER_TEMP/cold-seconds"
+          docker buildx rm codexbot-cache-cold
+          docker image rm codexbot-benchmark:cold
+          date +%s > "$RUNNER_TEMP/warm-start"
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          name: codexbot-cache-warm
+          version: v0.39.0
+          driver-opts: image=moby/buildkit@sha256:c5f8862f52499773af85bc07695b2379ef08e8002352b0df2c4864c91d78dabe
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          load: true
+          push: false
+          tags: codexbot-benchmark:warm
+          cache-from: type=gha,version=2,scope=codexbot-benchmark-${{ github.run_id }}-${{ github.run_attempt }},timeout=90s
+          cache-to: type=gha,version=2,scope=codexbot-benchmark-${{ github.run_id }}-${{ github.run_attempt }},mode=min,timeout=90s
+      - name: Report measured timings
+        shell: bash
+        run: |
+          echo "$(( $(date +%s) - $(cat "$RUNNER_TEMP/warm-start") ))" > "$RUNNER_TEMP/warm-seconds"
+          node --input-type=module <<'JS'
+          import {readFileSync, appendFileSync} from 'node:fs';
+          const read = name => Number(readFileSync(`${process.env.RUNNER_TEMP}/${name}-seconds`, 'utf8'));
+          const baseline=read('baseline'), cold=read('cold'), warm=read('warm');
+          console.log(JSON.stringify({event:'cache_benchmark',baseline_seconds:baseline,cold_seconds:cold,warm_seconds:warm}));
+          appendFileSync(process.env.GITHUB_STEP_SUMMARY, `Baseline: ${baseline}s; cold cache: ${cold}s; restored cache: ${warm}s. Includes builder setup and load/export. Same-run builder-image reuse is optimistic; repeat on independent runners before enabling cache. No provider or credential access.\n`);
+          JS

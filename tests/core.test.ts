@@ -12,6 +12,11 @@ await test('every configured handle triggers independently and case-insensitivel
     assert.equal(parseCommand('@anotherbot review', handle), null);
   }
 });
+await test('the non-Codex alias is exact, preserves legacy opt-in and never aliases native connector commands', () => {
+  assert.ok(parseCommand('@cbreview review --effort high', '@CBReview'));
+  assert.ok(parseCommand('@codexbot review', '@codexbot'));
+  for (const text of ['@codex review', '@codexbot review', '@CBReviewExtra review', '> @CBReview review', '```text\n@CBReview review\n```']) assert.equal(parseCommand(text, '@CBReview'), null);
+});
 await test('handle accepts only the requested ASCII alphanumeric format', () => {
   for (const invalid of ['', '@', '@with space', '@bot-name', '@bot_name', '@ä', '@x!', 'CodexBotReviewTest', '@' + 'a'.repeat(40), '@a\n']) assert.throws(() => validateHandle(invalid));
   assert.equal(validateHandle('@123'), '@123');

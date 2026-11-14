@@ -2,9 +2,15 @@ name: CI
 on:
   push:
   pull_request:
+  workflow_dispatch:
+    inputs:
+      cache_benchmark: { type: boolean, default: false }
 permissions:
   contents: read
 jobs:
+  cache-benchmark:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.cache_benchmark }}
+    uses: ./.github/workflows/cache-benchmark.yml
   check:
     runs-on: ubuntu-24.04
     timeout-minutes: 10

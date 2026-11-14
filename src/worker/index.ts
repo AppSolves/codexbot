@@ -3,8 +3,9 @@ import type { Envelope } from '../core/crypto.js';
 import { AppError, requireCondition, record } from '../core/errors.js';
 import { authorize } from '../core/policy.js';
 import { appClient, client, installationClient, permission, splitRepo, trustedConfig, verifyActor } from './github.js';
-import { verifyWorkload } from './oidc.js';
+import { verifyWorkload, verifySignedClaims, checkClaims } from './oidc.js';
 import { Store } from './store.js';
+import type { RequestSnapshot } from './store.js';
 import { publish, discardPendingReview } from './publish.js';
 import { invalidateMerge } from './merge.js';
 import { onboarding } from './onboarding.js';
@@ -14,6 +15,8 @@ import { MAX_RESULT_BODY_BYTES } from '../core/limits.js';
 import { repositoryCapabilities } from '../capabilities.js';
 import { compactWebhook } from './webhook.js';
 import { credentialEnvironment, publishingEnvironment } from '../core/identity.js';
+import { updateProgress, recoverProgress } from './progress.js';
+import { FAILURE_CODES, REVIEW_STAGES, BROKER_CODES } from '../core/diagnostics.js';
 
 export async function boundedBody(request: Request, limit: number): Promise<Uint8Array> {
   requireCondition(Number(request.headers.get('content-length') ?? 0) <= limit, 'body_too_large', 413);
@@ -39,6 +42,17 @@ function envelope(value: unknown): Envelope {
   requireCondition(input.version === 1 && typeof input.iv === 'string' && /^[A-Za-z0-9_-]{16}$/.test(input.iv) && typeof input.ciphertext === 'string' && /^[A-Za-z0-9_-]{20,64000}$/.test(input.ciphertext), 'invalid_envelope');
   return input as unknown as Envelope;
 }
+function failure(value: unknown): { code: string; stage: string; status: number | null } {
+  const body = record(value);
+  requireCondition(typeof body.code === 'string' && (FAILURE_CODES.has(body.code) || BROKER_CODES.has(body.code)) && typeof body.stage === 'string' && REVIEW_STAGES.includes(body.stage as typeof REVIEW_STAGES[number]), 'invalid_failure_diagnostic');
+  return { code: body.code, stage: body.stage, status: typeof body.status === 'number' && Number.isInteger(body.status) && body.status >= 400 && body.status <= 599 ? body.status : null };
+}
+async function notify(env: Env, store: Store, snapshot: RequestSnapshot): Promise<void> {
+  try {
+    const { github } = await installationClient(env, snapshot.installationId, snapshot.repositoryId, { contents: 'read', pull_requests: 'write', actions: 'read' });
+    await updateProgress(github, store, snapshot, env.GITHUB_APP_SLUG, Number(env.GITHUB_APP_ID));
+  } catch { console.error(JSON.stringify({ event: 'progress_update_deferred', request_id: snapshot.id })); }
+}
 
 async function route(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url), store = new Store(env.DB);
@@ -46,6 +60,28 @@ async function route(request: Request, env: Env): Promise<Response> {
   requireCondition(!origin || origin === new URL(env.PUBLIC_URL).origin, 'cross_origin_request_denied', 403);
   if (url.pathname === '/health' && request.method === 'GET') return Response.json({ status: 'ok', version: '0.1.0' });
   if (url.pathname === '/' && request.method === 'GET') return onboarding(env);
+  if (url.pathname === '/v1/workload/check' && request.method === 'POST') {
+    // A read-only administrator diagnostic, never a credential/token broker grant.
+    // Privileged review routes below still require this App's dispatch identity.
+    const claims = await verifySignedClaims(bearer(request), env.PUBLIC_URL);
+    requireCondition(typeof claims.repository === 'string' && typeof claims.actor === 'string' && typeof claims.actor_id === 'string' && /^\d+$/.test(claims.actor_id) &&
+      typeof claims.repository_id === 'string' && /^\d+$/.test(claims.repository_id), 'oidc_invalid_run_identity', 403);
+    const repo = splitRepo(claims.repository), actorId = Number(claims.actor_id), repositoryId = Number(claims.repository_id);
+    requireCondition(Number.isSafeInteger(actorId) && actorId > 0 && Number.isSafeInteger(repositoryId) && repositoryId > 0, 'oidc_repository_mismatch', 403);
+    const { data: installation } = await (await appClient(env)).rest.apps.getRepoInstallation(repo);
+    requireCondition(!installation.suspended_at, 'installation_no_longer_valid', 403);
+    const { github } = await installationClient(env, installation.id, repositoryId, { contents: 'read', pull_requests: 'read', actions: 'read' });
+    const { data: metadata } = await github.rest.repos.get(repo);
+    const { data: branch } = await github.rest.repos.getBranch({ ...repo, branch: metadata.default_branch });
+    requireCondition(branch.protected, 'trusted_default_branch_changed_or_unprotected', 403);
+    const identity = checkClaims(claims, { repository: metadata.full_name, repositoryId: metadata.id, ownerId: metadata.owner.id, defaultBranch: metadata.default_branch,
+      workflowSha: branch.commit.sha, trustedWorkflow: env.TRUSTED_WORKFLOW, environment: credentialEnvironment(installation.id, actorId) });
+    requireCondition(await permission(github, metadata.full_name, claims.actor, actorId) === 'admin', 'repository_admin_required', 403);
+    const { data: run } = await github.rest.actions.getWorkflowRun({ ...repo, run_id: Number(identity.runId) });
+    requireCondition(run.actor?.type === 'User' && run.actor.id === actorId && run.repository.id === metadata.id && run.repository.owner.id === metadata.owner.id &&
+      run.head_sha === branch.commit.sha && run.event === 'workflow_dispatch' && run.path === '.github/workflows/codexbot.yml' && run.run_attempt === Number(identity.attempt), 'workflow_run_mismatch', 403);
+    return Response.json({ status: 'verified', scope: 'diagnostic_only' });
+  }
   if (url.pathname === '/v1/capabilities' && request.method === 'GET') {
     const github = client(bearer(request)), repository = url.searchParams.get('repository') ?? '';
     const capabilities = await repositoryCapabilities(github, repository);
@@ -63,14 +99,15 @@ async function route(request: Request, env: Env): Promise<Response> {
       const { data: actor } = await github.rest.users.getAuthenticated();
       const body = record(JSON.parse(new TextDecoder().decode(await boundedBody(request, 1024))) as unknown);
       requireCondition(typeof body.id === 'string' && /^[a-zA-Z0-9-]{1,100}$/.test(body.id), 'invalid_recovery_id');
-      requireCondition(body.action === undefined || ['retry','cancel'].includes(String(body.action)), 'invalid_recovery_action');
+      requireCondition(body.action === undefined || ['retry','cancel','retry-progress'].includes(String(body.action)), 'invalid_recovery_action');
       if (body.action === 'cancel') {
         const snapshot = await store.cancellable(body.id, repo.id, installation.id);
         const { github: cleanup } = await installationClient(env, installation.id, repo.id, { pull_requests: 'write', ...(snapshot.command.merge ? { checks: 'write' } as const : {}) });
         await discardPendingReview(cleanup, snapshot, env.GITHUB_APP_SLUG);
         const merged = snapshot.command.merge ? await invalidateMerge(cleanup, snapshot, env.GITHUB_APP_SLUG, Number(env.GITHUB_APP_ID)) : false;
         await store.terminateIntent(snapshot.id, merged); await store.release(snapshot);
-      } else await store.operatorRetry(body.id, repo.id, installation.id);
+      } else if (body.action === 'retry-progress') await store.operatorRetryProgress(body.id, repo.id, installation.id);
+      else await store.operatorRetry(body.id, repo.id, installation.id);
       console.info(JSON.stringify({ event: 'operator_recovery_requested', action: body.action ?? 'retry', actor_id: actor.id, repository_id: repo.id, installation_id: installation.id }));
     }
     return Response.json(await store.operations(repo.id, installation.id));
@@ -118,7 +155,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     else return Response.json({ installation_id: installation.id, session: await store.session(repo.id, user.id, installation.id) });
     return Response.json({ status: 'ok' });
   }
-  const match = /^\/v1\/requests\/([a-f0-9-]{36})\/(prepare|rotate|result|publish|release)$/.exec(url.pathname);
+  const match = /^\/v1\/requests\/([a-f0-9-]{36})\/(prepare|rotate|result|publish|release|failure|stage)$/.exec(url.pathname);
   if (!match || request.method !== 'POST') throw new AppError('not_found', 404);
   const id = match[1]!, operation = match[2]!;
   const { row, snapshot } = await store.get(id);
@@ -137,10 +174,24 @@ async function route(request: Request, env: Env): Promise<Response> {
   requireCondition(run.actor?.type === 'Bot' && run.actor.login === `${env.GITHUB_APP_SLUG}[bot]`, 'workflow_not_dispatched_by_this_app', 403);
   requireCondition(row.dispatch_attempt && run.display_title === `CodexBot ${snapshot.id} ${row.dispatch_attempt}`, 'workflow_dispatch_attempt_mismatch', 403);
   if (operation === 'release') { await store.release(snapshot); return Response.json({ status: 'released' }); }
+  if (operation === 'failure') {
+    requireCondition(identity.attempt === '1', 'use_authorized_rerun_command_instead_of_workflow_rerun', 403);
+    const input = failure(JSON.parse(new TextDecoder().decode(await boundedBody(request, 1024))) as unknown);
+    const failed = await store.failRun(id, identity.runId, input.code, input.stage, input.status);
+    const current = await store.progressRequest(id);
+    requireCondition(current?.row.run_id === identity.runId, 'request_bound_to_another_run', 403);
+    if (failed || current.row.state === 'failed') await store.release(snapshot);
+    await notify(env, store, snapshot); return Response.json({ status: 'failed' });
+  }
   requireCondition(snapshot.config.credentials.mode !== 'chatgpt' || env.CHATGPT_DEPLOYMENT_AUTHORIZED === 'true', 'chatgpt_deployment_authorization_revoked', 403);
   requireCondition(operation === 'publish' || identity.attempt === '1', 'use_authorized_rerun_command_instead_of_workflow_rerun', 403);
+  if (operation === 'stage') {
+    const body = record(JSON.parse(new TextDecoder().decode(await boundedBody(request, 1024))) as unknown);
+    requireCondition(body.stage === 'analyzing', 'invalid_review_stage');
+    await store.stage(id, identity.runId, 'analyzing'); await notify(env, store, snapshot);
+    return Response.json({ status: 'recorded' });
+  }
   if (operation === 'prepare') {
-    requireCondition(await store.prepare(id, identity.runId), 'request_already_started', 409);
     const { data: pr } = await github.rest.pulls.get({ ...splitRepo(snapshot.repository), pull_number: snapshot.pr });
     requireCondition(pr.head.sha === snapshot.head && pr.base.sha === snapshot.base && pr.state === 'open' && !pr.draft, 'stale_pull_request', 409);
     const { data: branch } = await github.rest.repos.getBranch({ ...splitRepo(snapshot.repository), branch: snapshot.defaultBranch });
@@ -149,11 +200,13 @@ async function route(request: Request, env: Env): Promise<Response> {
     await verifyActor(github, snapshot.actor, snapshot.actorId);
     const livePermission = await permission(github, snapshot.repository, snapshot.actor);
     requireCondition(config.review.enabled && authorize(snapshot.actor, livePermission, config.authorization), 'review_authorization_revoked', 403);
+    requireCondition(await store.prepare(id, identity.runId), 'request_already_started', 409);
     // Acquire before reading: reconnect must not replace the record between snapshot and lease.
     if (snapshot.config.credentials.mode === 'chatgpt') await store.acquire(snapshot);
     const credentialSession = snapshot.config.credentials.mode === 'chatgpt' ? await store.session(snapshot.repositoryId, snapshot.actorId, snapshot.installationId) : null;
     if (snapshot.config.credentials.mode === 'chatgpt') requireCondition(credentialSession, 'chatgpt_session_not_connected', 409);
     const { token } = await installationClient(env, snapshot.installationId, snapshot.repositoryId, { contents: 'read', pull_requests: 'read' });
+    await notify(env, store, snapshot);
     return Response.json({ snapshot, read_token: token, session: credentialSession });
   }
   if (operation === 'rotate') {
@@ -166,24 +219,35 @@ async function route(request: Request, env: Env): Promise<Response> {
   if (operation === 'result') {
     const body = record(JSON.parse(new TextDecoder().decode(await boundedBody(request, MAX_RESULT_BODY_BYTES))) as unknown);
     requireCondition(typeof body.context_complete === 'boolean' && body.output !== undefined, 'invalid_result_submission');
+    const input = body.failure !== undefined ? failure(body.failure) : null;
+    if (input) requireCondition(body.context_complete === false, 'failure_requires_incomplete_result');
     await store.result(id, body.output, body.context_complete, identity.runId);
+    if (input) {
+      await store.noteFailure(id, identity.runId, input.code, input.stage, input.status);
+    }
+    await notify(env, store, snapshot);
     return Response.json({ status: 'recorded' });
   }
   if (row.state === 'published') return Response.json({ status: 'already_published', review_id: row.review_id });
+  if (row.state === 'failed') { await notify(env, store, snapshot); return Response.json({ status: 'review_failed' }); }
   if (snapshot.config.credentials.mode === 'chatgpt') requireCondition(await store.session(snapshot.repositoryId, snapshot.actorId, snapshot.installationId), 'chatgpt_connection_revoked', 403);
   requireCondition(['reviewed','publishing'].includes(row.state) && row.result !== null, 'request_not_ready_for_publication', 409);
+  const input = record(JSON.parse(new TextDecoder().decode(await boundedBody(request, 1024))) as unknown);
+  requireCondition(input.review_job_failed === undefined || typeof input.review_job_failed === 'boolean', 'invalid_publication_job_state');
   const lease = await store.claimPublication(id, identity.runId);
+  if (input.review_job_failed === true) await store.noteFailure(id, identity.runId, 'review_job_failed', 'workflow');
+  await notify(env, store, snapshot);
   try {
     const { github: publisher } = await installationClient(env, snapshot.installationId, snapshot.repositoryId, {
       contents: snapshot.command.merge ? 'write' : 'read', pull_requests: 'write',
       ...(snapshot.command.merge && env.MERGE_DEPLOYMENT_AUTHORIZED === 'true' ? { checks: 'write', administration: 'read' } as const : {})
     });
-    const result = await publish(publisher, snapshot, JSON.parse(row.result) as unknown, row.context_complete === 1, env.GITHUB_APP_SLUG, {
+    const result = await publish(publisher, snapshot, JSON.parse(row.result) as unknown, row.context_complete === 1 && input.review_job_failed !== true, env.GITHUB_APP_SLUG, {
       checkpoint: (reviewId, phase, merge) => store.checkpoint(id, lease, reviewId, phase, merge),
       merge: { enabled: env.MERGE_DEPLOYMENT_AUTHORIZED === 'true', appId: Number(env.GITHUB_APP_ID) },
       beforeWrite: () => store.heartbeat(id, lease)
     });
-    await store.published(id, result.reviewId, lease); return Response.json(result);
+    await store.published(id, result.reviewId, lease); await notify(env, store, snapshot); return Response.json(result);
   } catch (error) { await store.publicationFailed(id, lease, error instanceof AppError && error.status < 500 && error.status !== 429); throw error; }
   finally { await store.release(snapshot); }
 }
@@ -204,5 +268,11 @@ export default {
       return Response.json({ error: code }, { status: error instanceof AppError ? error.status : 500, headers: { 'Cache-Control': 'no-store' } });
     }
   },
-  async scheduled(_event: ScheduledController, env: Env): Promise<void> { await recover(env); }
+  async scheduled(event: ScheduledController, env: Env): Promise<void> {
+    if (event.cron === '*/2 * * * *') {
+      // A separate bounded invocation prevents busy dispatch/publication queues
+      // from starving terminal comment updates or sharing their subrequest budget.
+      const store = new Store(env.DB); await store.cleanup(); await recoverProgress(env, store);
+    } else await recover(env);
+  }
 } satisfies ExportedHandler<Env>;

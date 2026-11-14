@@ -3,6 +3,9 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { parse } from 'yaml';
 import { record } from '../src/core/errors.js';
+import { spawnSync } from 'node:child_process';
+import { callerWorkflow } from '../src/setup.js';
+import { RELEASE } from './fixtures.js';
 await test('reusable workflow has no GitHub write permissions, shared secrets or PR-head checkout', async () => {
   const text = await readFile('.github/workflows/review.yml', 'utf8'), workflow = record(parse(text));
   assert.deepEqual(workflow.permissions, {});
@@ -21,8 +24,40 @@ await test('reusable workflow has no GitHub write permissions, shared secrets or
   assert.ok(!text.includes('pull_request.head')); assert.ok(!text.includes('secrets: inherit')); assert.ok(!text.includes('upload-artifact'));
   assert.equal(record(record(jobs.publish).permissions).contents, 'read');
 });
+await test('Environment secret grants are explicit and empty, with no repository-secret fallback or blanket inheritance', async () => {
+  const workflow = record(parse(await readFile('.github/workflows/review.yml', 'utf8')));
+  const contract = record(record(workflow.on).workflow_call);
+  assert.deepEqual(Object.keys(record(contract.secrets)).sort(), ['CODEXBOT_API_KEY','CODEXBOT_VAULT_KEY']);
+  const caller = record(parse(callerWorkflow('operator/codexbot', RELEASE, 'https://self.invalid')));
+  assert.deepEqual(record(record(caller.jobs).review).secrets, { CODEXBOT_VAULT_KEY: '', CODEXBOT_API_KEY: '' });
+  const steps = record(record(workflow.jobs).review).steps as Record<string, unknown>[];
+  const check = String(steps[0]!.run).split("<<'JS'\n")[1]!.replace(/\nJS\s*$/, '');
+  for (const [vault, api, status] of [['','',1],['opaque-vault','',0],['','opaque-api',0],['opaque-vault','opaque-api',1]] as const) {
+    const env = Object.assign(Object.create(null) as NodeJS.ProcessEnv, { CODEXBOT_VAULT_KEY: vault, CODEXBOT_API_KEY: api });
+    const result = spawnSync(process.execPath, ['--input-type=module','-e',check], { env, encoding: 'utf8' });
+    assert.equal(result.status, status, result.stderr); assert.ok(!result.stdout.includes('opaque-')); assert.ok(!result.stderr.includes('opaque-'));
+  }
+});
+await test('cached builds are opt-in, source/input scoped, pinned and loaded only from the trusted checkout; execution uses a content ID', async () => {
+  const workflow = record(parse(await readFile('.github/workflows/review.yml', 'utf8'))), jobs = record(workflow.jobs);
+  assert.equal(record(record(record(record(workflow.on).workflow_call).inputs).docker_cache).default, false);
+  const steps = record(jobs.review).steps as Record<string, unknown>[];
+  const build = steps.find(x => String(x.uses).startsWith('docker/build-push-action@'))!, options = record(build.with);
+  assert.match(String(build.if), /inputs.docker_cache/); assert.equal(options.context, '.'); assert.equal(options.load, true); assert.equal(options.push, false);
+  for (const key of ['cache-from','cache-to']) {
+    assert.match(String(options[key]), /needs.source.outputs.ref/); assert.match(String(options[key]), /hashFiles\('Dockerfile', 'package.json', 'package-lock.json', '.dockerignore'\)/);
+    assert.ok(!String(options[key]).includes('pull_request')); assert.ok(!String(options[key]).includes('inputs.request_id'));
+  }
+  assert.equal(options.secrets, undefined); assert.equal(options['build-args'], undefined); assert.equal(build['continue-on-error'], undefined);
+  const builder = steps.find(x => String(x.uses).startsWith('docker/setup-buildx-action@'))!;
+  assert.match(String(record(builder.with)['driver-opts']), /^image=moby\/buildkit@sha256:[a-f0-9]{64}$/);
+  const execute = steps.find(x => String(x.run).includes('main.js review'))!;
+  assert.equal(record(execute.env).CODEXBOT_IMAGE, '${{ steps.image.outputs.id }}');
+  const publish = record(jobs.publish); assert.match(String(publish.if), /needs.review.result == 'failure'/);
+  assert.match(String(publish.if), /!inputs.credential_check_only/);
+});
 await test('documentation local links resolve and Apache license is canonical', async () => {
-  const documents = ['README.md', 'CHANGELOG.md', 'docs/architecture.md', 'docs/authentication.md', 'docs/configuration.md', 'docs/deployment.md', 'docs/development.md', 'docs/installation.md', 'docs/security.md', 'docs/validation.md', 'docs/operations.md', 'docs/acceptance.md', 'docs/remediation.md', 'SECURITY.md', 'CONTRIBUTING.md'];
+  const documents = ['README.md', 'CHANGELOG.md', 'docs/architecture.md', 'docs/authentication.md', 'docs/configuration.md', 'docs/deployment.md', 'docs/development.md', 'docs/installation.md', 'docs/security.md', 'docs/validation.md', 'docs/review-rollout.md', 'docs/operations.md', 'docs/acceptance.md', 'docs/remediation.md', 'SECURITY.md', 'CONTRIBUTING.md'];
   for (const path of documents) {
     const text = await readFile(path, 'utf8');
     for (const match of text.matchAll(/\]\(([^)]+)\)/g)) {

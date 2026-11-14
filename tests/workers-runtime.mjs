@@ -38,8 +38,16 @@ try {
   assert.equal((await post(signature)).status, 200); assert.equal((await post(signature)).status, 200);
   const stored = cli(['d1', 'execute', 'DB', '--local', '--persist-to', state, '--json', '--command', 'SELECT phase,payload FROM deliveries']);
   const rows = JSON.parse(stored); assert.deepEqual(rows[0].results, [{ phase: 'done', payload: null }]);
+  const request = randomUUID(), now = Date.now();
+  cli(['d1', 'execute', 'DB', '--local', '--persist-to', state, '--command',
+    `INSERT INTO requests(id,installation_id,repository_id,actor_id,snapshot,state,created_at,progress_phase) VALUES('${request}',1,2,5,'{}','running',${now - 7_200_000},'disabled');
+     INSERT INTO sessions(installation_id,repository_id,actor_id,envelope,lease_request,lease_until) VALUES(1,2,5,'{}','${request}',${now + 3_600_000}),(9,2,5,'{}','other-installation',${now + 3_600_000});`]);
   assert.equal((await globalThis.fetch(`${origin}/cdn-cgi/handler/scheduled`)).status, 200);
-  process.stdout.write('Real workerd + D1: migrations, HMAC rejection, durable receipt, deduplication and cron passed.\n');
+  const terminal = JSON.parse(cli(['d1', 'execute', 'DB', '--local', '--persist-to', state, '--json', '--command', `SELECT state,failure_code FROM requests WHERE id='${request}'`]))[0].results;
+  assert.deepEqual(terminal, [{ state: 'failed', failure_code: 'request_expired' }]);
+  const leases = JSON.parse(cli(['d1', 'execute', 'DB', '--local', '--persist-to', state, '--json', '--command', 'SELECT installation_id,lease_request FROM sessions ORDER BY installation_id']))[0].results;
+  assert.deepEqual(leases, [{ installation_id: 1, lease_request: null }, { installation_id: 9, lease_request: 'other-installation' }]);
+  process.stdout.write('Real workerd + D1: migrations, HMAC, receipts, cron, expired requests and cross-installation lease cleanup passed.\n');
 } finally {
   if (child?.pid) {
     if (process.platform === 'win32') execFileSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore' });

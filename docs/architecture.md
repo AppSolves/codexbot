@@ -1,5 +1,7 @@
 # Architecture
 
+The [review reliability guide](review-rollout.md) documents migration 0003, named Environment grants, sanitized runner diagnostics, durable progress comments and optional Buildx caching. Progress writes are backend-only and validate App/request/PR ownership; the model receives no write capability. A failed upstream job permanently disables approval for its persisted result, including publication recovery.
+
 The Cloudflare Worker ingests signed GitHub webhooks, verifies live authorization, maintains D1 metadata and publishes native reviews. Official Codex runs exclusively in the repository owner's ephemeral GitHub-hosted Linux Actions jobs. Independent installations choose their own App, Worker, D1 database and source release; no vendor backend or shared OpenAI credential exists.
 
 ```mermaid
