@@ -6,9 +6,15 @@
 	"compatibility_flags": [
 		"nodejs_compat"
 	],
-	"workers_dev": true,
+	"workers_dev": false,
 	"preview_urls": false,
 	"send_metrics": false,
+	"routes": [
+		{
+			"pattern": "codexbot.appsolves.dev",
+			"custom_domain": true
+		}
+	],
 	"secrets": {
 		"required": [
 			"GITHUB_PRIVATE_KEY",
@@ -27,7 +33,7 @@
 		}
 	},
 	"vars": {
-		"PUBLIC_URL": "https://codexbot.appsolves.workers.dev",
+		"PUBLIC_URL": "https://codexbot.appsolves.dev",
 		"GITHUB_APP_ID": "5754181",
 		"GITHUB_APP_SLUG": "codexbot-review",
 		"TRUSTED_WORKFLOW": "AppSolves/codexbot/.github/workflows/review.yml@14183bc5196ed5a23167a096270019e07f61dce6",
