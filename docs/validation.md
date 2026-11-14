@@ -1,5 +1,15 @@
 # Validation record and release gates
 
+## Provider response-format diagnostics — 2026-11-14
+
+Inspected `inferenceProxy` at pinned source `0e937476323bbe35e3c33dc3a8572e62d1e544e5`: the observed format error occurs after `upstream.ok`, when the response body is absent or the SSE Content-Type guard fails. The original diagnostic contains no actual status, header category or body-presence evidence; a specific authentication, entitlement, model, HTML or JSON cause is unproven. The observed production workflow correctly failed analysis while its separate non-approving publisher succeeded.
+
+The new response projection retains actual 200–599 HTTP status, a five-value MIME category and a boolean body-presence field. Rejected responses are inspected for at most 8 KiB of JSON, projecting only existing exact code/parameter allowlists. Unknown text, MIME parameters, credentials, user data, headers and response bodies are never emitted. Provider fields are removed from non-provider diagnostics, and the Docker boundary still rejects provider attestations from the unprivileged reviewer. Non-SSE 2xx responses remain rejected; an SSE-looking MIME prefix is no longer sufficient without the exact media type. No session, schema, authorization, endpoint, credential or merge-policy migration is involved.
+
+Local verification passed: `npm run check` (143 tests, typecheck, lint, build), `npm run test:clean`, real workerd/D1, targeted execution/security regressions (21 tests), Actionlint, Docker build plus synthetic Codex integration, `npm audit --audit-level=moderate`, strict HIGH/CRITICAL image scan and Wrangler dry-run. No deployment, reconnect, paid inference or production review was performed.
+
+`proxy.test.ts` covers successful SSE (including case/parameters), 2xx JSON success/error envelopes, 204/missing bodies, HTML, missing/misleading headers, oversized/malformed/unknown JSON and read/cancellation errors. `execution.test.ts` covers metadata validation, envelope/outer-log round trips and provenance. `test:sandbox` uses pinned Codex 0.169.0 and isolated Docker with synthetic successful SSE, HTTP 400 JSON and HTTP 200 JSON; both failure cases require exit 1 and absent review output, with safe proxy metadata. No real provider request is made. The pinned credential-free model-catalog test and official documentation show why bundled `model/list` is not account entitlement; the production account-specific catalog and completed inference remain unverified. See [the owner-only acceptance steps](acceptance.md#optional-real-openai-protocol-acceptance).
+
 ## Isolated review failure and misleading success — 2026-11-14
 
 Verified root cause of the green workflow: `reviewJob` caught inference failure, saved the incomplete fallback and returned successfully. It now always rethrows the primary failure, even when reporting fails; the existing separately protected publisher remains eligible and can only publish a non-approving report. Original container/Codex/provider diagnostics were discarded, so the production inference failure's specific cause remains unknown. Its old `400` was a local AppError default, not evidence of upstream HTTP 400.

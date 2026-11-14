@@ -2,6 +2,8 @@
 
 ## Unreleased — security remediation pass
 
+- Classify rejected Responses replies with their actual upstream status (including 2xx), fixed Content-Type category and body presence. Extract only allowlisted codes/parameters from bounded JSON errors; keep non-SSE success responses fail-closed and provider metadata confined to the credential-proxy boundary.
+
 - Failed inference now fails the review job even after recording a safe COMMENT fallback. Preserve separate protected publication, distinguish fallback publication from completed AI review, and carry only allowlisted Docker/Codex/RPC/proxy diagnostics. Local AppError statuses are not presented as provider HTTP responses. Runner changes require a coordinated immutable source/Worker/caller pin upgrade; no credential or database migration.
 
 - Validate broker default-branch identity using the authoritative repository API, not the minimal repository embedded in Actions runs. Preserve signed OIDC and all run/App dispatch checks across prepare, failure, publication and cleanup operations.

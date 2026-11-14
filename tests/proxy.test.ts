@@ -50,12 +50,68 @@ await test('proxy diagnostics retain only proven HTTP status and exact provider 
       const post = (value: unknown) => fetch(`http://127.0.0.1:${address.port}/v1/responses`, { method: 'POST', body: JSON.stringify(value) });
       const result = await post(body); assert.equal(result.status, status); assert.ok(!(await result.text()).includes(secret));
       assert.deepEqual(diagnostics[0], { component: 'provider', code: 'provider_http_failed', upstream_status: status,
+        content_type_category: 'other', body_present: true,
         ...(!['oversized', secret].includes(code) ? { provider_code: code } : {}), ...(param && param !== secret ? { provider_param: param } : {}) });
       const denied = await post({ ...body, [secret]: secret }); assert.equal(denied.status, 403); await denied.text();
       assert.deepEqual(diagnostics[1], { component: 'proxy', code: 'proxy_unsupported_request_field' });
       assert.equal(calls, 1); assert.ok(!JSON.stringify(diagnostics).includes(secret));
     } finally { server.closeAllConnections(); server.close(); }
   }
+});
+await test('upstream 2xx requires a real SSE body; only classified response metadata and approved JSON codes escape', async () => {
+  const secret = 'Bearer fixture-private-token OAuth-code prompt source user-data';
+  const json = JSON.stringify({ error: { code: 'model_not_found', param: 'model', message: secret, headers: secret }, detail: secret });
+  const cases: { status: number; type: string | null; body: string | null; category: string; approvedCode?: boolean }[] = [
+    { status: 200, type: 'text/event-stream', body: 'data: {"type":"response.completed"}\n\n', category: 'event-stream' },
+    { status: 201, type: 'Text/Event-Stream; charset=utf-8', body: 'data: {"type":"response.completed"}\n\n', category: 'event-stream' },
+    { status: 200, type: 'application/json; charset=utf-8', body: json, category: 'json', approvedCode: true },
+    { status: 202, type: 'application/problem+json', body: json, category: 'json', approvedCode: true },
+    { status: 200, type: 'application/json', body: JSON.stringify({ status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: secret }] }] }), category: 'json' },
+    { status: 200, type: 'application/json', body: JSON.stringify({ error: { code: secret, param: secret }, detail: secret }), category: 'json' },
+    { status: 200, type: 'application/json', body: JSON.stringify({ response: { error: { code: ['model_not_found'], param: ['model'] } } }), category: 'json' },
+    { status: 200, type: 'application/json', body: '{"detail":"' + secret + '"}', category: 'json' },
+    { status: 200, type: 'application/json', body: json + ' '.repeat(8192), category: 'json' },
+    { status: 200, type: 'application/json', body: 'invalid-json ' + secret, category: 'json' },
+    { status: 200, type: 'text/html; private=' + secret, body: '<html>' + secret + '</html>', category: 'html' },
+    { status: 200, type: 'application/xhtml+xml', body: '<html>' + secret + '</html>', category: 'html' },
+    { status: 204, type: 'text/event-stream', body: null, category: 'event-stream' },
+    { status: 200, type: 'application/json', body: null, category: 'json' },
+    { status: 200, type: null, body: null, category: 'missing' },
+    { status: 200, type: null, body: json, category: 'missing', approvedCode: true },
+    { status: 200, type: 'text/event-stream-private-' + secret, body: secret, category: 'other' }
+  ];
+  for (const input of cases) {
+    const diagnostics: ExecutionFailure[] = [];
+    const upstream: typeof fetch = async () => {
+      const response = new Response(input.body, { status: input.status });
+      if (input.type === null) response.headers.delete('content-type'); else response.headers.set('content-type', input.type);
+      response.headers.set('x-private-header', secret); return response;
+    };
+    const server = createServer((request, response) => { void inferenceProxy(request, response, 'fixture-only', upstream, () => {}, value => diagnostics.push(value)); });
+    server.listen(0, '127.0.0.1'); await once(server, 'listening'); const address = server.address(); assert.ok(address && typeof address !== 'string');
+    try {
+      const result = await fetch(`http://127.0.0.1:${address.port}/v1/responses`, { method: 'POST', body: JSON.stringify({ model: 'fixture', store: false, stream: true, input: [] }) });
+      const output = await result.text(), valid = input.category === 'event-stream' && input.body !== null;
+      assert.equal(result.status, valid ? input.status : 403);
+      if (valid) { assert.match(output, /response.completed/); assert.deepEqual(diagnostics, []); }
+      else assert.deepEqual(diagnostics, [{ component: 'provider', code: 'provider_stream_content_type_invalid', upstream_status: input.status,
+        content_type_category: input.category, body_present: input.body !== null, ...(input.approvedCode ? { provider_code: 'model_not_found', provider_param: 'model' } : {}) }]);
+      assert.ok(!output.includes(secret)); assert.ok(!JSON.stringify(diagnostics).includes(secret));
+      assert.equal(result.headers.get('x-private-header'), null);
+    } finally { server.closeAllConnections(); server.close(); }
+  }
+});
+await test('unreadable/cancellation-failed upstream bodies preserve only observed response metadata', async () => {
+  const secret = 'fixture-private-body-error';
+  const diagnostics: ExecutionFailure[] = [];
+  const upstream: typeof fetch = async () => new Response(new ReadableStream({ pull() { throw new Error(secret); } }), { status: 200, headers: { 'content-type': 'application/json' } });
+  const server = createServer((request, response) => { void inferenceProxy(request, response, 'fixture-only', upstream, () => {}, value => diagnostics.push(value)); });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening'); const address = server.address(); assert.ok(address && typeof address !== 'string');
+  try {
+    const result = await fetch(`http://127.0.0.1:${address.port}/v1/responses`, { method: 'POST', body: JSON.stringify({ model: 'fixture', store: false, stream: true, input: [] }) });
+    assert.equal(result.status, 403); assert.ok(!(await result.text()).includes(secret));
+    assert.deepEqual(diagnostics, [{ component: 'provider', code: 'provider_stream_content_type_invalid', upstream_status: 200, content_type_category: 'json', body_present: true }]);
+  } finally { server.closeAllConnections(); server.close(); }
 });
 await test('inference locks model/effort and denies stored prompts and additional hosted tools', async () => {
   const localFetch = globalThis.fetch; let providerCalls = 0;

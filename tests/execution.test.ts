@@ -40,6 +40,20 @@ await test('execution projection discards arbitrary fields/text and never labels
   assert.deepEqual(diagnostic(error, 'analyzing'), { event: 'review_failed', stage: 'analyzing', code: 'isolated_review_failed', execution: error.detail, proxy_failure: safe });
   assert.ok(!JSON.stringify(parser.last).includes(sensitive));
 });
+await test('provider response metadata is exact, bounded and survives the envelope and outer diagnostic unchanged', () => {
+  for (const category of ['event-stream','json','html','missing','other']) for (const present of [true, false]) {
+    const detail = { component: 'provider', code: 'provider_stream_content_type_invalid', upstream_status: 200, content_type_category: category, body_present: present };
+    const parser = new ExecutionDiagnostics(); parser.write(executionEnvelope({ ...detail }) + '\n');
+    assert.deepEqual(parser.last, detail);
+    const error = new ExecutionError({ component: 'turn', code: 'codex_turn_failed' }); error.proxyFailure = detail;
+    assert.deepEqual(diagnostic(error, 'analyzing').proxy_failure, detail);
+  }
+  assert.deepEqual(executionFailure({ component: 'provider', code: 'provider_stream_content_type_invalid', upstream_status: 600,
+    content_type_category: sensitive, body_present: 'true', headers: sensitive, body: sensitive }), { component: 'provider', code: 'provider_stream_content_type_invalid' });
+  assert.deepEqual(executionFailure({ component: 'provider', code: 'provider_stream_content_type_invalid', upstream_status: 199,
+    content_type_category: ['json'], body_present: 1 }), { component: 'provider', code: 'provider_stream_content_type_invalid' });
+  assert.deepEqual(executionFailure({ component: 'turn', code: 'codex_turn_failed', upstream_status: 200, content_type_category: 'json', body_present: true }), { component: 'turn', code: 'codex_turn_failed' });
+});
 await test('Docker diagnostics distinguish startup, exit, output bounds, and sanitized engine failure after stderr drains', async () => {
   for (const [exit, code] of [[125, 'container_start_failed'], [126, 'container_start_failed'], [127, 'container_start_failed'], [137, 'container_exit_failed'], [0, 'container_output_limit'], [1, 'codex_turn_failed'], [2, 'container_exit_failed']] as const) {
     const spawn = mock.method(childProcess, 'spawn', () => {
@@ -47,14 +61,14 @@ await test('Docker diagnostics distinguish startup, exit, output bounds, and san
       queueMicrotask(() => {
         process.stderr.write(sensitive + '\n');
         process.emit('exit', exit, null);
-        if (exit === 1) process.stderr.write(executionEnvelope({ component: 'turn', code, upstream_status: 401, provider_code: 'invalid_api_key' }) + '\n');
+        if (exit === 1) process.stderr.write(JSON.stringify({ event: 'codexbot_execution_failure', component: 'turn', code, upstream_status: 200, provider_code: 'invalid_api_key', content_type_category: 'json', body_present: true }) + '\n');
         if (exit === 2) process.stderr.write(executionEnvelope({ component: 'provider', code: 'provider_http_failed', upstream_status: 401 }) + '\n');
         if (exit === 0) process.stdout.write('x'.repeat(101));
         process.stdout.end(); process.stderr.end(); process.emit('close', exit, null);
       });
       return process;
     }); syncBuiltinESMExports();
-    try { await assert.rejects(docker(['run'], 100), error => { assert.ok(error instanceof ExecutionError); assert.equal(error.detail.code, code); assert.equal(error.detail.upstream_status, undefined); assert.equal(error.detail.provider_code, undefined); assert.ok(!JSON.stringify(diagnostic(error, 'analyzing')).includes(sensitive)); return true; }); }
+    try { await assert.rejects(docker(['run'], 100), error => { assert.ok(error instanceof ExecutionError); assert.equal(error.detail.code, code); assert.equal(error.detail.upstream_status, undefined); assert.equal(error.detail.provider_code, undefined); assert.equal(error.detail.content_type_category, undefined); assert.equal(error.detail.body_present, undefined); assert.ok(!JSON.stringify(diagnostic(error, 'analyzing')).includes(sensitive)); return true; }); }
     finally { spawn.mock.restore(); syncBuiltinESMExports(); }
   }
 });

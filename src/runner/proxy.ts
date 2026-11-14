@@ -15,6 +15,31 @@ function checkTools(tools: unknown, depth = 0): void {
     if (tool.type === 'namespace') checkTools(tool.tools, depth + 1);
   }
 }
+function contentTypeCategory(header: string | null): string {
+  const type = header?.split(';', 1)[0]?.trim().toLowerCase();
+  if (!type) return 'missing';
+  if (type === 'text/event-stream') return 'event-stream';
+  if (/^application\/(?:json|[a-z0-9!#$&^_.+-]+\+json)$/.test(type)) return 'json';
+  if (type === 'text/html' || type === 'application/xhtml+xml') return 'html';
+  return 'other';
+}
+async function responseFailure(upstream: Response): Promise<ExecutionFailure> {
+  // Inspect at most 8 KiB; only the existing exact code/parameter projection leaves this function.
+  let errorBody: unknown;
+  const reader = upstream.body?.getReader();
+  if (reader) {
+    try {
+      const limited: Uint8Array[] = []; let size = 0;
+      for (;;) { const chunk = await reader.read(); if (chunk.done) break; size += chunk.value.length; if (size > 8192) break; limited.push(chunk.value); }
+      if (size <= 8192) errorBody = JSON.parse(Buffer.concat(limited).toString('utf8')) as unknown;
+    } catch { /* Non-JSON, oversized or failed reads still retain the observed HTTP metadata. */ }
+    finally {
+      try { await reader.cancel(); } catch { /* Cancellation failure must not erase the original response diagnosis. */ }
+      finally { reader.releaseLock(); }
+    }
+  }
+  return providerFailure(errorBody, upstream.status);
+}
 
 export async function inferenceProxy(request: IncomingMessage, response: ServerResponse, token: string, fetcher: typeof fetch = fetch, enforceSelection: (body: Record<string, unknown>) => void = () => {}, report: (failure: ExecutionFailure) => void = () => {}): Promise<void> {
   const disconnected = new AbortController();
@@ -53,27 +78,16 @@ export async function inferenceProxy(request: IncomingMessage, response: ServerR
         ...(typeof request.headers['originator'] === 'string' && request.headers['originator'] === 'CodexBot' ? { originator: 'CodexBot' } : {}) },
       body: JSON.stringify(body), redirect: 'error', signal: AbortSignal.any([AbortSignal.timeout(20 * 60_000), disconnected.signal])
     });
-    if (!upstream.ok) {
-      // Read a small JSON error envelope only to project exact known codes. Never retain/forward its text.
-      let errorBody: unknown;
-      const reader = upstream.body?.getReader();
-      if (reader) {
-        try {
-          const limited: Uint8Array[] = []; let size = 0;
-          for (;;) { const chunk = await reader.read(); if (chunk.done) break; size += chunk.value.length; if (size > 8192) break; limited.push(chunk.value); }
-          if (size <= 8192) errorBody = JSON.parse(Buffer.concat(limited).toString('utf8')) as unknown;
-        } catch { /* Unknown/non-JSON errors are represented by their actual HTTP status alone. */ }
-        finally { try { await reader.cancel(); } finally { reader.releaseLock(); } }
-      }
-      report(providerFailure(errorBody, upstream.status));
-      response.writeHead(upstream.status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
-      response.end('{"error":{"message":"OpenAI inference unavailable; check authentication, entitlement or usage allowance.","type":"codexbot_inference_error"}}');
+    const metadata = { upstream_status: upstream.status, content_type_category: contentTypeCategory(upstream.headers.get('content-type')), body_present: upstream.body !== null };
+    if (!upstream.ok || !upstream.body || metadata.content_type_category !== 'event-stream') {
+      report({ ...await responseFailure(upstream), ...metadata, code: upstream.ok ? 'provider_stream_content_type_invalid' : 'provider_http_failed' });
+      response.writeHead(upstream.ok ? 403 : upstream.status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      response.end(upstream.ok ? '{"error":"inference_proxy_denied_or_unavailable"}' : '{"error":{"message":"OpenAI inference unavailable; check authentication, entitlement or usage allowance.","type":"codexbot_inference_error"}}');
       return;
     }
     stage = 'stream';
-    requireCondition(upstream.body && upstream.headers.get('content-type')?.toLowerCase().startsWith('text/event-stream'), 'provider_stream_content_type_invalid');
     response.writeHead(upstream.status, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store' });
-    await pipeline(Readable.from(safeEvents(upstream.body, token, report)), response);
+    await pipeline(Readable.from(safeEvents(upstream.body, token, failure => report({ ...failure, ...metadata }))), response);
   } catch (error) {
     report(executionError(error, stage === 'stream' ? 'provider' : 'proxy', stage === 'transport' ? 'proxy_transport_failed' : stage === 'stream' ? 'provider_stream_failed' : 'proxy_invalid_json').detail);
     if (!response.headersSent) response.writeHead(403, { 'Content-Type': 'application/json' }); response.end('{"error":"inference_proxy_denied_or_unavailable"}');
