@@ -174,8 +174,12 @@ async function route(request: Request, env: Env): Promise<Response> {
   const { data: installation } = await app.rest.apps.getRepoInstallation(splitRepo(snapshot.repository));
   requireCondition(installation.id === snapshot.installationId && !installation.suspended_at, 'installation_no_longer_valid', 403);
   const { github } = await installationClient(env, snapshot.installationId, snapshot.repositoryId, { contents: 'read', pull_requests: 'read', actions: 'read' });
+  // Actions embeds a minimal repository without default_branch. Validate the
+  // current default branch against authoritative metadata for every operation.
+  const { data: repository } = await github.rest.repos.get(splitRepo(snapshot.repository));
+  requireCondition(repository.id === snapshot.repositoryId && repository.owner.id === snapshot.ownerId && repository.default_branch === snapshot.defaultBranch, 'workflow_run_mismatch', 403);
   const { data: run } = await github.rest.actions.getWorkflowRun({ ...splitRepo(snapshot.repository), run_id: Number(identity.runId) });
-  requireCondition(run.event === 'workflow_dispatch' && run.head_sha === snapshot.workflowSha && run.path === '.github/workflows/codexbot.yml' && run.repository.id === snapshot.repositoryId && run.repository.owner.id === snapshot.ownerId && run.repository.default_branch === snapshot.defaultBranch && run.run_attempt === Number(identity.attempt), 'workflow_run_mismatch', 403);
+  requireCondition(run.event === 'workflow_dispatch' && run.head_sha === snapshot.workflowSha && run.path === '.github/workflows/codexbot.yml' && run.repository.id === snapshot.repositoryId && run.repository.owner.id === snapshot.ownerId && run.run_attempt === Number(identity.attempt), 'workflow_run_mismatch', 403);
   requireCondition(run.actor?.type === 'Bot' && run.actor.login === `${env.GITHUB_APP_SLUG}[bot]`, 'workflow_not_dispatched_by_this_app', 403);
   requireCondition(row.dispatch_attempt && run.display_title === `CodexBot ${snapshot.id} ${row.dispatch_attempt}`, 'workflow_dispatch_attempt_mismatch', 403);
   if (operation === 'release') { await store.release(snapshot); return Response.json({ status: 'released' }); }
