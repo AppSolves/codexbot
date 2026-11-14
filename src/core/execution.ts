@@ -21,9 +21,10 @@ const PROVIDER_PARAMS = new Set(['model', 'reasoning.effort', 'tools', 'tool_cho
   'max_output_tokens', 'previous_response_id', 'temperature', 'prompt_cache_retention', 'metadata']);
 const METHODS = new Set(['initialize', 'model/list', 'thread/start', 'turn/start']);
 const SIGNALS = new Set(['SIGKILL', 'SIGTERM', 'SIGABRT', 'SIGSEGV', 'SIGINT']);
+const CONTENT_TYPES = new Set(['event-stream', 'json', 'html', 'missing', 'other']);
 export interface ExecutionFailure {
   component: string; code: string; exit_code?: number; signal?: string; rpc_code?: number; rpc_method?: string;
-  upstream_status?: number; provider_code?: string; provider_param?: string;
+  upstream_status?: number; content_type_category?: string; body_present?: boolean; provider_code?: string; provider_param?: string;
 }
 function object(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -37,9 +38,13 @@ export function executionFailure(value: unknown): ExecutionFailure | null {
   if (typeof source.signal === 'string' && SIGNALS.has(source.signal)) result.signal = source.signal;
   if (typeof source.rpc_method === 'string' && METHODS.has(source.rpc_method)) result.rpc_method = source.rpc_method;
   if (Number.isInteger(source.rpc_code) && Number(source.rpc_code) >= -32768 && Number(source.rpc_code) <= -32000) result.rpc_code = Number(source.rpc_code);
-  if (Number.isInteger(source.upstream_status) && Number(source.upstream_status) >= 400 && Number(source.upstream_status) <= 599) result.upstream_status = Number(source.upstream_status);
-  if (typeof source.provider_code === 'string' && PROVIDER_CODES.has(source.provider_code)) result.provider_code = source.provider_code;
-  if (typeof source.provider_param === 'string' && PROVIDER_PARAMS.has(source.provider_param)) result.provider_param = source.provider_param;
+  if (component === 'provider') {
+    if (Number.isInteger(source.upstream_status) && Number(source.upstream_status) >= 200 && Number(source.upstream_status) <= 599) result.upstream_status = Number(source.upstream_status);
+    if (typeof source.content_type_category === 'string' && CONTENT_TYPES.has(source.content_type_category)) result.content_type_category = source.content_type_category;
+    if (typeof source.body_present === 'boolean') result.body_present = source.body_present;
+    if (typeof source.provider_code === 'string' && PROVIDER_CODES.has(source.provider_code)) result.provider_code = source.provider_code;
+    if (typeof source.provider_param === 'string' && PROVIDER_PARAMS.has(source.provider_param)) result.provider_param = source.provider_param;
+  }
   return result;
 }
 export class ExecutionError extends AppError {
