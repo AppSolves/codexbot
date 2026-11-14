@@ -41,6 +41,30 @@ async function responseFailure(upstream: Response): Promise<ExecutionFailure> {
   return providerFailure(errorBody, upstream.status);
 }
 
+/** Only for an absent Content-Type on a successful Responses request.
+ * Inspect a bounded prefix on a clone; keep the original stream untouched.
+ * The full stream still goes through safeEvents and must reach response.completed.
+ */
+async function hasEventStreamPrefix(upstream: Response): Promise<boolean> {
+  const reader = upstream.clone().body?.getReader();
+  if (!reader) return false;
+  const parts: Uint8Array[] = [];
+  let size = 0;
+  try {
+    while (size < 64) {
+      const next = await reader.read();
+      if (next.done) break;
+      if (!next.value.length) continue;
+      const count = Math.min(next.value.length, 64 - size);
+      parts.push(next.value.subarray(0, count));
+      size += count;
+      if (size >= 6) break;
+    }
+    return /^(?:event:|data:)/.test(Buffer.concat(parts).toString('utf8'));
+  } catch { return false; }
+  finally { void reader.cancel().catch(() => {}); }
+}
+
 export async function inferenceProxy(request: IncomingMessage, response: ServerResponse, token: string, fetcher: typeof fetch = fetch, enforceSelection: (body: Record<string, unknown>) => void = () => {}, report: (failure: ExecutionFailure) => void = () => {}): Promise<void> {
   const disconnected = new AbortController();
   let stage: 'validation' | 'transport' | 'stream' = 'validation';
@@ -79,7 +103,13 @@ export async function inferenceProxy(request: IncomingMessage, response: ServerR
       body: JSON.stringify(body), redirect: 'error', signal: AbortSignal.any([AbortSignal.timeout(20 * 60_000), disconnected.signal])
     });
     const metadata = { upstream_status: upstream.status, content_type_category: contentTypeCategory(upstream.headers.get('content-type')), body_present: upstream.body !== null };
-    if (!upstream.ok || !upstream.body || metadata.content_type_category !== 'event-stream') {
+    // A documented Codex SSE success can omit Content-Type. In that one case,
+// require an SSE-looking prefix before handing the unmodified stream to
+// safeEvents, which enforces bounded frames and terminal response.completed.
+// Never accept JSON/HTML/other explicit media types as streaming responses.
+    const headerlessSse = upstream.ok && upstream.body && metadata.content_type_category === 'missing'
+      ? await hasEventStreamPrefix(upstream) : false;
+    if (!upstream.ok || !upstream.body || (metadata.content_type_category !== 'event-stream' && !headerlessSse)) {
       report({ ...await responseFailure(upstream), ...metadata, code: upstream.ok ? 'provider_stream_content_type_invalid' : 'provider_http_failed' });
       response.writeHead(upstream.ok ? 403 : upstream.status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
       response.end(upstream.ok ? '{"error":"inference_proxy_denied_or_unavailable"}' : '{"error":{"message":"OpenAI inference unavailable; check authentication, entitlement or usage allowance.","type":"codexbot_inference_error"}}');
