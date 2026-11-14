@@ -15,12 +15,13 @@ await test('request transitions bind exactly one run and preserve publication st
     await store.create(request); assert.equal(await store.transition(request.id, 'created', 'dispatched'), true);
     const starts = await Promise.all([store.transition(request.id, 'dispatched', 'running', '1'), store.transition(request.id, 'dispatched', 'running', '2')]);
     assert.equal(starts.filter(Boolean).length, 1);
-    await assert.rejects(store.result(request.id, clean(), true, '2'));
-    await store.result(request.id, clean(), true, '1'); await store.result(request.id, clean(), true, '1');
-    await assert.rejects(store.result(request.id, { ...clean(), summary: 'A different result must not replace the first one.' }, true, '1'));
-    assert.equal(await store.transition(request.id, 'reviewed', 'publishing', '2'), false);
-    await assert.rejects(store.claimPublication(request.id, '2'));
-    const lease = await store.claimPublication(request.id, '1'); assert.equal((await store.get(request.id)).row.state, 'publishing');
+    const admittedRun = starts[0] ? '1' : '2', rejectedRun = starts[0] ? '2' : '1';
+    await assert.rejects(store.result(request.id, clean(), true, rejectedRun));
+    await store.result(request.id, clean(), true, admittedRun); await store.result(request.id, clean(), true, admittedRun);
+    await assert.rejects(store.result(request.id, { ...clean(), summary: 'A different result must not replace the first one.' }, true, admittedRun));
+    assert.equal(await store.transition(request.id, 'reviewed', 'publishing', rejectedRun), false);
+    await assert.rejects(store.claimPublication(request.id, rejectedRun));
+    const lease = await store.claimPublication(request.id, admittedRun); assert.equal((await store.get(request.id)).row.state, 'publishing');
     await assert.rejects(store.published(request.id, 99, 'wrong-owner'));
     await store.published(request.id, 99, lease); assert.equal((await store.get(request.id)).row.review_id, 99);
   } finally { sqlite.close(); }
@@ -33,13 +34,14 @@ await test('cross-run refresh lock plus version CAS protects rotating tokens', a
     const other = { ...request, id: 'another-request' };
     const acquired = await Promise.allSettled([store.acquire(request), store.acquire(other)]);
     assert.equal(acquired.filter(x => x.status === 'fulfilled').length, 1);
-    await assert.rejects(store.rotate(other, 1, initial));
-    await store.rotate(request, 1, initial); assert.equal((await store.session(request.repositoryId, request.actorId, request.installationId))?.version, 2);
-    await assert.rejects(store.rotate(request, 1, initial));
+    const owner = acquired[0]!.status === 'fulfilled' ? request : other, rejected = owner === request ? other : request;
+    await assert.rejects(store.rotate(rejected, 1, initial));
+    await store.rotate(owner, 1, initial); assert.equal((await store.session(request.repositoryId, request.actorId, request.installationId))?.version, 2);
+    await assert.rejects(store.rotate(owner, 1, initial));
     await assert.rejects(store.saveSession(request.repositoryId, request.actorId, initial, request.installationId));
     await assert.rejects(store.acquire({ ...request, repositoryId: 99 }));
     assert.equal(await store.session(request.repositoryId, 99, request.installationId), null);
-    await store.release(request); await store.acquire(other); await store.release(other);
+    await store.release(owner); await store.acquire(rejected); await store.release(rejected);
     await store.removeInstallation(request.installationId); assert.equal(await store.session(request.repositoryId, request.actorId, request.installationId), null);
   } finally { sqlite.close(); }
 });

@@ -72,7 +72,8 @@ await test('atomic quotas, same-head idempotency, bounded rerun and tenant isola
   const { db, sqlite } = database(), store = new Store(db), request = snapshot(); request.config.quotas.cooldown_seconds = 0;
   try {
     const attempts = await Promise.allSettled([store.create(request), store.create({ ...request, id: crypto.randomUUID() })]); assert.equal(attempts.filter(x => x.status === 'fulfilled').length, 1);
-    await store.transition(request.id, 'created', 'failed');
+    const admitted = attempts.find(x => x.status === 'fulfilled'); assert.ok(admitted);
+    assert.equal(await store.transition(admitted.value.id, 'created', 'failed'), true);
     await assert.rejects(store.create({ ...request, id: crypto.randomUUID() }), /duplicate_review_or_quota_exceeded/);
     const rerun = { ...request, id: crypto.randomUUID(), command: { ...request.command, rerun: true } };
     await store.create(rerun); await store.transition(rerun.id, 'created', 'failed');
