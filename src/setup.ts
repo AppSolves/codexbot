@@ -31,9 +31,21 @@ export function callerWorkflow(source: string, ref: string, backend: string): st
     dispatch_attempt: { description: 'Durable backend dispatch identity', required: true, type: 'string' },
     credential_check_only: { description: 'Check Environment availability without broker admission or inference', required: false, type: 'boolean', default: false }
   } } }, permissions: {}, concurrency: { group: 'codexbot-credentials', 'cancel-in-progress': false }, jobs: {
-    review: { permissions: { contents: 'read', 'id-token': 'write' }, uses: `${source}/.github/workflows/review.yml@${ref}`,
-      // Named empty grants enable Environment resolution without repository-secret fallback.
-      secrets: { CODEXBOT_VAULT_KEY: '', CODEXBOT_API_KEY: '' },
+    'credential-scope': { 'runs-on': 'ubuntu-24.04', 'timeout-minutes': 1, permissions: {}, steps: [{
+      name: 'Reject credentials outside protected Environments', shell: 'bash',
+      // No Environment here: this checks the same queued repository/org snapshot
+      // used by the named references below, without passing credential values.
+      env: { CODEXBOT_SHARED_CREDENTIAL_PRESENT: "${{ secrets.CODEXBOT_VAULT_KEY != '' || secrets.CODEXBOT_API_KEY != '' }}" },
+      run: `node --input-type=module <<'JS'
+if (process.env.CODEXBOT_SHARED_CREDENTIAL_PRESENT !== 'false') {
+  console.error(JSON.stringify({event: 'review_failed', stage: 'environment', code: 'non_environment_credentials_forbidden'}));
+  process.exitCode = 1;
+}
+JS
+`
+    }] },
+    review: { needs: ['credential-scope'], permissions: { contents: 'read', 'id-token': 'write' }, uses: `${source}/.github/workflows/review.yml@${ref}`,
+      secrets: { CODEXBOT_VAULT_KEY: '${{ secrets.CODEXBOT_VAULT_KEY }}', CODEXBOT_API_KEY: '${{ secrets.CODEXBOT_API_KEY }}' },
       with: { request_id: '${{ inputs.request_id }}', credential_owner: '${{ inputs.credential_owner }}', installation_id: '${{ inputs.installation_id }}', credential_check_only: '${{ inputs.credential_check_only }}', backend } }
   } });
 }

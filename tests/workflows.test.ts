@@ -24,12 +24,31 @@ await test('reusable workflow has no GitHub write permissions, shared secrets or
   assert.ok(!text.includes('pull_request.head')); assert.ok(!text.includes('secrets: inherit')); assert.ok(!text.includes('upload-artifact'));
   assert.equal(record(record(jobs.publish).permissions).contents, 'read');
 });
-await test('Environment secret grants are explicit and empty, with no repository-secret fallback or blanket inheritance', async () => {
+await test('named Environment references require a successful caller scope guard, without credential values or blanket inheritance', async () => {
   const workflow = record(parse(await readFile('.github/workflows/review.yml', 'utf8')));
   const contract = record(record(workflow.on).workflow_call);
   assert.deepEqual(Object.keys(record(contract.secrets)).sort(), ['CODEXBOT_API_KEY','CODEXBOT_VAULT_KEY']);
   const caller = record(parse(callerWorkflow('operator/codexbot', RELEASE, 'https://self.invalid')));
-  assert.deepEqual(record(record(caller.jobs).review).secrets, { CODEXBOT_VAULT_KEY: '', CODEXBOT_API_KEY: '' });
+  const jobs = record(caller.jobs), review = record(jobs.review), guard = record(jobs['credential-scope']);
+  assert.deepEqual(review.secrets, { CODEXBOT_VAULT_KEY: '${{ secrets.CODEXBOT_VAULT_KEY }}', CODEXBOT_API_KEY: '${{ secrets.CODEXBOT_API_KEY }}' });
+  assert.deepEqual(review.needs, ['credential-scope']); assert.equal(review.if, undefined);
+  assert.equal(guard.environment, undefined); assert.deepEqual(guard.permissions, {}); assert.equal(guard['timeout-minutes'], 1);
+  const guardSteps = guard.steps as Record<string, unknown>[]; assert.equal(guardSteps.length, 1);
+  assert.deepEqual(guardSteps[0]!.env, { CODEXBOT_SHARED_CREDENTIAL_PRESENT: "${{ secrets.CODEXBOT_VAULT_KEY != '' || secrets.CODEXBOT_API_KEY != '' }}" });
+  const guardScript = String(guardSteps[0]!.run).split("<<'JS'\n")[1]!.replace(/\nJS\s*$/, '');
+  for (const value of ['false', 'true', '', 'opaque-secret']) {
+    const env = Object.assign(Object.create(null) as NodeJS.ProcessEnv, { CODEXBOT_SHARED_CREDENTIAL_PRESENT: value });
+    const result = spawnSync(process.execPath, ['--input-type=module', '-e', guardScript], { env, encoding: 'utf8' });
+    assert.equal(result.status, value === 'false' ? 0 : 1);
+    assert.ok(!result.stdout.includes('opaque-secret')); assert.ok(!result.stderr.includes('opaque-secret'));
+    if (value !== 'false') assert.equal(JSON.parse(result.stderr).code, 'non_environment_credentials_forbidden');
+  }
+  assert.ok(!JSON.stringify(caller).includes('secrets: inherit'));
+  assert.equal(guard['continue-on-error'], undefined); assert.equal(guardSteps[0]!['continue-on-error'], undefined);
+  const manual = record(parse((await readFile('docs/installation.md', 'utf8')).split('```yaml\n')[1]!.split('```')[0]!));
+  assert.deepEqual(record(manual.jobs)['credential-scope'], guard);
+  assert.deepEqual(record(record(manual.jobs).review).needs, review.needs);
+  assert.deepEqual(record(record(manual.jobs).review).secrets, review.secrets);
   const steps = record(record(workflow.jobs).review).steps as Record<string, unknown>[];
   const check = String(steps[0]!.run).split("<<'JS'\n")[1]!.replace(/\nJS\s*$/, '');
   for (const [vault, api, status] of [['','',1],['opaque-vault','',0],['','opaque-api',0],['opaque-vault','opaque-api',1]] as const) {

@@ -1,5 +1,22 @@
 # Validation record and release gates
 
+## Environment secret forwarding correction — 2026-11-14
+
+A real [GitHub Actions contract probe](https://github.com/AppSolves/codexbot/actions/runs/43602684286) used synthetic, non-credential canaries in two separate test Environments and a uniquely named repository canary. No OpenAI credentials, production Environment changes, OIDC bypass, inference or deployment were involved. All six assertions passed:
+
+| GitHub configuration | Observed result |
+|---|---|
+| Literal empty caller grant; Environment contains the named canary | Empty value |
+| No caller grant; Environment contains the named canary | Empty value |
+| Named secret reference; canary exists only in Environment | Environment value |
+| Named reference; same name in repository and Environment | Environment value |
+| Named reference; key absent from Environment, present in repository | Repository fallback, demonstrating why references alone are unsafe |
+| Caller job without Environment | Sees global canary presence but cannot see the Environment-only canary |
+
+The [probe commit](https://github.com/AppSolves/codexbot/commit/9e602025fdb2ff5c2176584d0d40f1af58222118) preserves the exact assertions and workflow definitions; its diagnostic branch is retained as evidence. The temporary canary secret and both test Environments were removed after successful completion. The production generator now combines named references with a required environment-free guard that rejects either global credential name. Regression tests execute its fail-closed script, enforce its dependency/permissions/boolean-only inputs and compare the manual example against the generator. Static tests do not implement or mock GitHub's secret resolver. `npm run check` (124 tests, typecheck, lint, build), `npm run test:clean`, actionlint for repository/generated/caller workflows and `git diff --check` passed. The production reusable workflow and Worker pin remain `4ed668864cac0682e09ec49a2515a6e1893a2780`.
+
+The real owning-repository credential/OIDC diagnostic must be freshly dispatched on its protected default branch after the caller PR receives normal approval and is merged. The canary probe does not establish that repository's OAuth session, broker admission or inference success. See [the caller-only migration](review-rollout.md#credential-diagnosis).
+
 The latest [review reliability rollout](review-rollout.md) adds focused tests for credential forwarding/availability, broker error redaction, no-release-before-admission, workload-bound stage/failure updates, permanent non-approval after failed jobs, comment ownership/leases/idempotency/ambiguous responses and bounded recovery. The credential-only workflow checks availability and read-only OIDC identity only. A separate manually dispatched cache benchmark measures real GHA import/export; cache remains opt-in until that evidence justifies it. These checks do not assert live provider inference.
 
 Run the exact commands in [development](development.md). Local checks cover HMAC, policy/parser/aliases, safe regex, quotas, immutable commit/tree/blob context, output schema/DLP/limits/confidence, OAuth/OIDC contracts, native review and guarded-merge state machines, installation-scoped session leases/CAS, atomic setup, and D1/HTTP fault transitions.

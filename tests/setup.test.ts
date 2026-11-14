@@ -4,11 +4,11 @@ import { Octokit } from '@octokit/rest';
 import { parse } from 'yaml';
 import { callerWorkflow, setupPullRequest, ensureProtectedEnvironment } from '../src/setup.js';
 import { RELEASE } from './fixtures.js';
-await test('generated workflow pins reusable code, has minimal permissions and never shares secrets', () => {
+await test('generated caller pins reusable code and guards named Environment credentials', () => {
   const yaml = callerWorkflow('operator/codexbot', RELEASE, 'https://self.invalid');
   const workflow = parse(yaml) as { permissions: unknown; jobs: { review: { uses: string; secrets?: unknown; permissions: unknown; with: { backend: string } } } };
   assert.equal(workflow.jobs.review.uses, `operator/codexbot/.github/workflows/review.yml@${RELEASE}`);
-  assert.deepEqual(workflow.jobs.review.secrets, { CODEXBOT_VAULT_KEY: '', CODEXBOT_API_KEY: '' });
+  assert.deepEqual(workflow.jobs.review.secrets, { CODEXBOT_VAULT_KEY: '${{ secrets.CODEXBOT_VAULT_KEY }}', CODEXBOT_API_KEY: '${{ secrets.CODEXBOT_API_KEY }}' });
   assert.deepEqual(workflow.permissions, {}); assert.equal(workflow.jobs.review.with.backend, 'https://self.invalid');
   assert.match(yaml, /dispatch_attempt/); assert.throws(() => callerWorkflow('operator/codexbot', 'main', 'https://self.invalid'));
 });
