@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
 import { inferenceProxy, createInferenceServer } from '../src/runner/proxy.js';
+import type { ExecutionFailure } from '../src/core/execution.js';
 await test('API-key and ChatGPT adapters inject only their own bearer at the isolated inference boundary', async () => {
   for (const credential of ['fixture-personal-api-key', 'fixture-personal-oauth-token']) {
     const requests: { url: string; auth: string; body: string }[] = [];
@@ -32,6 +33,29 @@ await test('provider authentication errors never forward credential fragments to
     const response = await fetch(`http://127.0.0.1:${address.port}/v1/responses`, { method: 'POST', body: JSON.stringify({ model: 'fixture', store: false, stream: true, input: [] }) });
     assert.equal(response.status, 401); assert.ok(!(await response.text()).includes('fixture-sensitive-fragment'));
   } finally { server.closeAllConnections(); server.close(); }
+});
+await test('proxy diagnostics retain only proven HTTP status and exact provider codes/params; validation never calls provider', async () => {
+  const secret = 'Bearer fixture-secret OAuth-code source prompt private-provider-message';
+  for (const [status, code, param] of [[401, 'subscription_sharing_invalid_user', null], [403, 'subscription_sharing_user_not_eligible', null],
+    [403, 'chatpass_v2_scope_not_authorized', null], [429, 'subscription_sharing_usage_limit_exceeded', null],
+    [400, 'subscription_sharing_unsupported_capability', 'tools'], [404, 'model_not_found', 'model'], [503, secret, secret], [502, 'oversized', null]] as const) {
+    const diagnostics: ExecutionFailure[] = []; let calls = 0;
+    const upstream: typeof fetch = async () => {
+      calls++; return new Response(code === 'oversized' ? secret.repeat(1000) : JSON.stringify({ error: { code, param, message: secret, body: secret }, detail: secret }), { status });
+    };
+    const server = createServer((request, response) => { void inferenceProxy(request, response, 'fixture-only', upstream, () => {}, value => diagnostics.push(value)); });
+    server.listen(0, '127.0.0.1'); await once(server, 'listening'); const address = server.address(); assert.ok(address && typeof address !== 'string');
+    try {
+      const body = { model: 'fixture', store: false, stream: true, input: [] };
+      const post = (value: unknown) => fetch(`http://127.0.0.1:${address.port}/v1/responses`, { method: 'POST', body: JSON.stringify(value) });
+      const result = await post(body); assert.equal(result.status, status); assert.ok(!(await result.text()).includes(secret));
+      assert.deepEqual(diagnostics[0], { component: 'provider', code: 'provider_http_failed', upstream_status: status,
+        ...(!['oversized', secret].includes(code) ? { provider_code: code } : {}), ...(param && param !== secret ? { provider_param: param } : {}) });
+      const denied = await post({ ...body, [secret]: secret }); assert.equal(denied.status, 403); await denied.text();
+      assert.deepEqual(diagnostics[1], { component: 'proxy', code: 'proxy_unsupported_request_field' });
+      assert.equal(calls, 1); assert.ok(!JSON.stringify(diagnostics).includes(secret));
+    } finally { server.closeAllConnections(); server.close(); }
+  }
 });
 await test('inference locks model/effort and denies stored prompts and additional hosted tools', async () => {
   const localFetch = globalThis.fetch; let providerCalls = 0;

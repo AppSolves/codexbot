@@ -26,9 +26,12 @@ export function progressBody(snapshot: RequestSnapshot, row: RequestRow, statusU
   const status = row.workflow_status && STATUSES.has(row.workflow_status) ? row.workflow_status : 'not yet confirmed';
   const conclusion = row.workflow_conclusion && CONCLUSIONS.has(row.workflow_conclusion) ? ` / ${row.workflow_conclusion}` : '';
   const review = row.review_id && Number.isSafeInteger(row.review_id) ? `\n\n[Native review](https://github.com/${snapshot.repository}/pull/${snapshot.pr}#pullrequestreview-${row.review_id}).` : '';
+  const failure = phase(row) !== 'failed' ? '' : row.state === 'published'
+    ? '\n\nAnalysis failed. A non-approving fallback report was published; this is not a completed AI review. Check the workflow diagnostics before requesting a new review.'
+    : '\n\nReview processing did not complete. Check the workflow diagnostics, resolve the reported prerequisite and request a new review.';
   // Every variable is a validated identifier/count or a fixed vocabulary. No prompt,
   // model text, source, remote URL or internal error is part of this public channel.
-  return `${marker(snapshot)}\nCodexBot accepted review request \`${snapshot.id.slice(0, 8)}\`.\n\n${counts}\n\n**Stage: ${phase(row)}.**\n\n${statusUnavailable ? 'Workflow details are temporarily unavailable; no current run status is asserted.' : `Workflow: ${status}${conclusion}. ${run}`}${review}${phase(row) === 'failed' ? '\n\nReview processing did not complete. Check the workflow diagnostics, resolve the reported prerequisite and request a new review.' : ''}`;
+  return `${marker(snapshot)}\nCodexBot accepted review request \`${snapshot.id.slice(0, 8)}\`.\n\n${counts}\n\n**Stage: ${phase(row)}.**\n\n${statusUnavailable ? 'Workflow details are temporarily unavailable; no current run status is asserted.' : `Workflow: ${status}${conclusion}. ${run}`}${review}${failure}`;
 }
 async function observe(github: Octokit, store: Store, snapshot: RequestSnapshot, row: RequestRow, slug: string): Promise<void> {
   if (row.workflow_status === 'completed' || Date.now() - row.workflow_checked_at < 15_000 || !row.dispatch_attempt) return;

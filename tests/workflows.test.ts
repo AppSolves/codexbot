@@ -72,7 +72,11 @@ await test('cached builds are opt-in, source/input scoped, pinned and loaded onl
   assert.match(String(record(builder.with)['driver-opts']), /^image=moby\/buildkit@sha256:[a-f0-9]{64}$/);
   const execute = steps.find(x => String(x.run).includes('main.js review'))!;
   assert.equal(record(execute.env).CODEXBOT_IMAGE, '${{ steps.image.outputs.id }}');
+  assert.equal(execute['continue-on-error'], undefined); assert.equal(record(jobs.review)['continue-on-error'], undefined);
+  assert.equal(execute.run, 'node dist/src/runner/main.js review');
   const publish = record(jobs.publish); assert.match(String(publish.if), /needs.review.result == 'failure'/);
+  const publishSteps = publish.steps as Record<string, unknown>[];
+  assert.equal(record(publishSteps.find(x => String(x.run).includes('main.js publish'))!.env).CODEXBOT_REVIEW_JOB_SUCCEEDED, "${{ needs.review.result == 'success' }}");
   assert.match(String(publish.if), /!inputs.credential_check_only/);
 });
 await test('documentation local links resolve and Apache license is canonical', async () => {
