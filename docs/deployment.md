@@ -2,6 +2,8 @@
 
 For Worker/reusable-workflow upgrades, follow [the coordinated immutable-pin upgrade](review-rollout.md), apply required migrations and set the caller pin and Worker TRUSTED_WORKFLOW to the same actual merged commit. The caller-only Environment-secret correction uses named references plus a scope guard; it keeps the existing `4ed668864cac0682e09ec49a2515a6e1893a2780` pin and needs no Worker deployment or migration. Keep merge disabled. Report validation before any production change; a temporary pin mismatch fails closed.
 
+The shared setup generator is bundled into `/v1/setup`. Publishing its corrected templates for future hosted installations requires a separately authorized Worker bundle deployment, with the existing trusted review pin preserved. The existing caller can be repaired independently; no backend deployment is performed by the fix PR.
+
 This document is operator instructions, not evidence of an existing hosted deployment. Do not register, deploy, publish a release or use paid inference without your own authorization.
 
 ## GitHub App
