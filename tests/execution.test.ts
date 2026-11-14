@@ -11,7 +11,7 @@ import { docker } from '../src/runner/docker.js';
 import { runCodex } from '../src/runner/engine.js';
 import { Rpc } from '../src/runner/rpc.js';
 import { reviewJob } from '../src/runner/main.js';
-import { snapshot } from './fixtures.js';
+import { snapshot, clean } from './fixtures.js';
 
 const sensitive = 'Bearer fixture-private-credential OAuth-code private-source prompt-provider-message';
 function child(onWrite: (value: string) => void = () => {}) {
@@ -86,20 +86,33 @@ await test('RPC rejects safe method/code and process exit metadata without stder
   draining.stdout.write(JSON.stringify({ id: 1, result: { accepted: true } }) + '\n'); draining.emit('close', 0, null);
   assert.deepEqual(await final, { accepted: true });
 });
+await test('RPC rejects every server-side approval/tool/permission request and marks the turn incomplete without exposing params', () => {
+  for (const method of ['item/commandExecution/requestApproval', 'item/fileChange/requestApproval', 'item/permissions/requestApproval', 'item/tool/call', 'unknown/clientTool']) {
+    const sent: Record<string, unknown>[] = [], process = child(value => sent.push(JSON.parse(value) as Record<string, unknown>));
+    const rpc = new Rpc(process as unknown as childProcess.ChildProcessWithoutNullStreams);
+    const notifications: unknown[] = []; rpc.onNotification((method, params) => notifications.push({ method, params }));
+    process.stdout.write(JSON.stringify({ id: 7, method, params: { token: sensitive, command: sensitive } }) + '\n');
+    assert.equal((sent[0]!.error as { code: number }).code, -32601); assert.equal(sent[0]!.result, undefined);
+    assert.deepEqual(notifications, [{ method: 'codexbot/client-request-denied', params: null }]);
+    assert.ok(!JSON.stringify({ sent, notifications }).includes(sensitive));
+  }
+});
 await test('Codex model selection, RPC rejection and failed/interrupted turns keep distinct sanitized causes', async () => {
-  for (const scenario of ['model', 'rpc', 'failed', 'interrupted', 'invalid-json']) {
+  for (const scenario of ['model', 'rpc', 'failed', 'interrupted', 'invalid-json', 'no-inspection', 'declined']) {
     const request = snapshot(); if (scenario === 'model') request.config.review.model = 'not-in-fixture';
     const spawn = mock.method(childProcess, 'spawn', () => {
       const process = child(line => {
-        const message = JSON.parse(line) as { id?: number; method: string };
+        const message = JSON.parse(line) as { id?: number; method: string; params?: { approvalPolicy?: string } };
         if (!message.id) return;
+        if (message.method === 'thread/start') assert.equal(message.params?.approvalPolicy, 'never');
         const send = (value: unknown) => process.stdout.write(JSON.stringify(value) + '\n');
         queueMicrotask(() => {
           if (message.method === 'turn/start' && scenario === 'rpc') { send({ id: message.id, error: { code: -32602, message: sensitive } }); return; }
           send({ id: message.id, result: message.method === 'model/list' ? { data: [{ model: 'fixture', isDefault: true }], nextCursor: null } : message.method === 'thread/start' ? { thread: { id: 'fixture' } } : {} });
           if (message.method === 'turn/start') {
+            if (scenario !== 'no-inspection') send({ method: 'item/completed', params: { item: { type: 'commandExecution', status: scenario === 'declined' ? 'declined' : 'completed', exitCode: scenario === 'declined' ? null : 0 } } });
             send({ method: 'item/completed', params: { item: { type: 'agentMessage', text: sensitive } } });
-            send({ method: 'turn/completed', params: { turn: { status: scenario === 'invalid-json' ? 'completed' : scenario, error: { message: sensitive } } } });
+            send({ method: 'turn/completed', params: { turn: { status: ['invalid-json','no-inspection','declined'].includes(scenario) ? 'completed' : scenario, error: { message: sensitive } } } });
           }
         });
       }); return process;
@@ -107,7 +120,7 @@ await test('Codex model selection, RPC rejection and failed/interrupted turns ke
     try {
       await assert.rejects(runCodex(request, '{}'), error => {
         assert.ok(error instanceof ExecutionError);
-        assert.equal(error.detail.code, ({ model: 'configured_model_not_in_codex_catalog', rpc: 'codex_rpc_rejected', failed: 'codex_turn_failed', interrupted: 'codex_turn_interrupted', 'invalid-json': 'codex_output_not_json' } as Record<string, string>)[scenario]);
+        assert.equal(error.detail.code, ({ model: 'configured_model_not_in_codex_catalog', rpc: 'codex_rpc_rejected', failed: 'codex_turn_failed', interrupted: 'codex_turn_interrupted', 'invalid-json': 'codex_output_not_json', 'no-inspection': 'codex_inspection_not_performed', declined: 'codex_inspection_denied' } as Record<string, string>)[scenario]);
         assert.ok(!JSON.stringify(diagnostic(error, 'analyzing')).includes(sensitive)); return true;
       });
     } finally { spawn.mock.restore(); syncBuiltinESMExports(); }
@@ -117,6 +130,7 @@ await test('actual review job records incomplete fallback, releases acquired lea
   const saved = { ...process.env }, request = snapshot(); request.config.credentials.mode = 'api-key';
   const submissions: Record<string, unknown>[] = [], operations: string[] = [], logs: unknown[][] = [];
   let rejectReporting = false;
+  let containerOutput: unknown = null, unavailableContext = false, runs = 0;
   Object.assign(process.env, { CODEXBOT_BACKEND: 'https://broker.invalid', CODEXBOT_REQUEST_ID: request.id, CODEXBOT_API_KEY: sensitive,
     CODEXBOT_CREDENTIAL_OWNER: '5', CODEXBOT_INSTALLATION_ID: '1', CODEXBOT_IMAGE: 'sha256:fixture', ACTIONS_ID_TOKEN_REQUEST_URL: 'https://oidc.invalid/token', ACTIONS_ID_TOKEN_REQUEST_TOKEN: sensitive });
   delete process.env.CODEXBOT_VAULT_KEY;
@@ -126,9 +140,13 @@ await test('actual review job records incomplete fallback, releases acquired lea
     const process = child();
     queueMicrotask(() => {
       if (args[0] === 'logs' && args.includes('--follow')) { process.stdout.write('codexbot-proxy-ready\n'); return; }
-      if (args[0] === 'run') process.stderr.write(executionEnvelope({ component: 'turn', code: 'codex_turn_failed' }) + '\n');
+      if (args[0] === 'run') {
+        runs++;
+        if (containerOutput !== null) process.stdout.write(JSON.stringify(containerOutput));
+        else process.stderr.write(executionEnvelope({ component: 'turn', code: 'codex_turn_failed' }) + '\n');
+      }
       if (args[0] === 'logs') process.stderr.write(executionEnvelope({ component: 'provider', code: 'provider_http_failed', upstream_status: 401 }) + '\n');
-      process.stdout.end(); process.stderr.end(); process.emit('close', args[0] === 'run' ? 1 : 0, null);
+      process.stdout.end(); process.stderr.end(); process.emit('close', args[0] === 'run' && containerOutput === null ? 1 : 0, null);
     }); return process;
   }); syncBuiltinESMExports();
   const fetcher = mock.method(globalThis, 'fetch', async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
@@ -145,7 +163,7 @@ await test('actual review job records incomplete fallback, releases acquired lea
     if (url.pathname.endsWith('/pulls/4')) return Response.json({ head: { sha: request.head }, base: { sha: request.base }, changed_files: 0 });
     if (url.pathname.endsWith('/pulls/4/files')) return Response.json([]);
     if (url.pathname.includes('/git/commits/')) return Response.json({ sha: url.pathname.split('/').at(-1), tree: { sha: 'e'.repeat(40) } });
-    if (url.pathname.includes('/git/trees/')) return Response.json({ sha: 'e'.repeat(40), truncated: false, tree: [] });
+    if (url.pathname.includes('/git/trees/')) return Response.json({ sha: 'e'.repeat(40), truncated: unavailableContext, tree: [] });
     throw new Error('Unexpected fixture route');
   });
   const logger = mock.method(console, 'error', (...args: unknown[]) => logs.push(args));
@@ -160,6 +178,22 @@ await test('actual review job records incomplete fallback, releases acquired lea
     await assert.rejects(reviewJob(), error => { assert.ok(error instanceof ExecutionError); assert.equal(error.detail.code, 'codex_turn_failed'); return true; });
     assert.equal(operations.at(-1), 'release'); assert.ok(JSON.stringify(logs).includes('failure_reporting_deferred'));
     assert.ok(!JSON.stringify(logs).includes(sensitive));
+    rejectReporting = false; containerOutput = clean();
+    await reviewJob(); assert.equal(submissions.at(-1)!.context_complete, true);
+    assert.equal(submissions.at(-1)!.failure, undefined);
+    containerOutput = { ...clean(), complete: false, result: 'inconclusive', summary: 'Inspection was insufficient to complete a review; no approval is authorized.' };
+    await assert.rejects(reviewJob(), /review_incomplete/);
+    assert.equal(submissions.at(-1)!.context_complete, false);
+    assert.equal((submissions.at(-1)!.output as { result: string }).result, 'inconclusive');
+    assert.equal((submissions.at(-1)!.failure as { code: string }).code, 'review_incomplete');
+    containerOutput = { ...clean(), complete: false }; // A clean label cannot override incomplete analysis.
+    await assert.rejects(reviewJob(), /review_output_invalid/);
+    assert.equal((submissions.at(-1)!.output as { result: string }).result, 'inconclusive');
+    const previousRuns = runs; unavailableContext = true; containerOutput = clean();
+    await assert.rejects(reviewJob(), /review_context_incomplete/);
+    assert.equal(runs, previousRuns); assert.equal(submissions.at(-1)!.context_complete, false);
+    assert.equal((submissions.at(-1)!.failure as { code: string }).code, 'review_context_incomplete');
+    assert.equal(operations.at(-1), 'release');
   } finally {
     fetcher.mock.restore(); logger.mock.restore(); spawn.mock.restore(); syncBuiltinESMExports();
     if (uid) Object.defineProperty(process, 'getuid', uid); else Reflect.deleteProperty(process, 'getuid');

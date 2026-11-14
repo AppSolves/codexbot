@@ -45,17 +45,19 @@ Patterns are full-string, case-insensitive RE2. `*` matches a sequence; `?` one 
 
 ## Commands and aliases
 
-The first nonempty top-level line must begin with a configured trigger and `review`. Four-space/tab indents, quotations, inline examples and code fences do not invoke. Flags may occur in any order on that first line: `--merge`, `--effort LEVEL`, `--effort=LEVEL`, `--rerun`, and `--` for literal context. Duplicates, unknown flags and unclosed quotes are errors. Later lines are advisory context, never flags or authorization.
+The first nonempty top-level line must begin with a configured trigger and `review`. Four-space/tab indents, quotations, inline examples and code fences do not invoke. Flags may occur in any order on that first line: `--merge`, `--model MODEL_ID`, `--model=MODEL_ID`, `--effort LEVEL`, `--effort=LEVEL`, `--rerun`, and `--` for literal context. Duplicates, unknown flags and unclosed quotes are errors. Later lines are advisory context, never flags or authorization.
 
 Aliases are textual commands, not guaranteed GitHub App mentions. A custom alias can notify an unrelated GitHub account with the same name. Existing @codexbot installations remain compatible. New automated setup uses @CBReview followed by the numeric repository ID to reduce collisions; it remains editable. Configure `bot: {trigger: "@CBReview", aliases: []}` for a short explicit alternative. Avoid adding the old name as an alias if the purpose is avoiding an independent connector. Changing a trigger never changes the App's publishing identity. See [trigger isolation](review-rollout.md).
 
 Effort syntax recognizes none/minimal/low/medium/high/xhigh/max, but the selected model must actually advertise the requested value. Omission preserves Codex defaults. Catalog discovery does not prove account entitlement; completed inference is required. Never substitute an unsupported value or change billing modes.
 
+Model precedence is the explicit command override, then `review.model`, then the Codex catalog default. Model identifiers use 1–100 ASCII letters, digits, dots, underscores or hyphens, cannot begin with a flag hyphen and must match an actual catalog entry. Effort is validated against that selected model; a model override never silently changes an unsupported requested effort. Existing snapshots without `command.model` retain the previous behavior. Overrides are included in the existing request idempotency key and remain subject to normal authorization and quotas; they grant no merge permissions.
+
 ## Review decision table
 
 | Evidence | Native decision |
 |---|---|
-| Incomplete diff/essential context/model analysis, malformed output, quarantine or output loss | COMMENT |
+| Incomplete diff/essential context/model analysis, malformed output, quarantine or output loss | COMMENT; review job fails |
 | Complete critical/high finding at or above blocking confidence | REQUEST_CHANGES, or COMMENT when disabled |
 | Critical/high below threshold, or any medium/low finding | COMMENT; never approve by ignoring uncertainty |
 | Complete clean result, zero findings, approval enabled | APPROVE |

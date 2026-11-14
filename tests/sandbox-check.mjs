@@ -70,15 +70,16 @@ try {
     const socket=net.connect({host:'1.1.1.1',port:443}); socket.on('error',e=>{assert.ok(['ENETUNREACH','EHOSTUNREACH'].includes(e.code));console.log('Filesystem, credentials and network isolation verified')}); socket.on('connect',()=>process.exit(1));`;
   process.stdout.write(docker(['run', '--rm', ...common, '--mount', `type=bind,src=${directory},dst=/workspace,readonly`, 'codexbot-review:local', 'node', '-e', probe]));
   docker(['create', '--name', review, ...common, '--mount', `type=bind,src=${directory},dst=/workspace,readonly`, '--mount', `type=volume,src=${volume},dst=/run/proxy,readonly`, 'codexbot-review:local', 'node', 'dist/src/runner/engine-main.js']);
-  let actual;
-  try { actual = docker(['start', '-a', review]); }
+  let refused = false;
+  try { docker(['start', '-a', review]); }
   catch (error) {
+    refused = true;
     const safe = new ExecutionDiagnostics(); safe.write(String(error.stderr ?? ''));
-    if (safe.last) process.stderr.write(JSON.stringify(safe.last) + '\n');
+    assert.equal(error.status, 1); assert.equal(safe.last?.code, 'codex_inspection_not_performed');
+    assert.equal(String(error.stdout ?? '').trim(), '');
   }
-  assert.ok(actual, 'Synthetic successful Codex turn did not complete; raw process output withheld.');
-  assert.deepEqual(JSON.parse(actual), result);
-  process.stdout.write('Pinned Codex turn, Unix-socket inference proxy and structured output verified with synthetic SSE.\n');
+  assert.equal(refused, true, 'A valid JSON response without inspection must not succeed.');
+  process.stdout.write('Pinned Codex refuses scripted complete JSON without file inspection.\n');
   for (const status of [400, 200]) {
     docker(['rm', review]);
     docker(['create', '--name', review, ...common, '--mount', `type=bind,src=${directory},dst=/workspace,readonly`, '--mount', `type=volume,src=${volume},dst=/run/proxy,readonly`, 'codexbot-review:local', 'node', 'dist/src/runner/engine-main.js']);
@@ -109,3 +110,4 @@ try {
   await cleanupReviewContainers(id); await cleanupReviewContainers(partial);
   docker(['volume', 'rm', volume]); await rm(directory, { recursive: true, force: true });
 }
+await import('./inspection-check.mjs');

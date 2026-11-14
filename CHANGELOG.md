@@ -2,6 +2,8 @@
 
 ## Unreleased — security remediation pass
 
+- Fix unattended Codex inspection with `approvalPolicy: never` under unchanged external Docker isolation. Keep client approval/tool grants denied and fail on denied/missing inspection, incomplete context, inconclusive/quarantined/truncated analysis or invalid review locations. Preserve safe separate COMMENT publication. Add per-review `--model` with model-specific effort validation and existing quota/idempotency binding. No schema, credential or permission migration; coordinate runner/Worker/caller pins.
+
 - Classify rejected Responses replies with their actual upstream status (including 2xx), fixed Content-Type category and body presence. Extract only allowlisted codes/parameters from bounded JSON errors; keep non-SSE success responses fail-closed and provider metadata confined to the credential-proxy boundary.
 
 - Failed inference now fails the review job even after recording a safe COMMENT fallback. Preserve separate protected publication, distinguish fallback publication from completed AI review, and carry only allowlisted Docker/Codex/RPC/proxy diagnostics. Local AppError statuses are not presented as provider HTTP responses. Runner changes require a coordinated immutable source/Worker/caller pin upgrade; no credential or database migration.

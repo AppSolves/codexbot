@@ -44,6 +44,7 @@ export class Rpc {
           if (message.id !== undefined) {
             // Never grant command execution, network, permission escalation or tool approvals.
             this.send({ id: message.id, error: { code: -32601, message: 'Client-side tools and permission grants are disabled' } });
+            for (const listener of this.notifications) listener('codexbot/client-request-denied', null);
           } else for (const listener of this.notifications) listener(message.method, message.params);
         } else if (typeof message.id === 'number') {
           const pending = this.pending.get(message.id); if (!pending) continue;

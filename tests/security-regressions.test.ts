@@ -18,6 +18,20 @@ import { parseCommand } from '../src/core/command.js';
 
 const finding: Finding = { severity: 'high', confidence: 0.99, path: 'src/auth.ts', line: 2, side: 'RIGHT', title: 'Missing permission check', explanation: 'Untrusted callers can access the record.', remediation: 'Check repository permission.' };
 const secrets = ['AKIA' + 'A'.repeat(16), 'ASIA' + 'B'.repeat(16), '-----BEGIN RSA PRIVATE KEY-----\nfixture\n-----END RSA PRIVATE KEY-----', 'postgresql://alice:private-password@db.example/db', 'Bearer abcdefghijklmnopqrstuvwxyz', 'ghp_' + 'a'.repeat(36), 'sk-proj-' + 'a'.repeat(32), 'eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJhbGljZSJ9.abcdefghijklmnopqrstuvwx', 'xoxb-1234567890123456-abcdef', 'password = supersecretsample', '![image](https://exfil.invalid/token)', '<https://exfil.invalid/token>'];
+await test('per-review model is persisted and included in same-head idempotency without bypassing quotas', async () => {
+  const { db, sqlite } = database(), store = new Store(db), first = snapshot();
+  first.config.quotas.cooldown_seconds = 0; first.config.quotas.concurrent_repository = 2;
+  first.command.model = 'codex-fixture';
+  try {
+    await store.create(first);
+    const other = structuredClone(first); other.id = crypto.randomUUID(); other.command.model = 'codex-other';
+    await store.create(other);
+    assert.equal((await store.get(other.id)).snapshot.command.model, 'codex-other');
+    await store.transition(first.id, 'created', 'failed');
+    await assert.rejects(store.create({ ...first, id: crypto.randomUUID() }), /duplicate_review_or_quota_exceeded/);
+    assert.equal(sqlite.prepare('SELECT count(*) AS n FROM requests').get()!.n, 2);
+  } finally { sqlite.close(); }
+});
 await test('DLP quarantines credentials, PEM, DSNs, bearer, vendor secrets and external URLs in every public field', async () => {
   for (const secret of secrets) {
     for (const candidate of [secret, encodeURIComponent(secret), Buffer.from(secret).toString('base64')]) {

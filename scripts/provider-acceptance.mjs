@@ -8,7 +8,8 @@ import { readPrivateFile, atomicPrivateFile, withFileLock } from '../dist/src/au
 import { OAuth, validateSession } from '../dist/src/auth/oauth.js';
 import { isolatedReview } from '../dist/src/runner/docker.js';
 import { DEFAULT_CONFIG } from '../dist/src/core/config.js';
-import { normalizeReview } from '../dist/src/core/review.js';
+import { normalizeReview, validateReview } from '../dist/src/core/review.js';
+import { writeInspectionFixture } from '../tests/inspection-fixture.mjs';
 const { values } = parseArgs({ options: { mode: { type: 'string' }, 'credential-file': { type: 'string' }, model: { type: 'string' }, effort: { type: 'string' }, image: { type: 'string', default: 'codexbot-review:local' }, 'allow-live-oauth': { type: 'boolean' }, 'allow-paid-api': { type: 'boolean' }, 'max-requests': { type: 'string' } } });
 let directory;
 try {
@@ -31,12 +32,13 @@ try {
     const context = join(directory, 'context'), sockets = join(directory, 'sockets'), key = join(directory, 'credential');
     await mkdir(context, { mode: 0o700 }); await mkdir(sockets, { mode: 0o700 }); await mkdir(join(context, 'source'), { mode: 0o700 });
     await writeFile(key, credential, { mode: 0o600 });
-    const head = 'a'.repeat(40), config = globalThis.structuredClone(DEFAULT_CONFIG); config.credentials.mode = oauth ? 'chatgpt' : 'api-key'; config.review.model = values.model;
-    const request = { head, base: 'b'.repeat(40), config, command: { effort: values.effort ?? null, merge: false, instructions: 'Provider acceptance only. Empty change fixture; do not claim real repository analysis. Complete the output JSON without tool calls.' } };
-    for (const [file, value] of [['request.json', request], ['manifest.json', { complete: true, diffComplete: true, requiredContextComplete: true }], ['diff.json', []], ['trusted-instructions.json', []]]) await writeFile(join(context, file), JSON.stringify(value), { mode: 0o600 });
-    const output = normalizeReview(await isolatedReview(values.image, context, key, sockets, { maxRequests, maxInputBytes: 50_000, ...(!oauth ? { maxOutputTokens: 2048 } : {}) }), head);
-    assert.ok(output.complete && !output.quarantined && !output.output_truncated);
-    process.stdout.write(`Real ${oauth ? 'OAuth' : 'API-key'} provider completed structured inference. No GitHub writes performed.\n`);
+    const head = 'a'.repeat(40), config = globalThis.structuredClone(DEFAULT_CONFIG); config.credentials.mode = oauth ? 'chatgpt' : 'api-key';
+    const request = { head, base: 'b'.repeat(40), config, command: { model: values.model, effort: values.effort ?? null, merge: false, instructions: 'Acceptance review of this synthetic repository only. Inspect the provided diff, both source versions and trusted instructions. Do not execute project code or claim tests passed.' } };
+    const fixture = await writeInspectionFixture(context, request);
+    const output = validateReview(normalizeReview(await isolatedReview(values.image, context, key, sockets, { maxRequests, maxInputBytes: 50_000, ...(!oauth ? { maxOutputTokens: 2048 } : {}) }), head), head, fixture.files);
+    assert.ok(output.complete && output.result === 'findings' && !output.quarantined && !output.output_truncated);
+    assert.ok(output.findings.some(finding => finding.path === 'src/access.js' && finding.line === 3 && finding.side === 'RIGHT'));
+    process.stdout.write(`Real ${oauth ? 'OAuth' : 'API-key'} provider inspected a synthetic repository and reported its changed authorization line. No GitHub writes performed.\n`);
     if (oauth) process.stdout.write('Launch gate remains pending until the operator verifies ChatGPT-plan usage and absence of API billing for this request.\n');
   });
 } catch { process.stderr.write('Provider acceptance failed or was not explicitly enabled. No raw provider output or credentials printed.\n'); process.exitCode = 1; }

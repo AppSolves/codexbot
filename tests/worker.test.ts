@@ -189,6 +189,21 @@ await test('analysis progress is stage/run bound and failed review jobs can only
   assert.equal((await response.json() as Record<string, unknown>).event, 'COMMENT');
   assert.equal((await new Store(env.DB).get(id)).row.context_complete, 0);
 }));
+await test('model override survives authorized dispatch and incomplete analysis publishes COMMENT while genuine clean analysis can approve', async () => {
+  for (const incomplete of [false, true]) await fixture(async (env, f) => {
+    const accepted = await worker.fetch(signed(payload('@codexbot review --model codex-fixture --effort high'), env.GITHUB_WEBHOOK_SECRET), env);
+    assert.equal(accepted.status, 202);
+    const id = (f.calls.find(x => x.path.endsWith('/dispatches'))!.body.inputs as Record<string, string>).request_id!;
+    assert.equal((await new Store(env.DB).get(id)).snapshot.command.model, 'codex-fixture');
+    const post = async (operation: string, stage: string, body: unknown = {}) => worker.fetch(new Request(`https://broker.invalid/v1/requests/${id}/${operation}`, { method: 'POST', headers: { Authorization: `Bearer ${await oidc(stage)}` }, body: JSON.stringify(body) }), env);
+    assert.equal((await post('prepare', 'codexbot-1-5')).status, 200);
+    const output = incomplete ? { ...clean(), complete: false, result: 'inconclusive' } : clean();
+    assert.equal((await post('result', 'codexbot-1-5', { output, context_complete: !incomplete, ...(incomplete ? { failure: { stage: 'result', code: 'review_incomplete' } } : {}) })).status, 200);
+    const result = await post('publish', 'codexbot-publish-1', { review_job_failed: incomplete }); assert.equal(result.status, 200);
+    assert.equal((await result.json() as { event: string }).event, incomplete ? 'COMMENT' : 'APPROVE');
+    assert.ok(!f.calls.some(call => String(call.body.query).includes('mergePullRequest')));
+  });
+});
 await test('invalid signature, replay, spoofed user, forged installation and unauthorized merge cannot dispatch', async () => fixture(async (env, f) => {
   assert.equal((await worker.fetch(signed(payload(), 'wrong-secret'), env)).status, 401);
   const valid = payload(); assert.equal((await worker.fetch(signed(valid, env.GITHUB_WEBHOOK_SECRET), env)).status, 202);

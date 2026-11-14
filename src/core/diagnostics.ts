@@ -4,6 +4,7 @@ import { ExecutionError, executionFailure, type ExecutionFailure } from './execu
 export const REVIEW_STAGES = ['environment','prepare','context','credentials','analyzing','result','publish','release'] as const;
 export const FAILURE_CODES = new Set(['missing_environment_credentials','ambiguous_environment_credentials','credential_owner_mismatch','missing_read_token',
   'api_key_missing_or_ambiguous_credentials','vault_key_missing_or_ambiguous_credentials','invalid_envelope','invalid_vault_key','invalid_saved_session',
+  'review_incomplete','review_context_incomplete','review_output_invalid',
   'session_too_short_reconnect_required','review_image_missing','isolated_review_failed','proxy_start_failed','docker_unavailable','docker_cleanup_failed_check_runner',
   'oauth_grant_invalid_reconnect_required','chatgpt_plan_usage_permission_missing','oauth_token_endpoint_failed','oauth_token_exchange_uncertain_reconnect_required',
   'invalid_saved_registration','invalid_saved_expiry','oauth_invalid_credential','oauth_invalid_expiry','oauth_invalid_refresh_time',
