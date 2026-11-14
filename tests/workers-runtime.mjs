@@ -33,6 +33,10 @@ try {
   assert.ok(ready, 'Local workerd did not start');
   const body = '{}', delivery = randomUUID();
   const post = signature => globalThis.fetch(`${origin}/webhook`, { method: 'POST', body, headers: { 'x-github-event': 'ping', 'x-github-delivery': delivery, 'x-hub-signature-256': signature } });
+  const page = await globalThis.fetch(`${origin}/`); assert.equal(page.status, 200); assert.ok((await page.text()).includes(`--backend ${origin}`));
+  const foreign = await globalThis.fetch(`${origin}/v1/session`, { headers: { Origin: 'https://retired.invalid' } });
+  assert.equal(foreign.status, 403); assert.equal(foreign.headers.get('location'), null);
+  assert.equal((await globalThis.fetch(`${origin}/v1/session`)).status, 401);
   assert.equal((await post('sha256=' + '0'.repeat(64))).status, 401);
   const signature = 'sha256=' + createHmac('sha256', secret).update(body).digest('hex');
   assert.equal((await post(signature)).status, 200); assert.equal((await post(signature)).status, 200);

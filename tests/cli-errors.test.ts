@@ -1,11 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, readdirSync, existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { formatCliError } from '../src/cli-errors.js';
 import { AppError } from '../src/core/errors.js';
 import { client } from '../src/worker/github.js';
+import { DEFAULT_BACKEND } from '../src/core/identity.js';
 
 const secrets = ['ghp_' + 'a'.repeat(36), 'github_pat_' + 'b'.repeat(60), 'sk-proj-' + 'c'.repeat(60), 'opaque-oauth-code', 'opaque-refresh-token'];
 const sensitive = secrets.join(' ') + ' Authorization: Bearer password-value\n-----BEGIN PRIVATE KEY-----\u001b[31m';
@@ -75,7 +76,12 @@ childProcess.spawn = (file, args, options) => {
 syncBuiltinESMExports();
 globalThis.fetch = async (input, init) => {
   const url = new URL(typeof input === 'string' ? input : input.url ?? input.href);
-  if (url.origin === 'https://broker.invalid' && url.pathname === '/v1/capabilities') {
+  if (url.origin === process.env.CODEXBOT_TEST_BACKEND && url.pathname === '/v1/setup' && scenario === 'setup-success') {
+    const body=JSON.parse(init.body);
+    if(body.source!=='operator/codexbot'||body.ref!=='d'.repeat(40))throw new Error('Unexpected setup source');
+    return Response.json({pull_request:'https://github.com/owner/repo/pull/1'});
+  }
+  if (url.origin === process.env.CODEXBOT_TEST_BACKEND && url.pathname === '/v1/capabilities') {
     if (scenario === 'backend-failure') return Response.json({error:${JSON.stringify(sensitive)}},{status:503});
     return Response.json({environmentSecrets:true,installation_id:123,chatgpt_deployment_authorized:true});
   }
@@ -92,12 +98,16 @@ globalThis.fetch = async (input, init) => {
   }
   throw new Error('Unexpected fixture HTTP operation');
 };`;
-function runCli(scenario: string, command = 'connect') {
+function runCli(scenario: string, command = 'connect', backend: string | null = 'https://broker.invalid') {
   const root = resolve('.local'); mkdirSync(root, { recursive: true });
   const home = mkdtempSync(join(root, 'cli-errors-'));
-  const env = Object.assign(Object.create(null) as NodeJS.ProcessEnv, { CODEXBOT_TEST_SCENARIO: scenario, CODEXBOT_API_KEY: secrets[2]!, HOME: home, USERPROFILE: home });
+  const env = Object.assign(Object.create(null) as NodeJS.ProcessEnv, { CODEXBOT_TEST_SCENARIO: scenario, CODEXBOT_TEST_BACKEND: backend ?? DEFAULT_BACKEND, CODEXBOT_API_KEY: secrets[2]!, HOME: home, USERPROFILE: home });
   for (const name of ['PATH', 'Path', 'SystemRoot', 'WINDIR', 'TMP', 'TEMP']) if (process.env[name]) env[name] = process.env[name]!;
-  try { return spawnSync(process.execPath, ['--import', 'tsx', '--import', `data:text/javascript,${encodeURIComponent(preload)}`, 'src/cli.ts', command, '--repository', 'owner/repo', '--backend', 'https://broker.invalid'], { encoding: 'utf8', env, timeout: 20_000 }); }
+  try {
+    const result = spawnSync(process.execPath, ['--import', 'tsx', '--import', `data:text/javascript,${encodeURIComponent(preload)}`, 'src/cli.ts', command, '--repository', 'owner/repo', ...(backend ? ['--backend', backend] : []), ...(command === 'setup' ? ['--source', 'operator/codexbot', '--ref', 'd'.repeat(40)] : [])], { encoding: 'utf8', env, timeout: 20_000 });
+    const profiles = join(home, '.config', 'codexbot');
+    return { ...result, profiles: existsSync(profiles) ? readdirSync(profiles).filter(name => name.endsWith('.session.json')) : [] };
+  }
   finally { assert.equal(dirname(home), root); rmSync(home, { recursive: true, force: true }); }
 }
 await test('actual connect reports Environment failure after successful capability preflight, with exit 1 and no secret output', () => {
@@ -119,4 +129,17 @@ await test('OAuth discovery failure closes the callback listener and exits with 
   assert.equal(result.error, undefined); assert.equal(result.status, 1, result.stderr);
   assert.match(result.stderr, /discovering OpenAI OAuth configuration.*ENOTFOUND/);
   assert.equal(result.stdout, ''); noSecrets(result.stderr);
+});
+await test('actual CLI setup/connect defaults to Workers.dev, preserves self-hosted overrides and separates local OAuth profiles', () => {
+  for (const backend of [null, 'https://independent.invalid']) {
+    const setup = runCli('setup-success', 'setup', backend);
+    assert.equal(setup.status, 0, setup.stderr); assert.match(setup.stdout, /github.com\/owner\/repo\/pull\/1/);
+    const api = runCli('api-key-success', 'connect-api-key', backend); assert.equal(api.status, 0, api.stderr);
+  }
+  for (const backend of [null, 'https://retired.invalid']) {
+    const connected = runCli('oauth-discovery-failure', 'connect', backend);
+    assert.equal(connected.status, 1, connected.stderr); assert.match(connected.stderr, /discovering OpenAI OAuth configuration.*ENOTFOUND/);
+    assert.deepEqual(connected.profiles, [`${new URL(backend ?? DEFAULT_BACKEND).host}-2-5.session.json`]);
+    noSecrets(connected.stderr);
+  }
 });

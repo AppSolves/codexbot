@@ -4,6 +4,7 @@ import { DEFAULT_CONFIG } from './core/config.js';
 import { requireCondition } from './core/errors.js';
 import { splitRepo } from './worker/github.js';
 import { repositoryCapabilities } from './capabilities.js';
+import { DEFAULT_BACKEND } from './core/identity.js';
 
 export async function ensureProtectedEnvironment(github: Octokit, repository: string, name: string): Promise<void> {
   const repo = splitRepo(repository); await repositoryCapabilities(github, repository);
@@ -22,7 +23,7 @@ export async function ensureProtectedEnvironment(github: Octokit, repository: st
   await github.rest.repos.createOrUpdateEnvironment({ ...repo, environment_name: name, deployment_branch_policy: { protected_branches: false, custom_branch_policies: true } });
   await github.rest.repos.createDeploymentBranchPolicy({ ...repo, environment_name: name, name: metadata.default_branch, type: 'branch' });
 }
-export function callerWorkflow(source: string, ref: string, backend: string): string {
+export function callerWorkflow(source: string, ref: string, backend = DEFAULT_BACKEND): string {
   splitRepo(source); requireCondition(/^[a-f0-9]{40}$/.test(ref), 'workflow_ref_must_be_full_commit_sha');
   return stringify({ name: 'CodexBot', 'run-name': 'CodexBot ${{ inputs.request_id }} ${{ inputs.dispatch_attempt }}', on: { workflow_dispatch: { inputs: {
     request_id: { description: 'Backend-bound request id', required: true, type: 'string' },

@@ -56,8 +56,13 @@ async function notify(env: Env, store: Store, snapshot: RequestSnapshot): Promis
 
 async function route(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url), store = new Store(env.DB);
+  const canonical = new URL(env.PUBLIC_URL).origin;
+  const publicPage = request.method === 'GET' && ['/', '/health'].includes(url.pathname);
+  // Retained custom domains are public landing/liveness aliases only. Never
+  // redirect credentials or accept a canonical audience through another host.
+  requireCondition(publicPage || url.origin === canonical, 'non_canonical_backend_origin', 421);
   const origin = request.headers.get('origin');
-  requireCondition(!origin || origin === new URL(env.PUBLIC_URL).origin, 'cross_origin_request_denied', 403);
+  requireCondition(!origin || origin === canonical, 'cross_origin_request_denied', 403);
   if (url.pathname === '/health' && request.method === 'GET') return Response.json({ status: 'ok', version: '0.1.0' });
   if (url.pathname === '/' && request.method === 'GET') return onboarding(env);
   if (url.pathname === '/v1/workload/check' && request.method === 'POST') {

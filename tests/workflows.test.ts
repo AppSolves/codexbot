@@ -76,7 +76,7 @@ await test('cached builds are opt-in, source/input scoped, pinned and loaded onl
   assert.match(String(publish.if), /!inputs.credential_check_only/);
 });
 await test('documentation local links resolve and Apache license is canonical', async () => {
-  const documents = ['README.md', 'CHANGELOG.md', 'docs/architecture.md', 'docs/authentication.md', 'docs/configuration.md', 'docs/deployment.md', 'docs/development.md', 'docs/installation.md', 'docs/security.md', 'docs/validation.md', 'docs/review-rollout.md', 'docs/operations.md', 'docs/acceptance.md', 'docs/remediation.md', 'SECURITY.md', 'CONTRIBUTING.md'];
+  const documents = ['README.md', 'CHANGELOG.md', 'docs/architecture.md', 'docs/authentication.md', 'docs/configuration.md', 'docs/deployment.md', 'docs/development.md', 'docs/installation.md', 'docs/security.md', 'docs/validation.md', 'docs/review-rollout.md', 'docs/origin-migration.md', 'docs/operations.md', 'docs/acceptance.md', 'docs/remediation.md', 'SECURITY.md', 'CONTRIBUTING.md'];
   for (const path of documents) {
     const text = await readFile(path, 'utf8');
     for (const match of text.matchAll(/\]\(([^)]+)\)/g)) {

@@ -2,6 +2,8 @@
 
 Install the operator's public App and select repositories. Its Worker landing page is an operational checklist, not a hosted OAuth wizard. All credential sign-in runs in the local CLI. Each installation can instead use its own App, Worker and immutable source fork.
 
+The hosted backend and CLI default is `https://codexbot.appsolves.workers.dev`. Self-hosted operators supply their own `--backend` and source pin. Existing ChatGPT connections must follow the [origin cutover and reconnect procedure](origin-migration.md) before using this new origin; they are not transferable ciphertext.
+
 ## Setup permissions and supported plans
 
 The default manifest deliberately omits Workflows write. App-authored setup requires an explicit operator permission upgrade and installer consent. Otherwise use the first-class manual workflow below, or add `--setup-as-user` with a temporary single-repository administrator credential granting Contents/Pull requests/Workflows write. It creates the same reviewed setup PR under your own identity; no automatic elevation or retained user token is used.
@@ -10,7 +12,7 @@ Before creating a setup PR or connecting credentials, the CLI probes Environment
 
 ```sh
 npm ci --ignore-scripts
-npm run cli -- setup --repository OWNER/REPO --backend https://YOUR-WORKER \
+npm run cli -- setup --repository OWNER/REPO --backend https://codexbot.appsolves.workers.dev \
   --source YOUR-ORG/codexbot --ref FULL_COMMIT_SHA --setup-as-user
 ```
 
@@ -65,7 +67,7 @@ jobs:
       request_id: ${{ inputs.request_id }}
       credential_owner: ${{ inputs.credential_owner }}
       installation_id: ${{ inputs.installation_id }}
-      backend: https://YOUR-WORKER
+      backend: https://codexbot.appsolves.workers.dev
       credential_check_only: ${{ inputs.credential_check_only }}
 ```
 
@@ -78,9 +80,9 @@ Use the two named secret references, not literal empty grants. The `credential-s
 Protect the default branch **before** connecting. New codexbot-INSTALLATION_ID-NUMERIC_USER_ID and codexbot-publish-INSTALLATION_ID Environments use a default-branch-only custom deployment policy. The installation namespace isolates both API keys and OAuth vault keys across independent Apps/reinstalls. Existing reviewers/timers are preserved. Unrestricted Environments and custom policies allowing other branches/tags are rejected. Existing protected-branch policies require an actually protected default branch: GitHub otherwise permits every branch when no protected branches exist. Private Free repositories are unsupported.
 
 ```sh
-npm run cli -- connect --repository OWNER/REPO --backend https://YOUR-WORKER
+npm run cli -- connect --repository OWNER/REPO --backend https://codexbot.appsolves.workers.dev
 # Or, after securely setting CODEXBOT_API_KEY in the local process:
-npm run cli -- connect-api-key --repository OWNER/REPO --backend https://YOUR-WORKER
+npm run cli -- connect-api-key --repository OWNER/REPO --backend https://codexbot.appsolves.workers.dev
 ```
 
 ChatGPT connection checks the backend deployment gate before sign-in. Use your own eligible account/workspace; manual auth.json export is unnecessary and not supported. API keys go to GitHub through gh stdin; never the Worker. Set credentials.mode appropriately and remove the other mode's secret. API billing and ChatGPT allowance never fall back into one another.

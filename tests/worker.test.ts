@@ -5,16 +5,17 @@ import { generateKeyPair, exportPKCS8, exportJWK, SignJWT } from 'jose';
 import worker from '../src/worker/index.js';
 import { database } from './sqlite.js';
 import { githubFixture } from './github-fixture.js';
-import { clean, RELEASE, WORKFLOW, HEAD, BASE } from './fixtures.js';
+import { clean, RELEASE, WORKFLOW, HEAD, BASE, snapshot } from './fixtures.js';
 import { Store } from '../src/worker/store.js';
 import { seal, randomSecret } from '../src/core/crypto.js';
+import { DEFAULT_BACKEND } from '../src/core/identity.js';
 
 const keys = await generateKeyPair('RS256', { extractable: true });
 const pem = await exportPKCS8(keys.privateKey), jwk = { ...await exportJWK(keys.publicKey), kid: 'fixture', use: 'sig', alg: 'RS256' };
-async function oidc(environment: string, overrides: Record<string, unknown> = {}): Promise<string> {
+async function oidc(environment: string, overrides: Record<string, unknown> = {}, audience = 'https://broker.invalid'): Promise<string> {
   return new SignJWT({ repository: 'owner/repo', repository_id: '2', repository_owner_id: '3', actor: 'alice', actor_id: '5', event_name: 'workflow_dispatch', ref: 'refs/heads/main', ref_type: 'branch', workflow_ref: 'owner/repo/.github/workflows/codexbot.yml@refs/heads/main', workflow_sha: WORKFLOW,
     job_workflow_ref: `operator/codexbot/.github/workflows/review.yml@${RELEASE}`, job_workflow_sha: RELEASE, runner_environment: 'github-hosted', environment, sub: `repo:owner/repo:environment:${environment}`, run_id: '123', run_attempt: '1', jti: crypto.randomUUID(), ...overrides })
-    .setProtectedHeader({ alg: 'RS256', kid: 'fixture' }).setIssuer('https://token.actions.githubusercontent.com').setAudience('https://broker.invalid').setIssuedAt().setNotBefore('0s').setExpirationTime('5m').sign(keys.privateKey);
+    .setProtectedHeader({ alg: 'RS256', kid: 'fixture' }).setIssuer('https://token.actions.githubusercontent.com').setAudience(audience).setIssuedAt().setNotBefore('0s').setExpirationTime('5m').sign(keys.privateKey);
 }
 function payload(body = '@codexbot review') {
   return { action: 'created', installation: { id: 1 }, repository: { id: 2, full_name: 'owner/repo' }, sender: { id: 5, login: 'alice', type: 'User' }, comment: { body, created_at: new Date().toISOString(), user: { id: 5 } }, issue: { number: 4, pull_request: {} } };
@@ -30,6 +31,43 @@ async function fixture<T>(action: (env: Env, github: ReturnType<typeof githubFix
   const intercepted = mock.method(globalThis, 'fetch', replacement);
   try { return await action(env, github); } finally { intercepted.mock.restore(); sqlite.close(); }
 }
+await test('retained aliases expose only public pages; privileged routes never redirect or accept forwarded host/origin headers', async () => fixture(async (env, f) => {
+  env.PUBLIC_URL = DEFAULT_BACKEND;
+  const endpoints: [string, string][] = [['/webhook','POST'], ['/v1/workload/check','POST'], ['/v1/capabilities','GET'], ['/v1/setup','POST'],
+    ['/v1/session','GET'], ['/v1/session','PUT'], ['/v1/session','DELETE'], ['/v1/operations','GET'],
+    ...['prepare','rotate','result','publish','release','failure','stage'].map(operation => [`/v1/requests/${snapshot().id}/${operation}`, 'POST'] as [string, string])];
+  for (const [path, method] of endpoints) {
+    const response = await worker.fetch(new Request(`https://retired.invalid${path}`, { method, headers: { Origin: DEFAULT_BACKEND, 'X-Forwarded-Host': new URL(DEFAULT_BACKEND).host } }), env);
+    assert.equal(response.status, 421); assert.equal(response.headers.get('location'), null);
+    assert.deepEqual(await response.json(), { error: 'non_canonical_backend_origin' });
+  }
+  assert.equal(f.calls.length, 0);
+  for (const path of ['/', '/health']) {
+    const response = await worker.fetch(new Request(`https://retired.invalid${path}`), env); assert.equal(response.status, 200);
+    if (path === '/') {
+      const page = await response.text(); assert.ok(page.includes(`--backend ${DEFAULT_BACKEND}`));
+      assert.ok(page.includes(`<link rel="canonical" href="${DEFAULT_BACKEND}/">`)); assert.ok(!page.includes('WORKER_URL'));
+    }
+  }
+  env.PUBLIC_URL = 'https://retired.invalid';
+  assert.equal((await worker.fetch(new Request(`${DEFAULT_BACKEND}/health`), env)).status, 200);
+  assert.equal((await worker.fetch(new Request(`${DEFAULT_BACKEND}/v1/session`), env)).status, 421);
+}));
+await test('canonical webhook HMAC and read-only OIDC work only with the exact new audience and Origin', async () => fixture(async (env, f) => {
+  env.PUBLIC_URL = DEFAULT_BACKEND; f.state.permission = 'admin'; f.state.runActor = { id: 5, type: 'User', login: 'alice' };
+  const check = async (audience: string, origin = DEFAULT_BACKEND) => worker.fetch(new Request(`${DEFAULT_BACKEND}/v1/workload/check`, {
+    method: 'POST', headers: { Authorization: `Bearer ${await oidc('codexbot-1-5', {}, audience)}`, Origin: origin }
+  }), env);
+  assert.equal((await check('https://retired.invalid')).status, 401);
+  assert.equal((await check(DEFAULT_BACKEND, 'https://retired.invalid')).status, 403);
+  assert.equal((await check(DEFAULT_BACKEND)).status, 200);
+  const body = signed(payload(), env.GITHUB_WEBHOOK_SECRET);
+  const invalid = await worker.fetch(new Request(`${DEFAULT_BACKEND}/webhook`, { method: 'POST', headers: body.headers, body: '{}' }), env);
+  assert.equal(invalid.status, 401);
+  const valid = await worker.fetch(new Request(`${DEFAULT_BACKEND}/webhook`, { method: 'POST', headers: body.headers, body: await body.text() }), env);
+  assert.equal(valid.status, 202);
+  assert.equal((await env.DB.prepare('SELECT count(*) AS n FROM sessions').first<{ n: number }>())!.n, 0);
+}));
 await test('signed webhook, OIDC preflight, committed result and separate publication work end to end', async () => fixture(async (env, f) => {
   const started = await worker.fetch(signed(payload(), env.GITHUB_WEBHOOK_SECRET), env); assert.equal(started.status, 202);
   const dispatch = f.calls.find(x => x.path.endsWith('/dispatches'))!;
