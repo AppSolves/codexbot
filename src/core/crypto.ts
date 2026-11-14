@@ -17,7 +17,9 @@ export async function seal(value: unknown, secret: string, binding: string): Pro
   const key = await crypto.subtle.importKey('raw', raw, 'AES-GCM', false, ['encrypt']);
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv, additionalData: new TextEncoder().encode(binding) }, key, new TextEncoder().encode(JSON.stringify(value)));
-  return { version: 1, iv: base64url(iv), ciphertext: base64url(new Uint8Array(ciphertext)) };
+  const encoded = base64url(new Uint8Array(ciphertext));
+  requireCondition(encoded.length <= 64_000, 'invalid_envelope');
+  return { version: 1, iv: base64url(iv), ciphertext: encoded };
 }
 export async function unseal(envelope: Envelope, secret: string, binding: string): Promise<unknown> {
   requireCondition(envelope.version === 1 && envelope.ciphertext.length <= 64_000, 'invalid_envelope');

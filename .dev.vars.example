@@ -1,2 +1,8 @@
 GITHUB_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\nSET_WITH_WRANGLER_SECRET\n-----END PRIVATE KEY-----"
 GITHUB_WEBHOOK_SECRET="replace-with-at-least-32-random-bytes"
+# Browser onboarding is opt-in. Configure public client IDs/scopes in Wrangler.
+# Generate a separate 32-byte base64url key locally; never reuse the webhook secret.
+WEB_SESSION_KEY="set-only-for-disposable-local-tests-or-with-wrangler-secret"
+GITHUB_CLIENT_SECRET="registered-github-app-website-client-secret"
+# Only for an approved confidential OpenAI website client:
+# OPENAI_WEB_CLIENT_SECRET="registered-client-secret"

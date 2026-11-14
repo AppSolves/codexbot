@@ -4,16 +4,16 @@ import { ExecutionError, executionFailure, type ExecutionFailure } from './execu
 export const REVIEW_STAGES = ['environment','prepare','context','credentials','analyzing','result','publish','release'] as const;
 export const FAILURE_CODES = new Set(['missing_environment_credentials','ambiguous_environment_credentials','credential_owner_mismatch','missing_read_token',
   'api_key_missing_or_ambiguous_credentials','vault_key_missing_or_ambiguous_credentials','invalid_envelope','invalid_vault_key','invalid_saved_session',
-  'review_incomplete','review_context_incomplete','review_output_invalid',
+  'review_incomplete','review_context_incomplete','review_output_invalid','read_token_cleanup_failed',
   'session_too_short_reconnect_required','review_image_missing','isolated_review_failed','proxy_start_failed','docker_unavailable','docker_cleanup_failed_check_runner',
   'oauth_grant_invalid_reconnect_required','chatgpt_plan_usage_permission_missing','oauth_token_endpoint_failed','oauth_token_exchange_uncertain_reconnect_required',
   'invalid_saved_registration','invalid_saved_expiry','oauth_invalid_credential','oauth_invalid_expiry','oauth_invalid_refresh_time',
   'oauth_refresh_account_mismatch','oauth_refresh_authorized_party_mismatch','codex_turn_failed','codex_rpc_rejected','codex_output_not_json',
   'effort_not_supported_by_selected_model','configured_model_not_in_codex_catalog','diff_truncated','pr_changed_during_context_collection',
-  'broker_prepare_failed','broker_result_failed','broker_rotate_failed','broker_publish_failed','broker_stage_failed','broker_release_failed',
+  'broker_prepare_failed','broker_result_failed','broker_rotate_failed','broker_renew_failed','broker_publish_failed','broker_stage_failed','broker_release_failed',
   'ENOTFOUND','ECONNREFUSED','ECONNRESET','ETIMEDOUT','ENOENT','EACCES','EPERM','ENOSPC','EPIPE',
   'session_rotation_conflict_reconnect_required','review_preflight_failed','external_or_execution_failure']);
-const OPERATIONS = new Set(['prepare','result','rotate','publish','release','failure','stage','check']);
+const OPERATIONS = new Set(['prepare','result','rotate','renew','publish','release','failure','stage','check']);
 export const BROKER_CODES = new Set(`
 bearer_required request_not_found request_expired invalid_webhook_signature installation_no_longer_valid request_bound_to_another_run repository_admin_required
 oidc_repository_mismatch oidc_event_mismatch oidc_caller_workflow_mismatch oidc_reusable_workflow_mismatch oidc_environment_mismatch oidc_subject_mismatch
@@ -21,6 +21,8 @@ oidc_run_missing oidc_invalid_run_identity oidc_token_expired oidc_token_invalid
 workflow_run_mismatch workflow_not_dispatched_by_this_app workflow_dispatch_attempt_mismatch
 chatgpt_deployment_authorization_revoked use_authorized_rerun_command_instead_of_workflow_rerun request_already_started stale_pull_request
 trusted_default_branch_changed_or_unprotected review_authorization_revoked session_missing_or_in_use chatgpt_session_not_connected
+hosted_connection_requires_reconnect hosted_refresh_reconnect_required hosted_session_unavailable hosted_session_identity_changed repository_operation_in_progress
+hosted_oauth_registration_not_configured hosted_inference_scopes_not_configured hosted_workspace_claim_not_configured oauth_refresh_workspace_mismatch
 request_not_running review_result_already_recorded request_not_ready_for_publication publication_busy_or_terminal internal_error
 github_actions_oidc_unavailable invalid_oidc_endpoint github_oidc_request_failed github_oidc_missing_token invalid_request_id invalid_broker_operation
 `.trim().split(/\s+/));

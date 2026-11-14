@@ -2,24 +2,40 @@ import { createRemoteJWKSet, jwtVerify } from 'jose';
 import type { JWTVerifyGetKey } from 'jose';
 import { randomSecret, sha256 } from '../core/crypto.js';
 import { record, requireCondition, AppError } from '../core/errors.js';
+import { boundedJson } from '../core/http.js';
 
 export const ISSUER = 'https://auth.openai.com';
 export const RESOURCE = 'https://api.openai.com/v1';
 export const SCOPES = ['openid', 'profile', 'email', 'offline_access', 'resource.invoke', 'chatgpt.tokens.use.direct'];
-export interface Registration { client_id: string; subject: string; issuer: string; email?: string }
+export interface Registration { client_id: string; subject: string; issuer: string; email?: string; workspace?: string }
 export interface OAuthSession extends Registration {
   ext_agent_host_id: string; access_token: string; refresh_token: string; id_token: string;
   scopes: string[]; expires_at: number; earliest_refresh_at: number;
+  hosted?: boolean;
 }
-export interface PendingLogin { state: string; nonce: string; verifier: string; redirect: string; host: string; createdAt: number; registration: Registration | null; issuedClient: string | null }
+export interface PendingLogin { state: string; nonce: string; verifier: string; redirect: string; host: string; createdAt: number; registration: Registration | null; issuedClient: string | null; website?: boolean }
+export interface WebsiteOAuth { clientId: string; redirect: string; authMethod: 'none' | 'client_secret_post' | 'client_secret_basic'; clientSecret?: string; scopes: string[]; workspaceClaim: string }
 interface Discovery { issuer: string; authorization_endpoint: string; token_endpoint: string; jwks_uri: string; revocation_endpoint?: string }
 export class OAuth {
   private readonly consumed = new WeakSet<PendingLogin>();
-  constructor(private readonly fetcher: typeof fetch = fetch, private readonly keys?: JWTVerifyGetKey) {}
+  constructor(private readonly fetcher: typeof fetch = fetch, private readonly keys?: JWTVerifyGetKey, private readonly website?: WebsiteOAuth) {}
+  async beginWebsite(host: string, registration: Registration | null = null): Promise<{ url: string; pending: PendingLogin }> {
+    const config = this.website;
+    requireCondition(config && /^oaiapp_[A-Za-z0-9_-]+$/.test(config.clientId) && SCOPES.every(scope => config.scopes.includes(scope)), 'hosted_oauth_registration_incomplete', 503);
+    requireCondition(!registration || registration.client_id === config.clientId, 'hosted_oauth_registration_changed');
+    const callback = new URL(config.redirect);
+    requireCondition(callback.protocol === 'https:' && callback.pathname === '/auth/openai/callback' && !callback.search && !callback.hash && !callback.username && !callback.password, 'hosted_oauth_callback_invalid');
+    const discovery = await this.discovery();
+    const pending: PendingLogin = { state: randomSecret(), nonce: randomSecret(), verifier: randomSecret(), redirect: config.redirect, host, createdAt: Date.now(), registration, issuedClient: config.clientId, website: true };
+    const url = new URL(discovery.authorization_endpoint);
+    url.search = new URLSearchParams({ client_id: config.clientId, redirect_uri: config.redirect, response_type: 'code', scope: config.scopes.join(' '),
+      resource: RESOURCE, state: pending.state, nonce: pending.nonce, code_challenge_method: 'S256', code_challenge: await sha256(pending.verifier) }).toString();
+    return { url: url.href, pending };
+  }
   private async discovery(): Promise<Discovery> {
     const response = await this.fetcher(`${ISSUER}/.well-known/openid-configuration`, { redirect: 'error', signal: AbortSignal.timeout(15_000) });
     requireCondition(response.ok, 'oauth_discovery_failed', 502);
-    const data = record(await response.json());
+    const data = record(await boundedJson(response));
     requireCondition(data.issuer === ISSUER, 'oauth_discovery_issuer_mismatch');
     for (const key of ['authorization_endpoint', 'token_endpoint', 'jwks_uri', 'revocation_endpoint']) {
       if (key === 'revocation_endpoint' && data[key] === undefined) continue;
@@ -48,6 +64,7 @@ export class OAuth {
   async complete(pending: PendingLogin, callback: URL): Promise<OAuthSession> {
     requireCondition(!this.consumed.has(pending) && Date.now() - pending.createdAt <= 600_000, 'oauth_attempt_expired_or_consumed');
     const expected = new URL(pending.redirect);
+    if (pending.website) requireCondition(this.website?.clientId === pending.issuedClient && this.website.redirect === pending.redirect, 'hosted_oauth_registration_changed');
     requireCondition(callback.origin === expected.origin && callback.pathname === expected.pathname, 'oauth_callback_mismatch');
     for (const field of ['state', 'code', 'client_id', 'error']) requireCondition(callback.searchParams.getAll(field).length <= 1, 'duplicate_oauth_parameter');
     requireCondition(callback.searchParams.get('state') === pending.state, 'oauth_state_mismatch');
@@ -69,17 +86,25 @@ export class OAuth {
     requireCondition(payload.nonce === pending.nonce && typeof payload.sub === 'string' && payload.sub.length > 0, 'oauth_nonce_or_subject_invalid');
     requireCondition(!pending.registration || (payload.sub === pending.registration.subject && pending.registration.issuer === ISSUER), 'oauth_account_mismatch');
     if (payload.azp !== undefined || (Array.isArray(payload.aud) && payload.aud.length > 1)) requireCondition(payload.azp === clientId, 'oauth_authorized_party_mismatch');
-    const session = this.session(tokens, { client_id: clientId, subject: payload.sub, issuer: ISSUER, ...(typeof payload.email === 'string' ? { email: payload.email } : {}) }, pending.host);
-    return session;
+    const workspace = pending.website ? payload[this.website!.workspaceClaim] : undefined;
+    if (pending.website) requireCondition(typeof workspace === 'string' && workspace.length > 0 && workspace.length <= 256 && (!pending.registration?.workspace || pending.registration.workspace === workspace), 'oauth_workspace_mismatch');
+    const session = this.session(tokens, { client_id: clientId, subject: payload.sub, issuer: ISSUER, ...(typeof payload.email === 'string' ? { email: payload.email } : {}), ...(typeof workspace === 'string' ? { workspace } : {}) }, pending.host);
+    return pending.website ? { ...session, hosted: true } : session;
   }
   private async tokens(endpoint: string, form: Record<string, string>): Promise<Record<string, unknown>> {
+    const headers: Record<string, string> = { 'Content-Type': 'application/x-www-form-urlencoded' };
+    if (this.website && this.website.authMethod !== 'none') {
+      requireCondition(this.website.clientSecret, 'hosted_oauth_client_secret_missing', 503);
+      if (this.website.authMethod === 'client_secret_post') form.client_secret = this.website.clientSecret;
+      else { headers.Authorization = `Basic ${Buffer.from(`${encodeURIComponent(form.client_id!)}:${encodeURIComponent(this.website.clientSecret)}`).toString('base64')}`; delete form.client_id; }
+    }
     let response: Response;
     try {
-      response = await this.fetcher(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(form), redirect: 'error', signal: AbortSignal.timeout(20_000) });
+      response = await this.fetcher(endpoint, { method: 'POST', headers, body: new URLSearchParams(form), redirect: 'error', signal: AbortSignal.timeout(20_000) });
     } catch { throw new AppError('oauth_token_exchange_uncertain_reconnect_required', 502); }
     // Never expose the response body, which may contain credentials or account identifiers.
     requireCondition(response.ok, response.status === 400 || response.status === 401 ? 'oauth_grant_invalid_reconnect_required' : 'oauth_token_endpoint_failed', 401);
-    return record(await response.json());
+    return record(await boundedJson(response));
   }
   private session(tokens: Record<string, unknown>, registration: Registration, host: string, previous?: OAuthSession): OAuthSession {
     requireCondition(tokens.token_type === 'Bearer' && typeof tokens.access_token === 'string' && typeof tokens.refresh_token === 'string', 'oauth_invalid_token_response');
@@ -102,6 +127,7 @@ export class OAuth {
         issuer: ISSUER, audience: session.client_id, subject: session.subject, algorithms: ['RS256'], maxTokenAge: '10m', clockTolerance: 30, requiredClaims: ['exp', 'iat']
       });
       requireCondition(payload.sub === session.subject, 'oauth_refresh_account_mismatch');
+      if (session.hosted) requireCondition(this.website && payload[this.website.workspaceClaim] === session.workspace, 'oauth_refresh_workspace_mismatch');
       if (payload.azp !== undefined || (Array.isArray(payload.aud) && payload.aud.length > 1)) requireCondition(payload.azp === session.client_id, 'oauth_refresh_authorized_party_mismatch');
     }
     return this.session(tokens, session, session.ext_agent_host_id, session);
@@ -110,8 +136,12 @@ export class OAuth {
     try {
       const discovery = await this.discovery();
       if (!discovery.revocation_endpoint) return false;
-      const response = await this.fetcher(discovery.revocation_endpoint, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({ token: session.refresh_token, token_type_hint: 'refresh_token', client_id: session.client_id }), redirect: 'error', signal: AbortSignal.timeout(15_000) });
+      const headers: Record<string,string> = { 'Content-Type': 'application/x-www-form-urlencoded' };
+      const form: Record<string,string> = { token: session.refresh_token, token_type_hint: 'refresh_token', client_id: session.client_id };
+      if (this.website?.authMethod === 'client_secret_post') { requireCondition(this.website.clientSecret, 'hosted_oauth_client_secret_missing'); form.client_secret = this.website.clientSecret; }
+      if (this.website?.authMethod === 'client_secret_basic') { requireCondition(this.website.clientSecret, 'hosted_oauth_client_secret_missing'); headers.Authorization = `Basic ${Buffer.from(`${encodeURIComponent(session.client_id)}:${encodeURIComponent(this.website.clientSecret)}`).toString('base64')}`; delete form.client_id; }
+      const response = await this.fetcher(discovery.revocation_endpoint, { method: 'POST', headers,
+        body: new URLSearchParams(form), redirect: 'error', signal: AbortSignal.timeout(15_000) });
       return response.status === 200;
     } catch { return false; }
   }

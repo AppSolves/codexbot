@@ -36,7 +36,7 @@ export async function oidcToken(audience: string): Promise<string> {
 }
 export async function broker(backend: string, request: string, operation: string, body: unknown = {}): Promise<unknown> {
   requireCondition(/^[a-f0-9-]{36}$/.test(request), 'invalid_request_id');
-  requireCondition(['prepare','result','rotate','publish','release','failure','stage'].includes(operation), 'invalid_broker_operation');
+  requireCondition(['prepare','result','rotate','renew','publish','release','failure','stage'].includes(operation), 'invalid_broker_operation');
   const origin = backendUrl(backend);
   const send = async () => {
     const response = await fetch(`${origin}/v1/requests/${request}/${operation}`, { method: 'POST',

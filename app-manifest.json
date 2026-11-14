@@ -3,8 +3,11 @@
   "url": "https://codexbot.appsolves.workers.dev",
   "hook_attributes": { "url": "https://codexbot.appsolves.workers.dev/webhook", "active": true },
   "redirect_url": "https://codexbot.appsolves.workers.dev/",
-  "setup_url": "https://codexbot.appsolves.workers.dev/",
+  "setup_url": "https://codexbot.appsolves.workers.dev/dashboard",
+  "callback_urls": ["https://codexbot.appsolves.workers.dev/auth/github/callback"],
   "public": true,
-  "default_permissions": { "metadata": "read", "contents": "write", "pull_requests": "write", "actions": "write" },
+  "request_oauth_on_install": false,
+  "setup_on_update": true,
+  "default_permissions": { "metadata": "read", "contents": "write", "pull_requests": "write", "actions": "write", "workflows": "write", "administration": "write", "environments": "write" },
   "default_events": ["issue_comment", "pull_request"]
 }

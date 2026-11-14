@@ -14,9 +14,11 @@
     "build": "node node_modules/typescript/bin/tsc -p tsconfig.build.json",
     "typecheck": "node node_modules/typescript/bin/tsc --noEmit",
     "lint": "node node_modules/eslint/bin/eslint.js .",
-    "test": "node --import tsx --test tests/*.test.ts",
+    "test": "node --import tsx --test tests/*.test.ts tests/*.test.mjs",
     "test:sandbox": "node tests/sandbox-check.mjs",
     "test:workers": "node tests/workers-runtime.mjs",
+    "test:web": "node tests/web-browser.mjs",
+    "catalog:check": "node scripts/model-catalog.mjs --check",
     "test:clean": "node tests/clean-checkout.mjs",
     "acceptance:provider": "node scripts/provider-acceptance.mjs",
     "acceptance:github": "node scripts/github-acceptance.mjs",
@@ -28,22 +30,28 @@
     "cli": "node --import tsx src/cli.ts"
   },
   "dependencies": {
-    "@openai/codex": "0.169.0",
     "@octokit/rest": "22.0.1",
+    "@openai/codex": "0.169.0",
     "ajv": "8.20.0",
+    "blakejs": "1.2.1",
     "jose": "6.2.17",
     "re2js": "2.10.0",
+    "tweetnacl": "1.0.3",
     "yaml": "2.9.1"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "5.20261113.1",
     "@eslint/js": "10.0.1",
+    "@playwright/test": "1.65.1",
     "@types/node": "26.6.6",
     "eslint": "10.15.0",
+    "libsodium-wrappers": "0.8.4",
     "tsx": "4.23.15",
     "typescript": "6.0.3",
     "typescript-eslint": "8.72.2",
     "wrangler": "4.162.0"
   },
-  "overrides": { "minimatch": "11.0.8" }
+  "overrides": {
+    "minimatch": "11.0.8"
+  }
 }

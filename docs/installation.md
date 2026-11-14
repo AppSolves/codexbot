@@ -1,12 +1,12 @@
-# Repository installation and CLI-assisted onboarding
+# Repository installation and browser onboarding
 
-Install the operator's public App and select repositories. Its Worker landing page is an operational checklist, not a hosted OAuth wizard. All credential sign-in runs in the local CLI. Each installation can instead use its own App, Worker and immutable source fork.
+Use the website's Get Started flow for GitHub sign-in, native App installation/repository selection, verified repository setup, credential connection and policy management. The browser implementation is opt-in until the operator completes [hosted registration and activation](web-onboarding.md). Existing configured repositories are reconciled live; setup and policy updates create PRs for review. The CLI below remains an independent/self-hosted and recovery alternative, not a requirement for normal browser onboarding.
 
 The hosted backend and CLI default is `https://codexbot.appsolves.workers.dev`. Self-hosted operators supply their own `--backend` and source pin. Existing ChatGPT connections must follow the [origin cutover and reconnect procedure](origin-migration.md) before using this new origin; they are not transferable ciphertext.
 
 ## Setup permissions and supported plans
 
-The default manifest deliberately omits Workflows write. App-authored setup requires an explicit operator permission upgrade and installer consent. Otherwise use the first-class manual workflow below, or add `--setup-as-user` with a temporary single-repository administrator credential granting Contents/Pull requests/Workflows write. It creates the same reviewed setup PR under your own identity; no automatic elevation or retained user token is used.
+The full browser manifest requests Workflows, Administration and Environments write for workflow files, protected Environments and encrypted Environment secrets respectively. The public App already has these grants according to live metadata; every installation is checked independently. A missing grant requires an official permission upgrade and installer consent. Review-only/manual installations may retain a smaller permission profile. Otherwise use the first-class manual workflow below, or add `--setup-as-user` with a temporary single-repository administrator credential granting Contents/Pull requests/Workflows write. It creates the same reviewed setup PR under your own identity; no automatic elevation or retained user token is used.
 
 Before creating a setup PR or connecting credentials, the CLI probes Environment availability using live repository-admin access. Public repositories can use Environments on Free; private repositories need Pro, Team or Enterprise support and appropriate permissions. A 403/404 cannot alone distinguish an unsupported plan from an insufficient token; the error states both requirements. Outages/rate limits are reported separately. See GitHub's [Environment availability](https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments). No repository-secret downgrade exists.
 

@@ -1,6 +1,6 @@
 import { requireCondition } from './errors.js';
 
-export const EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
+export const EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const;
 export type Effort = typeof EFFORTS[number];
 export interface ReviewCommand { merge: boolean; effort: Effort | null; instructions: string; rerun?: boolean; model?: string }
 

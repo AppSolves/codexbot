@@ -46,3 +46,9 @@ Cancellation atomically blocks new publication claims before remote cleanup. It 
 
 
 A newer authorized same-PR rereview supersedes an older queued merge at the last durable write authorization. Expired-intent cleanup uses its own bounded lease/backoff; an unavailable old installation cannot monopolize recovery forever. After five failed cancellation attempts, the guard stays held and an administrator must clear the intent in GitHub or repeat explicit cancellation with restored access.
+
+## Web onboarding operations
+
+Migration 0004 and [the browser runbook](web-onboarding.md) add encrypted web transactions, sessions, hosted connection journals and repository operation leases. Apply the additive migration before deploying the new Worker; old backend code remains compatible with the extra tables. Never delete or overwrite existing CLI sessions as a migration shortcut. Inspect only fixed state/IDs, never encrypted-payload dumps in public logs.
+
+A connection stuck in pending after an ambiguous GitHub secret write is resumed through the owning administrator's repository dashboard. It uses the same journal and vault key. A refreshing/reconnect-required state is not a successful rotation; reconnect through a fresh validated OAuth flow. Leases use atomic owner-checked acquisition/heartbeat and ownership-aware release; do not manually reset a lease while its holder may still run. A lost owner cannot publish a new encrypted session or release a successor. Quiesce browser operations and keep master-key backups before any planned key rotation; production secret changes and provider revocation remain explicit operator actions.

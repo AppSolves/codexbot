@@ -1,6 +1,6 @@
 import type { Octokit } from '@octokit/rest';
 import { authorize } from '../core/policy.js';
-import { decision, publicText, validateReview, failedReview, completePatch, normalizeReview, findingDisposition } from '../core/review.js';
+import { decision, publicText, validateReview, failedReview, completePatch, normalizeReview, findingDisposition, reviewSummary } from '../core/review.js';
 import { sha256 } from '../core/crypto.js';
 import { requireCondition, AppError } from '../core/errors.js';
 import { splitRepo, permission, trustedConfig, verifyActor } from './github.js';
@@ -73,7 +73,7 @@ export async function publish(github: Octokit, snapshot: RequestSnapshot, output
     await assertPublicationAllowed();
     await options.beforeWrite?.();
     const { data } = await github.rest.pulls.createReview({ ...repo, pull_number: snapshot.pr, commit_id: snapshot.head,
-      body: `${marker}\n${fingerprint}\nCodexBot review of \`${snapshot.head}\`\n\n${publicText(review.summary)}\n\nCompleteness: ${review.complete && contextComplete ? 'complete' : 'limited — automated approval disabled'}. Decision: ${event}.\n\nMerge intent: ${snapshot.command.merge ? `explicitly requested by ${publicText(snapshot.actor)}` : 'not requested'}.`,
+      body: `${marker}\n${fingerprint}\n${reviewSummary(review, event, contextComplete)}${snapshot.command.merge ? `\n\nConditional merge explicitly requested by ${publicText(snapshot.actor)}.` : ''}`,
       comments: review.findings.map(f => ({ path: f.path, line: f.line, side: f.side, body: `**${f.severity.toUpperCase()}: ${publicText(f.title)}**\n\n${publicText(f.explanation)}\n\n${publicText(f.remediation)}\n\nConfidence: ${f.confidence}; policy: ${findingDisposition(f, config)}.` }))
     });
     reviewId = data.id;

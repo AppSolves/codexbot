@@ -27,7 +27,7 @@ function signed(input: unknown, secret: string, delivery = crypto.randomUUID()):
 }
 async function fixture<T>(action: (env: Env, github: ReturnType<typeof githubFixture>) => Promise<T>): Promise<T> {
   const { db, sqlite } = database(), github = githubFixture(); github.config.credentials.mode = 'api-key';
-  const env: Env = { DB: db, PUBLIC_URL: 'https://broker.invalid', GITHUB_APP_ID: '42', GITHUB_APP_SLUG: 'codexbot', GITHUB_PRIVATE_KEY: pem, GITHUB_WEBHOOK_SECRET: 'fixture-webhook-secret'.repeat(2), TRUSTED_WORKFLOW: `operator/codexbot/.github/workflows/review.yml@${RELEASE}`, CHATGPT_DEPLOYMENT_AUTHORIZED: 'false', MERGE_DEPLOYMENT_AUTHORIZED: 'false' };
+  const env: Env = { WEB_ENABLED: 'false', GITHUB_CLIENT_ID: '', OPENAI_WEB_CLIENT_ID: '', OPENAI_WEB_AUTH_METHOD: '', OPENAI_WEB_SCOPES: '', OPENAI_HOSTED_INFERENCE_AUTHORIZED: 'false', DB: db, PUBLIC_URL: 'https://broker.invalid', GITHUB_APP_ID: '42', GITHUB_APP_SLUG: 'codexbot', GITHUB_PRIVATE_KEY: pem, GITHUB_WEBHOOK_SECRET: 'fixture-webhook-secret'.repeat(2), TRUSTED_WORKFLOW: `operator/codexbot/.github/workflows/review.yml@${RELEASE}`, CHATGPT_DEPLOYMENT_AUTHORIZED: 'false', MERGE_DEPLOYMENT_AUTHORIZED: 'false' };
   const replacement: typeof fetch = async (input, init) => String(input).includes('token.actions.githubusercontent.com/.well-known/jwks') ? Response.json({ keys: [jwk] }) : github.fetcher(input, init);
   const intercepted = mock.method(globalThis, 'fetch', replacement);
   try { return await action(env, github); } finally { intercepted.mock.restore(); sqlite.close(); }
@@ -36,7 +36,7 @@ await test('retained aliases expose only public pages; privileged routes never r
   env.PUBLIC_URL = DEFAULT_BACKEND;
   const endpoints: [string, string][] = [['/webhook','POST'], ['/v1/workload/check','POST'], ['/v1/capabilities','GET'], ['/v1/setup','POST'],
     ['/v1/session','GET'], ['/v1/session','PUT'], ['/v1/session','DELETE'], ['/v1/operations','GET'],
-    ...['prepare','rotate','result','publish','release','failure','stage'].map(operation => [`/v1/requests/${snapshot().id}/${operation}`, 'POST'] as [string, string])];
+    ...['prepare','rotate','renew','result','publish','release','failure','stage'].map(operation => [`/v1/requests/${snapshot().id}/${operation}`, 'POST'] as [string, string])];
   for (const [path, method] of endpoints) {
     const response = await worker.fetch(new Request(`https://retired.invalid${path}`, { method, headers: { Origin: DEFAULT_BACKEND, 'X-Forwarded-Host': new URL(DEFAULT_BACKEND).host } }), env);
     assert.equal(response.status, 421); assert.equal(response.headers.get('location'), null);
@@ -46,7 +46,7 @@ await test('retained aliases expose only public pages; privileged routes never r
   for (const path of ['/', '/health']) {
     const response = await worker.fetch(new Request(`https://retired.invalid${path}`), env); assert.equal(response.status, 200);
     if (path === '/') {
-      const page = await response.text(); assert.ok(page.includes(`--backend ${DEFAULT_BACKEND}`));
+      const page = await response.text(); assert.ok(page.includes('Get started with GitHub'));
       assert.ok(page.includes(`<link rel="canonical" href="${DEFAULT_BACKEND}/">`)); assert.ok(!page.includes('WORKER_URL'));
     }
   }
@@ -87,6 +87,12 @@ await test('signed webhook, OIDC preflight, committed result and separate public
   assert.equal((await post('publish', 'codexbot-publish-1')).status, 200); assert.equal(f.state.reviews.length, 1);
   for (const issued of f.calls.filter(x => x.path.endsWith('/access_tokens'))) assert.deepEqual(issued.body.repository_ids, [2]);
 }));
+await test('delayed authorization-revocation webhooks do not delete newly authorized browser sessions by actor alone', async () => fixture(async env => {
+  await env.DB.prepare('INSERT INTO web_sessions(id_hash,actor_id,payload,expires_at) VALUES(?,?,?,?)').bind('new-authorization',5,'encrypted-fixture',Date.now()+60_000).run();
+  const request=signed({action:'revoked',sender:{id:5,type:'User'}},env.GITHUB_WEBHOOK_SECRET); request.headers.set('x-github-event','github_app_authorization');
+  assert.equal((await worker.fetch(request,env)).status,200);
+  assert.ok(await env.DB.prepare('SELECT 1 FROM web_sessions WHERE id_hash=?').bind('new-authorization').first());
+}));
 await test('all broker operations reject authoritative default-branch drift and forged run, actor or dispatch identities', async () => {
   const repoPath = '/repos/owner/repo', runPath = `${repoPath}/actions/runs/123`;
   const cases: [string, string, (body: Record<string, unknown>) => void, string][] = [
@@ -114,7 +120,7 @@ await test('all broker operations reject authoritative default-branch drift and 
       const body = record(await response.json()); change(body); return Response.json(body);
     });
     try {
-      for (const operation of ['prepare','failure','publish','rotate','result','stage','release']) {
+      for (const operation of ['prepare','failure','publish','rotate','renew','result','stage','release']) {
         const environment = operation === 'publish' ? 'codexbot-publish-1' : 'codexbot-1-5';
         const response = await worker.fetch(new Request(`https://broker.invalid/v1/requests/${id}/${operation}`, {
           method: 'POST', headers: { Authorization: `Bearer ${await oidc(environment)}` }, body: '{}'
