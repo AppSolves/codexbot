@@ -59,7 +59,9 @@ export function githubFixture() {
     }
     if (path === '/repos/owner/repo/actions/workflows/codexbot.yml/dispatches') return new Response(null, { status: 204 });
     const lastDispatch = calls.filter(x => x.path.endsWith('/dispatches')).at(-1)?.body.inputs as Record<string, string> | undefined;
-    const run = { id: 123, status: state.runStatus, conclusion: state.runConclusion, event: 'workflow_dispatch', head_sha: WORKFLOW, path: '.github/workflows/codexbot.yml', repository: repo, run_attempt: 1, actor: state.runActor, display_title: `CodexBot ${lastDispatch?.request_id} ${lastDispatch?.dispatch_attempt}` };
+    // Actions embeds a minimal repository, not the full Repositories API object.
+    const runRepository = { id: repo.id, name: repo.name, full_name: repo.full_name, owner: repo.owner };
+    const run = { id: 123, status: state.runStatus, conclusion: state.runConclusion, event: 'workflow_dispatch', head_sha: WORKFLOW, path: '.github/workflows/codexbot.yml', repository: runRepository, run_attempt: 1, actor: state.runActor, display_title: `CodexBot ${lastDispatch?.request_id} ${lastDispatch?.dispatch_attempt}` };
     if (path === '/repos/owner/repo/actions/runs/123') return ok(run);
     if (path === '/repos/owner/repo/actions/workflows/codexbot.yml/runs') return ok({ workflow_runs: lastDispatch ? [run] : [] });
     if (path.endsWith('/check-runs') && method === 'GET') return ok({ total_count: state.checks.length, check_runs: state.checks });

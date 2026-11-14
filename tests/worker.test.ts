@@ -9,6 +9,7 @@ import { clean, RELEASE, WORKFLOW, HEAD, BASE, snapshot } from './fixtures.js';
 import { Store } from '../src/worker/store.js';
 import { seal, randomSecret } from '../src/core/crypto.js';
 import { DEFAULT_BACKEND } from '../src/core/identity.js';
+import { record } from '../src/core/errors.js';
 
 const keys = await generateKeyPair('RS256', { extractable: true });
 const pem = await exportPKCS8(keys.privateKey), jwk = { ...await exportJWK(keys.publicKey), kid: 'fixture', use: 'sig', alg: 'RS256' };
@@ -72,6 +73,8 @@ await test('signed webhook, OIDC preflight, committed result and separate public
   const started = await worker.fetch(signed(payload(), env.GITHUB_WEBHOOK_SECRET), env); assert.equal(started.status, 202);
   const dispatch = f.calls.find(x => x.path.endsWith('/dispatches'))!;
   const id = (dispatch.body.inputs as Record<string, string>).request_id;
+  const run = (await f.github.rest.actions.getWorkflowRun({ owner: 'owner', repo: 'repo', run_id: 123 })).data;
+  assert.equal(Object.hasOwn(run.repository, 'default_branch'), false);
   const post = async (operation: string, stage: string, body: unknown = {}) => worker.fetch(new Request(`https://broker.invalid/v1/requests/${id}/${operation}`, { method: 'POST', headers: { Authorization: `Bearer ${await oidc(stage)}` }, body: JSON.stringify(body) }), env);
   assert.equal((await post('prepare', 'codexbot-1-6')).status, 403);
   const prepared = await post('prepare', 'codexbot-1-5'); assert.equal(prepared.status, 200);
@@ -83,6 +86,69 @@ await test('signed webhook, OIDC preflight, committed result and separate public
   const published = await post('publish', 'codexbot-publish-1'); assert.equal(published.status, 200); assert.equal((await published.json() as Record<string, unknown>).event, 'APPROVE');
   assert.equal((await post('publish', 'codexbot-publish-1')).status, 200); assert.equal(f.state.reviews.length, 1);
   for (const issued of f.calls.filter(x => x.path.endsWith('/access_tokens'))) assert.deepEqual(issued.body.repository_ids, [2]);
+}));
+await test('all broker operations reject authoritative default-branch drift and forged run, actor or dispatch identities', async () => {
+  const repoPath = '/repos/owner/repo', runPath = `${repoPath}/actions/runs/123`;
+  const cases: [string, string, (body: Record<string, unknown>) => void, string][] = [
+    ['default branch', repoPath, body => { body.default_branch = 'develop'; }, 'workflow_run_mismatch'],
+    ['repository ID', repoPath, body => { body.id = 99; }, 'workflow_run_mismatch'],
+    ['repository owner', repoPath, body => { record(body.owner).id = 99; }, 'workflow_run_mismatch'],
+    ['run repository ID', runPath, body => { record(body.repository).id = 99; }, 'workflow_run_mismatch'],
+    ['run owner', runPath, body => { record(record(body.repository).owner).id = 99; }, 'workflow_run_mismatch'],
+    ['event', runPath, body => { body.event = 'push'; }, 'workflow_run_mismatch'],
+    ['workflow path', runPath, body => { body.path = '.github/workflows/untrusted.yml'; }, 'workflow_run_mismatch'],
+    ['head SHA', runPath, body => { body.head_sha = HEAD; }, 'workflow_run_mismatch'],
+    ['run attempt', runPath, body => { body.run_attempt = 2; }, 'workflow_run_mismatch'],
+    ['human actor', runPath, body => { body.actor = { type: 'User', login: 'alice' }; }, 'workflow_not_dispatched_by_this_app'],
+    ['foreign App actor', runPath, body => { body.actor = { type: 'Bot', login: 'other[bot]' }; }, 'workflow_not_dispatched_by_this_app'],
+    ['dispatch request', runPath, body => { body.display_title = String(body.display_title).replace(/^CodexBot \S+ /, 'CodexBot wrong-request '); }, 'workflow_dispatch_attempt_mismatch'],
+    ['dispatch attempt', runPath, body => { body.display_title = String(body.display_title).replace(/ \S+$/, ' wrong-attempt'); }, 'workflow_dispatch_attempt_mismatch']
+  ];
+  for (const [name, path, change, code] of cases) await fixture(async (env, f) => {
+    assert.equal((await worker.fetch(signed(payload(), env.GITHUB_WEBHOOK_SECRET), env)).status, 202);
+    const id = (f.calls.find(call => call.path.endsWith('/dispatches'))!.body.inputs as Record<string, string>).request_id!;
+    const fetcher = f.fetcher;
+    const intercepted = mock.method(f, 'fetcher', async (...args: Parameters<typeof fetcher>) => {
+      const response = await fetcher(...args);
+      if (new URL(String(args[0])).pathname !== path) return response;
+      const body = record(await response.json()); change(body); return Response.json(body);
+    });
+    try {
+      for (const operation of ['prepare','failure','publish','rotate','result','stage','release']) {
+        const environment = operation === 'publish' ? 'codexbot-publish-1' : 'codexbot-1-5';
+        const response = await worker.fetch(new Request(`https://broker.invalid/v1/requests/${id}/${operation}`, {
+          method: 'POST', headers: { Authorization: `Bearer ${await oidc(environment)}` }, body: '{}'
+        }), env);
+        assert.equal(response.status, 403, `${name}: ${operation}`); assert.deepEqual(await response.json(), { error: code });
+      }
+      assert.equal((await new Store(env.DB).get(id)).row.state, 'dispatched'); assert.equal(f.state.reviews.length, 0);
+    } finally { intercepted.mock.restore(); }
+  });
+});
+await test('minimal run repositories do not relax signed default-branch claims or protected immutable caller checks', async () => fixture(async (env, f) => {
+  await worker.fetch(signed(payload(), env.GITHUB_WEBHOOK_SECRET), env);
+  const id = (f.calls.find(call => call.path.endsWith('/dispatches'))!.body.inputs as Record<string, string>).request_id!;
+  for (const overrides of [{ ref: 'refs/heads/develop' }, { workflow_ref: 'owner/repo/.github/workflows/codexbot.yml@refs/heads/develop' },
+    { workflow_sha: HEAD }, { job_workflow_sha: HEAD }]) {
+    const response = await worker.fetch(new Request(`https://broker.invalid/v1/requests/${id}/prepare`, {
+      method: 'POST', headers: { Authorization: `Bearer ${await oidc('codexbot-1-5', overrides)}` }, body: '{}'
+    }), env);
+    assert.equal(response.status, 403);
+  }
+  for (const change of [{ protected: false }, { commit: { sha: HEAD } }]) {
+    const fetcher = f.fetcher;
+    const intercepted = mock.method(f, 'fetcher', async (...args: Parameters<typeof fetcher>) => {
+      const response = await fetcher(...args);
+      return new URL(String(args[0])).pathname === '/repos/owner/repo/branches/main' ? Response.json({ ...record(await response.json()), ...change }) : response;
+    });
+    try {
+      const response = await worker.fetch(new Request(`https://broker.invalid/v1/requests/${id}/prepare`, {
+        method: 'POST', headers: { Authorization: `Bearer ${await oidc('codexbot-1-5')}` }, body: '{}'
+      }), env);
+      assert.equal(response.status, 409); assert.deepEqual(await response.json(), { error: 'trusted_default_branch_changed_or_unprotected' });
+    } finally { intercepted.mock.restore(); }
+  }
+  assert.equal((await new Store(env.DB).get(id)).row.state, 'dispatched');
 }));
 await test('manual administrator OIDC diagnostic is read-only and never authorizes the privileged review broker', async () => fixture(async (env, f) => {
   f.state.permission = 'admin'; f.state.runActor = { id: 5, type: 'User', login: 'alice' };
@@ -150,8 +216,10 @@ await test('ChatGPT handoff is encrypted, lease-protected and disconnected sessi
   const post = async (operation: string, stage: string, body: unknown = {}) => worker.fetch(new Request(`https://broker.invalid/v1/requests/${id}/${operation}`, { method: 'POST', headers: { Authorization: `Bearer ${await oidc(stage)}` }, body: JSON.stringify(body) }), env);
   const prepared = await post('prepare', 'codexbot-1-5'); assert.equal(prepared.status, 200); const text = await prepared.text();
   assert.ok(!text.includes('fixture-sensitive-access')); assert.ok(text.includes('ciphertext'));
+  assert.equal((await post('rotate', 'codexbot-1-5', { version: 1, envelope })).status, 200);
   await assert.rejects(store.saveSession(2, 5, envelope, 1));
   assert.equal((await post('result', 'codexbot-1-5', { output: clean(), context_complete: true })).status, 200);
+  assert.equal((await post('release', 'codexbot-1-5')).status, 200);
   await store.deleteSession(2, 5, 1);
   assert.equal((await post('publish', 'codexbot-publish-1')).status, 403);
   assert.equal(f.state.reviews.length, 0);
