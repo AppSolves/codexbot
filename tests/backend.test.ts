@@ -13,7 +13,7 @@ await test('hosted config, manifest and generated callers agree on Workers.dev w
   assert.equal(config.name, 'codexbot'); assert.equal(config.workers_dev, true); assert.equal(config.preview_urls, false);
   assert.equal(config.vars.PUBLIC_URL, DEFAULT_BACKEND); assert.equal(config.vars.MERGE_DEPLOYMENT_AUTHORIZED, 'false');
   assert.equal(config.vars.TRUSTED_WORKFLOW, 'AppSolves/codexbot/.github/workflows/review.yml@4ed668864cac0682e09ec49a2515a6e1893a2780');
-  assert.deepEqual(config.routes, [{ pattern: 'codexbot.appsolves.dev', custom_domain: true }]);
+  assert.deepEqual(config.routes, []);
   const manifest = JSON.parse(await readFile('app-manifest.json', 'utf8'));
   assert.equal(manifest.url, DEFAULT_BACKEND); assert.equal(manifest.hook_attributes.url, `${DEFAULT_BACKEND}/webhook`);
   assert.equal(manifest.setup_url, `${DEFAULT_BACKEND}/`); assert.equal(manifest.redirect_url, `${DEFAULT_BACKEND}/`);

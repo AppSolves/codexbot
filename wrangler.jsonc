@@ -9,12 +9,7 @@
 	"workers_dev": true,
 	"preview_urls": false,
 	"send_metrics": false,
-	"routes": [
-		{
-			"pattern": "codexbot.appsolves.dev",
-			"custom_domain": true
-		}
-	],
+	"routes": [],
 	"secrets": {
 		"required": [
 			"GITHUB_PRIVATE_KEY",
