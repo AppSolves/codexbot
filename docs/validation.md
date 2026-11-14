@@ -4,7 +4,7 @@
 
 The configured hosted origin, CLI and generated caller defaults, manifest and onboarding website now use `https://codexbot.appsolves.workers.dev`. Focused tests cover the real CLI default/self-hosted override/profile separation, exact OIDC audience, HMAC on the new origin, strict Origin/host rejection, nonredirecting retired aliases and inability to decrypt old-origin OAuth ciphertext under new AAD. The workerd/D1 test also exercises onboarding, Origin rejection and authenticated endpoint denial without a bearer. [Cutover/rollback](origin-migration.md) separates local evidence from pending deployment, GitHub App ping delivery, protected-default-branch credential diagnostic and fresh OAuth connection. No production change or inference is performed by these tests.
 
-Local validation passed: `npm run check` (130 tests, strict typecheck, lint and build), `npm run test:clean`, `npm run test:workers`, actionlint for repository and actual proposed caller, and Wrangler deploy dry-runs for both final config and the stage-1 PUBLIC_URL override. Preview URLs remain disabled and the immutable review pin is unchanged. A successful dry-run is not a production route/OIDC/provider acceptance result.
+Local validation passed: `npm run check` (130 tests, strict typecheck, lint and build), `npm run test:clean`, `npm run test:workers`, actionlint for repository and actual proposed caller, and Wrangler deploy dry-runs for the prepared configuration. Preview URLs remain disabled, custom-domain routes are empty and the immutable review pin is unchanged. A successful dry-run is not a production route/OIDC/provider acceptance result.
 
 ## Environment secret forwarding correction — 2026-11-14
 

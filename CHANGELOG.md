@@ -2,7 +2,7 @@
 
 ## Unreleased — security remediation pass
 
-- Stage the hosted origin on codexbot.appsolves.workers.dev with Workers.dev enabled and previews disabled; preserve the existing custom domain for controlled cutover. Default CLI/generated callers and the onboarding page/manifest to the new URL. Reject all privileged requests on noncanonical aliases, keep exact OIDC audiences and require fresh origin-bound ChatGPT connection. No deployment, zone-security change or credential migration is automatic; see docs/origin-migration.md.
+- Stage the hosted origin on codexbot.appsolves.workers.dev with Workers.dev enabled, previews disabled and no custom-domain routes. Default CLI/generated callers and the onboarding page/manifest to the new URL. Reject all privileged requests on noncanonical aliases, keep exact OIDC audiences and require fresh origin-bound ChatGPT connection. The retired domain is removed; rollback must stay on Workers.dev. No code deployment, zone-security change or credential migration is automatic; see docs/origin-migration.md.
 
 - Correct Environment secret forwarding: generate named references after a required environment-free caller guard rejects repository/organization credentials. Empty literals did not enable Environment lookup; named references alone would allow fallback. Existing callers must update through a PR; reusable/Worker pins and credentials remain unchanged. See docs/review-rollout.md.
 
