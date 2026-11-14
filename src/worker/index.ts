@@ -17,6 +17,9 @@ import { compactWebhook } from './webhook.js';
 import { credentialEnvironment, publishingEnvironment } from '../core/identity.js';
 import { updateProgress, recoverProgress } from './progress.js';
 import { FAILURE_CODES, REVIEW_STAGES, BROKER_CODES } from '../core/diagnostics.js';
+import { webRoute } from './web.js';
+import { renewHosted } from './web-connections.js';
+import { executionFailure } from '../core/execution.js';
 
 export async function boundedBody(request: Request, limit: number): Promise<Uint8Array> {
   requireCondition(Number(request.headers.get('content-length') ?? 0) <= limit, 'body_too_large', 413);
@@ -42,10 +45,12 @@ function envelope(value: unknown): Envelope {
   requireCondition(input.version === 1 && typeof input.iv === 'string' && /^[A-Za-z0-9_-]{16}$/.test(input.iv) && typeof input.ciphertext === 'string' && /^[A-Za-z0-9_-]{20,64000}$/.test(input.ciphertext), 'invalid_envelope');
   return input as unknown as Envelope;
 }
-function failure(value: unknown): { code: string; stage: string; status: number | null } {
+function failure(value: unknown): { code: string; stage: string; status: number | null; revoked: boolean } {
   const body = record(value);
   requireCondition(typeof body.code === 'string' && (FAILURE_CODES.has(body.code) || BROKER_CODES.has(body.code)) && typeof body.stage === 'string' && REVIEW_STAGES.includes(body.stage as typeof REVIEW_STAGES[number]), 'invalid_failure_diagnostic');
-  return { code: body.code, stage: body.stage, status: typeof body.status === 'number' && Number.isInteger(body.status) && body.status >= 400 && body.status <= 599 ? body.status : null };
+  const proxy = executionFailure(body.proxy_failure);
+  return { code: body.code, stage: body.stage, status: typeof body.status === 'number' && Number.isInteger(body.status) && body.status >= 400 && body.status <= 599 ? body.status : null,
+    revoked: proxy?.component === 'provider' && proxy.upstream_status === 401 };
 }
 async function notify(env: Env, store: Store, snapshot: RequestSnapshot): Promise<void> {
   try {
@@ -65,6 +70,7 @@ async function route(request: Request, env: Env): Promise<Response> {
   requireCondition(!origin || origin === canonical, 'cross_origin_request_denied', 403);
   if (url.pathname === '/health' && request.method === 'GET') return Response.json({ status: 'ok', version: '0.1.0' });
   if (url.pathname === '/' && request.method === 'GET') return onboarding(env);
+  const web = await webRoute(request, env); if (web) return web;
   if (url.pathname === '/v1/workload/check' && request.method === 'POST') {
     // A read-only administrator diagnostic, never a credential/token broker grant.
     // Privileged review routes below still require this App's dispatch identity.
@@ -139,6 +145,13 @@ async function route(request: Request, env: Env): Promise<Response> {
     const event = request.headers.get('x-github-event') ?? '', delivery = request.headers.get('x-github-delivery') ?? '';
     requireCondition(/^[a-zA-Z0-9-]{1,100}$/.test(delivery), 'invalid_delivery_id');
     const body = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    if (event === 'github_app_authorization') {
+      const revoked = record(JSON.parse(body) as unknown), sender = record(revoked.sender);
+      requireCondition(revoked.action === 'revoked' && Number.isSafeInteger(sender.id) && sender.type === 'User', 'invalid_authorization_revocation');
+      // Deliveries can arrive after reauthorization. Each browser request checks
+      // its own current token, rather than deleting a newly valid grant by actor.
+      return Response.json({ status: 'live_authorization_check_required' });
+    }
     const digest = await sha256(body);
     if (!await store.delivery(delivery, digest, event, JSON.stringify(compactWebhook(event, JSON.parse(body) as unknown)))) return Response.json({ status: 'duplicate_or_recovering' });
     const status = await processDelivery(delivery, env);
@@ -153,6 +166,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     requireCondition(repo.permissions?.admin, 'repository_admin_required_for_provisioning', 403);
     const { data: installation } = await (await appClient(env)).rest.apps.getRepoInstallation(splitRepo(repository));
     requireCondition(!installation.suspended_at, 'installation_suspended', 403);
+    if (request.method !== 'GET') requireCondition(!await env.DB.prepare('SELECT 1 FROM web_connections WHERE installation_id=? AND repository_id=? AND actor_id=?').bind(installation.id, repo.id, user.id).first(), 'hosted_connections_must_be_managed_in_dashboard', 409);
     if (request.method === 'PUT') {
       requireCondition(env.CHATGPT_DEPLOYMENT_AUTHORIZED === 'true', 'chatgpt_deployment_not_authorized', 403);
       await store.saveSession(repo.id, user.id, envelope(JSON.parse(new TextDecoder().decode(await boundedBody(request, 66_000))) as unknown), installation.id);
@@ -160,7 +174,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     else return Response.json({ installation_id: installation.id, session: await store.session(repo.id, user.id, installation.id) });
     return Response.json({ status: 'ok' });
   }
-  const match = /^\/v1\/requests\/([a-f0-9-]{36})\/(prepare|rotate|result|publish|release|failure|stage)$/.exec(url.pathname);
+  const match = /^\/v1\/requests\/([a-f0-9-]{36})\/(prepare|rotate|renew|result|publish|release|failure|stage)$/.exec(url.pathname);
   if (!match || request.method !== 'POST') throw new AppError('not_found', 404);
   const id = match[1]!, operation = match[2]!;
   const { row, snapshot } = await store.get(id);
@@ -201,6 +215,8 @@ async function route(request: Request, env: Env): Promise<Response> {
     return Response.json({ status: 'recorded' });
   }
   if (operation === 'prepare') {
+    const hosted = await env.DB.prepare('SELECT state FROM web_connections WHERE installation_id=? AND repository_id=? AND actor_id=?').bind(snapshot.installationId, snapshot.repositoryId, snapshot.actorId).first<{ state: string }>();
+    requireCondition(!hosted || hosted.state === 'ready', 'hosted_connection_requires_reconnect', 409);
     const { data: pr } = await github.rest.pulls.get({ ...splitRepo(snapshot.repository), pull_number: snapshot.pr });
     requireCondition(pr.head.sha === snapshot.head && pr.base.sha === snapshot.base && pr.state === 'open' && !pr.draft, 'stale_pull_request', 409);
     const { data: branch } = await github.rest.repos.getBranch({ ...splitRepo(snapshot.repository), branch: snapshot.defaultBranch });
@@ -225,6 +241,15 @@ async function route(request: Request, env: Env): Promise<Response> {
     await store.rotate(snapshot, Number(body.version), envelope(body.envelope));
     return Response.json({ status: 'saved' });
   }
+  if (operation === 'renew') {
+    requireCondition(row.state === 'running' && snapshot.config.credentials.mode === 'chatgpt', 'request_not_running', 409);
+    const liveConfig = await trustedConfig(github, snapshot.repository, snapshot.defaultBranch);
+    await verifyActor(github, snapshot.actor, snapshot.actorId);
+    requireCondition(liveConfig.review.enabled && authorize(snapshot.actor, await permission(github, snapshot.repository, snapshot.actor, snapshot.actorId), liveConfig.authorization), 'review_authorization_revoked', 403);
+    const { data: branch } = await github.rest.repos.getBranch({ ...splitRepo(snapshot.repository), branch: snapshot.defaultBranch });
+    requireCondition(branch.protected && branch.commit.sha === snapshot.workflowSha, 'trusted_default_branch_changed_or_unprotected', 409);
+    return Response.json(await renewHosted(env, snapshot));
+  }
   if (operation === 'result') {
     const body = record(JSON.parse(new TextDecoder().decode(await boundedBody(request, MAX_RESULT_BODY_BYTES))) as unknown);
     requireCondition(typeof body.context_complete === 'boolean' && body.output !== undefined, 'invalid_result_submission');
@@ -233,6 +258,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     await store.result(id, body.output, body.context_complete, identity.runId);
     if (input) {
       await store.noteFailure(id, identity.runId, input.code, input.stage, input.status);
+      if (input.revoked) await env.DB.prepare("UPDATE web_connections SET state='reconnect_required' WHERE installation_id=? AND repository_id=? AND actor_id=?").bind(snapshot.installationId, snapshot.repositoryId, snapshot.actorId).run();
     }
     await notify(env, store, snapshot);
     return Response.json({ status: 'recorded' });
@@ -267,8 +293,11 @@ export default {
       const response = await route(request, env);
       response.headers.set('Cache-Control', 'no-store');
       response.headers.set('X-Content-Type-Options', 'nosniff');
-      response.headers.set('Referrer-Policy', 'no-referrer');
-      response.headers.set('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; form-action 'none'; frame-ancestors 'none'; base-uri 'none'");
+      // no-referrer makes browser form navigations send Origin:null. Keep exact
+      // same-origin CSRF checks, while callback redirects never forward codes.
+      response.headers.set('Referrer-Policy', response.headers.get('Content-Type')?.startsWith('text/html') && !new URL(request.url).pathname.endsWith('/callback') ? 'same-origin' : 'no-referrer');
+      response.headers.set('Content-Security-Policy', "default-src 'none'; style-src 'self'; script-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'");
+      response.headers.set('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
       return response;
     } catch (error) {
       // No raw exceptions, URLs, authorization headers, source, prompts or provider responses in telemetry.

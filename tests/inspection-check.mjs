@@ -29,13 +29,16 @@ for (const scenario of ['untrusted', 'findings', 'clean', 'incomplete']) {
   const root = await mkdtemp(resolve('.local/inspection-')), directory = join(root, 'context'), head = 'a'.repeat(40);
   const config = globalThis.structuredClone(DEFAULT_CONFIG), request = { id, head, base: 'b'.repeat(40), config, command: { merge: false, effort: null, instructions: '' } };
   const fixture = await writeInspectionFixture(directory, request, scenario !== 'clean');
-  const evidence = { diff: hash(JSON.stringify(fixture.files)), source: hash(fixture.source), base: hash(fixture.base), instructions: hash(JSON.stringify(fixture.instructions)) };
+  const evidence = { diff: hash(JSON.stringify(fixture.files)), source: hash(fixture.source), base: hash(fixture.base), instructions: hash(JSON.stringify(fixture.instructions)), caller: hash(fixture.caller), hostile: hash(fixture.injection) };
   const result = { head_sha: head, complete: scenario !== 'incomplete', result: scenario === 'clean' ? 'clean' : scenario === 'incomplete' ? 'inconclusive' : 'findings',
     summary: 'Scripted protocol fixture after verified file inspection; not a live AI review.', findings: scenario === 'clean' || scenario === 'incomplete' ? [] : [{
       severity: 'high', confidence: 0.99, path: 'src/access.js', line: 3, side: 'RIGHT', title: 'Reject unauthorized roles',
       explanation: 'The nonempty owner string makes the authorization result truthy for every other role.', remediation: 'Compare role against owner explicitly.' }] };
-  const probe = `import assert from 'node:assert/strict';import fs from 'node:fs';import net from 'node:net';import {createHash} from 'node:crypto';
-    for(const [name,path] of Object.entries({diff:'/workspace/diff.json',source:'/workspace/source/head/src/access.js',base:'/workspace/source/base/src/access.js',instructions:'/workspace/trusted-instructions.json'})) console.log('fixture_read_'+name+'='+createHash('sha256').update(fs.readFileSync(path)).digest('hex'));
+  const probe = `import assert from 'node:assert/strict';import fs from 'node:fs';import net from 'node:net';import http from 'node:http';import {createHash} from 'node:crypto';
+    const lookup=body=>new Promise((resolve,reject)=>{const r=http.request({socketPath:'/run/proxy/context.sock',path:'/file',method:'POST'},s=>{let text='';s.on('data',b=>text+=b);s.on('end',()=>resolve(JSON.parse(text)))});r.on('error',reject);r.end(JSON.stringify(body))});
+    assert.deepEqual(await lookup({snapshot:'head',path:'src/caller.js'}),{available:true});
+    assert.deepEqual(await lookup({snapshot:'head',path:'src/caller.js',url:'https://evil.invalid'}),{error:'context_lookup_unavailable'});
+    for(const [name,path] of Object.entries({diff:'/workspace/diff.json',source:'/workspace/source/head/src/access.js',base:'/workspace/source/base/src/access.js',instructions:'/workspace/trusted-instructions.json',caller:'/workspace/source/head/src/caller.js',hostile:'/workspace/source/head/README.md'})) console.log('fixture_read_'+name+'='+createHash('sha256').update(fs.readFileSync(path)).digest('hex'));
     for(const key of ['GITHUB_TOKEN','OPENAI_API_KEY','ACCESS_TOKEN','CODEXBOT_VAULT_KEY','CODEXBOT_API_KEY']) assert.equal(process.env[key],undefined);
     assert.equal(fs.existsSync('/run/credential'),false);assert.equal(fs.existsSync('/var/run/docker.sock'),false);
     assert.throws(()=>fs.writeFileSync('/workspace/source/head/src/access.js','tamper'));assert.throws(()=>fs.writeFileSync('/app/forbidden','tamper'));
@@ -47,7 +50,8 @@ for (const scenario of ['untrusted', 'findings', 'clean', 'incomplete']) {
   const preload = `import cp from 'node:child_process';import {syncBuiltinESMExports} from 'node:module';
     const spawn=cp.spawn;cp.spawn=(...args)=>{const child=spawn(...args);const write=child.stdin.write.bind(child.stdin);child.stdin.write=(chunk,...rest)=>{const msg=JSON.parse(String(chunk));if(msg.method==='thread/start')msg.params.approvalPolicy='untrusted';return write(JSON.stringify(msg)+'\\n',...rest)};return child};syncBuiltinESMExports();`;
   await writeFile(join(directory, 'untrusted-control.mjs'), preload);
-  const proxyScript = `import {createInferenceServer} from '/app/dist/src/runner/proxy.js';import {executionEnvelope} from '/app/dist/src/core/execution.js';import {readFile} from 'node:fs/promises';
+  const proxyScript = `import {createInferenceServer} from '/app/dist/src/runner/proxy.js';import {contextServer} from '/app/dist/src/runner/context-server.js';import {executionEnvelope} from '/app/dist/src/core/execution.js';import {readFile} from 'node:fs/promises';
+    await contextServer('/run/proxy/context.sock',async(snapshot,path)=>snapshot==='head'&&path==='src/caller.js');
     const token=(await readFile('/run/credential','utf8')).trim();
     const evidence=${JSON.stringify(evidence)};let calls=0;
     const events=${events.toString()};

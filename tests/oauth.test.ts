@@ -88,3 +88,28 @@ await test('private atomic files and exclusive lock prevent two refresh owners',
     assert.equal(await withFileLock(path, async () => 'released'), 'released');
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
+
+await test('approved website clients validate PKCE, nonce, scopes, workspace and configured token authentication; refresh/revoke preserve client identity', async () => {
+  for (const authMethod of ['none','client_secret_post','client_secret_basic'] as const) {
+    let pending: PendingLogin | undefined, tokenOverrides: Record<string,unknown> = {}, workspace = 'workspace-1', nonceOverride: string | undefined;
+    const config = { clientId:'oaiapp_test', redirect:'https://web.invalid/auth/openai/callback', authMethod, scopes: SCOPES, workspaceClaim:'approved_workspace', ...(authMethod === 'none' ? {} : { clientSecret:'fixture-secret' }) };
+    const oauth = new OAuth(async (input, init) => {
+      const url = String(input); if (url.endsWith('/.well-known/openid-configuration')) return Response.json(discovery);
+      const body = new URLSearchParams(String(init?.body));
+      if (authMethod === 'client_secret_post') assert.equal(body.get('client_secret'),'fixture-secret');
+      if (authMethod === 'client_secret_basic') { assert.equal(new Headers(init?.headers).get('authorization'), 'Basic ' + Buffer.from('oaiapp_test:fixture-secret').toString('base64')); assert.equal(body.has('client_id'),false); }
+      if (authMethod === 'none') { assert.equal(body.has('client_secret'), false); assert.equal(new Headers(init?.headers).has('authorization'),false); }
+      if (url === discovery.revocation_endpoint) return new Response(null, { status:200 });
+      const id_token = await new SignJWT({ nonce:nonceOverride ?? pending?.nonce, approved_workspace: workspace }).setProtectedHeader({ alg:'RS256' }).setIssuer(ISSUER).setSubject('user-1').setAudience('oaiapp_test').setIssuedAt().setExpirationTime('1h').sign(privateKey);
+      return Response.json({ token_type:'Bearer', access_token:'fixture-access', refresh_token:'rotated-fixture', id_token, expires_in:3600, scope:SCOPES.join(' '), ...tokenOverrides });
+    }, () => publicKey, config);
+    pending = (await oauth.beginWebsite(host)).pending;
+    const initial = await oauth.complete(pending, callback(pending)); assert.equal(initial.hosted,true); assert.equal(initial.workspace,'workspace-1');
+    const refreshed = await oauth.refresh(initial); assert.equal(refreshed.hosted,true); assert.equal(refreshed.workspace,'workspace-1'); assert.equal(await oauth.revoke(refreshed),true);
+    workspace = 'workspace-2'; await assert.rejects(oauth.refresh(initial), /workspace_mismatch/); workspace = 'workspace-1';
+    pending = (await oauth.beginWebsite(host)).pending; nonceOverride = 'wrong'; await assert.rejects(oauth.complete(pending, callback(pending)), /nonce_or_subject/); nonceOverride = undefined;
+    pending = (await oauth.beginWebsite(host)).pending; tokenOverrides = { scope:'openid profile email' }; await assert.rejects(oauth.complete(pending, callback(pending)), /plan_usage_permission_missing/);
+    tokenOverrides = {}; pending = (await oauth.beginWebsite(host, initial)).pending; workspace = 'workspace-2'; await assert.rejects(oauth.complete(pending, callback(pending)), /workspace_mismatch/);
+    pending = (await oauth.beginWebsite(host)).pending; const wrong = callback(pending); wrong.pathname = '/other'; await assert.rejects(oauth.complete(pending, wrong), /callback_mismatch/);
+  }
+});

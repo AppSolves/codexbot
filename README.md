@@ -2,7 +2,7 @@
 
 An Apache-2.0 GitHub App for Codex pull request reviews on repository-owned GitHub Actions runners. The Cloudflare Worker authenticates requests and publishes native reviews; it never runs Codex.
 
-Hosted backend: **[https://codexbot.appsolves.workers.dev](https://codexbot.appsolves.workers.dev/)**. This is the CLI and generated-workflow default. The hostname migration is staged; production availability and credential acceptance must be verified during the [operator cutover](docs/origin-migration.md). Independent installations pass their own HTTPS origin with `--backend`.
+Hosted backend: **[https://codexbot.appsolves.workers.dev](https://codexbot.appsolves.workers.dev/)**. This is the canonical website, CLI and generated-workflow origin. Independent installations pass their own HTTPS origin with `--backend`.
 
 ```text
 @CBReview review --effort xhigh --merge
@@ -18,13 +18,13 @@ Set `bot.trigger: "@CBReview"` to use the example above. The legacy default `@co
 
 ## Status
 
-**Pre-release; full production review acceptance remains pending.** Unit/integration tests exercise signed webhooks, official OAuth contracts, OIDC, actual SQLite persistence, setup PR creation and GitHub publishing against mocked external APIs. The pinned official Codex binary is tested without credentials. A separate Docker check uses synthetic inference; it does not claim to have performed a real AI review. See [validation and live acceptance](docs/validation.md).
+**Pre-release.** The existing production review pipeline is operational; this change preserves it. The browser onboarding and management flow is implemented and tested locally against real workerd/D1 with synthetic GitHub/OpenAI providers. It remains disabled until the operator provisions the actual approved website OAuth client, callbacks, inference scopes and workspace claim, then completes staged acceptance. No production deployment follows from a PR or local test.
 
-Live GitHub installation, real OpenAI inference/allowance, OAuth eligibility and Cloudflare production resource usage require operator credentials and acceptance testing. Do not market this as battle-tested or deploy with automatic merge before completing those checks.
+See [web onboarding, credentials and activation](docs/web-onboarding.md) for the explicit hosted credential trust boundary and remaining live gates. AI reviews can miss defects; keep independent human review and CI. Automatic merging remains disabled.
 
 ## What is implemented
 
-- Public GitHub App installation/onboarding page, signed webhook intake, installation suspension/deletion handling and replay protection.
+- Browser GitHub PKCE sign-in, installation reconciliation, responsive repository dashboard, reviewed setup/configuration PRs and approved-client hosted ChatGPT OAuth with encrypted Environment provisioning; signed webhook intake, installation suspension/deletion handling and replay protection.
 - Configurable handle and command parser, default-deny whitelist/blacklist policy, RE2 matching, live GitHub identity/permission checks, separate merge policy.
 - ChatGPT OSS OAuth with PKCE, state, nonce, issued-client/account validation, encrypted session provisioning, persistent host IDs, serialized refresh and token rotation/revocation.
 - Independent personal API-key mode; no billing fallback between modes.
@@ -33,7 +33,11 @@ Live GitHub installation, real OpenAI inference/allowance, OAuth eligibility and
 - Separate publishing job, native inline reviews, exact-commit checks, conservative approvals, and explicitly requested native exact-head merge; pending CI is held behind an App-bound required check and durable intent.
 - App-authored setup PR when Workflows permission is granted; a temporary user-credential setup alternative and manual installation.
 
-## Quick start
+## Browser setup
+
+When the operator has activated web onboarding, open the [website](https://codexbot.appsolves.workers.dev/), sign in with GitHub, install/select repositories through GitHub, choose a repository you administer, create its setup PR and connect ChatGPT or your own API key. Review and merge the PR; refresh to verify readiness. Settings propose further PRs, never silent default-branch commits. Normal onboarding requires no terminal. Public repositories support protected Environments on GitHub Free; private repositories require suitable Pro/Team/Enterprise support. Existing CLI connections remain compatible and need an explicit disconnect before switching management mode.
+
+## CLI and self-hosted setup
 
 Requirements: Node 24+, GitHub CLI (`gh auth login`), a GitHub App/Worker deployment, a protected default branch, and GitHub-hosted Ubuntu runners with Docker. The onboarding CLI currently requires repository administrator access to create/protect credential Environments. Windows/macOS can run onboarding; production review orchestration runs on Linux.
 

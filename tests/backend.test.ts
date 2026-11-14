@@ -16,7 +16,8 @@ await test('hosted config, manifest and generated callers agree on Workers.dev w
   assert.deepEqual(config.routes, []);
   const manifest = JSON.parse(await readFile('app-manifest.json', 'utf8'));
   assert.equal(manifest.url, DEFAULT_BACKEND); assert.equal(manifest.hook_attributes.url, `${DEFAULT_BACKEND}/webhook`);
-  assert.equal(manifest.setup_url, `${DEFAULT_BACKEND}/`); assert.equal(manifest.redirect_url, `${DEFAULT_BACKEND}/`);
+  assert.equal(manifest.setup_url, `${DEFAULT_BACKEND}/dashboard`); assert.equal(manifest.redirect_url, `${DEFAULT_BACKEND}/`);
+  assert.deepEqual(manifest.callback_urls, [`${DEFAULT_BACKEND}/auth/github/callback`]);
   const generated = parse(callerWorkflow('operator/codexbot', RELEASE)); assert.equal(generated.jobs.review.with.backend, DEFAULT_BACKEND);
   const independent = parse(callerWorkflow('operator/codexbot', RELEASE, 'https://independent.invalid'));
   assert.equal(independent.jobs.review.with.backend, 'https://independent.invalid');

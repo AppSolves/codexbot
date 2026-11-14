@@ -1,8 +1,8 @@
 # Deployment checklist
 
-Hosted canonical origin: **https://codexbot.appsolves.workers.dev**. Use the [staged origin migration](origin-migration.md) for the existing App/Worker; it preserves the current D1, secrets, immutable review pin and zone Bot Fight Mode. This repository prepares the change; merging or a dry-run does not deploy it.
+Hosted canonical origin: **https://codexbot.appsolves.workers.dev**. Use the [staged origin migration](origin-migration.md) for the existing App/Worker; it records the historical origin-bound credential cutover. The current production origin is Workers.dev; merging or a dry-run does not deploy new browser functionality.
 
-For Worker/reusable-workflow upgrades, follow [the coordinated immutable-pin upgrade](review-rollout.md), apply required migrations and set the caller pin and Worker TRUSTED_WORKFLOW to the same actual merged commit. The caller-only Environment-secret correction uses named references plus a scope guard; it keeps the existing `4ed668864cac0682e09ec49a2515a6e1893a2780` pin and needs no Worker deployment or migration. Keep merge disabled. Report validation before any production change; a temporary pin mismatch fails closed.
+For Worker/reusable-workflow upgrades, follow [the coordinated immutable-pin upgrade](review-rollout.md), apply required migrations and set the caller pin and Worker TRUSTED_WORKFLOW to the same actual merged commit. The prior caller-only Environment-secret correction preserved its then-current pin. New runner/context/hosted-renew changes require the coordinated final source SHA described below. Keep merge disabled. Report validation before any production change; a temporary pin mismatch fails closed.
 
 The shared setup generator is bundled into `/v1/setup`. Publishing its corrected templates for future hosted installations requires a separately authorized Worker bundle deployment, with the existing trusted review pin preserved. The existing caller can be repaired independently; no backend deployment is performed by the fix PR.
 
@@ -14,15 +14,15 @@ Register a public GitHub App with installation access for any account, selecting
 
 | Setting | Required value |
 |---|---|
-| Homepage/setup URL | https://codexbot.appsolves.workers.dev/ (or the independent backend) |
+| Homepage / setup / OAuth callback | `/` / `/dashboard` / `/auth/github/callback` on the exact backend origin |
 | Webhook | https://codexbot.appsolves.workers.dev/webhook (or the independent backend) |
 | Secret | Cryptographically random, at least 32 bytes |
 | Default permissions | Metadata read; Actions write; Contents write; Pull requests write |
-| Optional automated setup | Workflows write, explicit installer consent; otherwise manual/temporary-user setup |
+| Browser setup | Workflows write; Administration write; Environments write, with installation consent and live administrator checks |
 | Optional automatic merge inspection/guard | Checks write and Administration read, explicit installer consent |
 | Events | Issue comment, Pull request; installation lifecycle is delivered automatically |
 
-Contents write permits merge/setup; individual runtime tokens are downscoped to one numeric repository and operation. Read tokens have only Contents/Pull requests read and are revoked before inference. Review/publish workflows have no GitHub write permission. Optional Administration **read** is used only to inspect branch protection for merge; no token is given administrative write or ruleset bypass. The App never receives Secrets/Environments access. Default review-only installations do not need the optional merge permissions.
+Contents write permits merge/setup; individual runtime tokens are downscoped to one numeric repository and operation. Context tokens have only Contents/Pull requests read and are revoked after the bounded immutable-context service stops. Review/publish workflows have no GitHub write permission. Optional Administration **read** is used only to inspect branch protection for merge; ordinary review/publish tokens have no administrative write, Environment-secret access or ruleset bypass. Browser Environment operations use only the signed-in administrator’s intersection-scoped App user token; setup installation tokens remain Contents/Pull requests/Workflows only. Default review-only installations do not need the optional merge permissions.
 
 Keep the RSA App private key exclusively in Worker secrets. Convert a PKCS#1 download locally to PKCS#8 when needed:
 
@@ -54,7 +54,7 @@ npm run deploy
 
 Those final remote commands are operator actions. Keep user OpenAI credentials out of Worker vars/secrets. Generated Env declarations contain binding/secret names and string types, never secret values; generate locally/CI rather than hand-edit or archive them. Initial-schema upgrades require [the migration runbook](operations.md).
 
-The installed minute cron handles bounded dispatch/publication recovery and cleanup. Enable Workers Logs and sampled traces as configured; invocation payload logging is disabled. Do not add body/header capture to proxies, analytics or APM. /health proves route availability only; use runtime tests/acceptance for D1, App permissions, OIDC and provider access.
+The installed minute cron handles bounded dispatch/publication recovery and cleanup. Keep safe Workers Logs enabled and automatic traces disabled as explicitly authorized for browser OAuth; invocation payload logging is disabled. Do not add body/header capture to proxies, analytics or APM. /health proves route availability only; use runtime tests/acceptance for D1, App permissions, OIDC and provider access.
 
 ## Independent external gates
 
@@ -67,3 +67,9 @@ MERGE_DEPLOYMENT_AUTHORIZED=false remains until the disposable advisory/verdict/
 The [Workers limits](https://developers.cloudflare.com/workers/platform/limits/) and [D1 limits](https://developers.cloudflare.com/d1/platform/limits/) apply independently of repository-owned Actions compute. Workers Free currently has 100,000 requests/day, 10 ms CPU/request, 128 MB memory and 50 external subrequests/request. Minute cron is supported, but bounded cron work does not prove it meets the CPU budget. Crypto, YAML, DLP and review history/human permission checks can require Paid; measure realistic private/public workloads and reduce quotas or provision capacity. No inference runs on Cloudflare and no personal VM/VPS is used.
 
 A request expires after one hour; metadata/receipts retain seven days. Successful receipt payloads are cleared immediately; session ciphertext remains until disconnect/uninstall, subject to separate D1 backup retention. Review history, branch rules, human permission checks and collector calls have hard bounds; ambiguous evidence requires manual action. Read [operations](operations.md) before opening public installation broadly.
+
+## Browser activation / migration 0004
+
+Follow [ADR 0001 and its activation table](web-onboarding.md). Apply migration 0004 before the new Worker, preserve existing CLI vaults and leave WEB_ENABLED=false until the actual GitHub/OpenAI registered clients, exact callbacks, signed workspace claim and inference scopes are provisioned. Registration approval does not invent these values. Set secrets with Wrangler protected input; no plaintext user tokens/API keys belong in Worker vars. The hosted master key protects encrypted D1 key records and requires a separate backup/rotation procedure. No production secrets or registrations are modified by this repository change.
+
+Run npm run check, npm run test:clean, npm run test:workers, npm run test:web, npm run catalog:check, Docker sandbox tests, Actionlint, audit, image scan and Wrangler dry-run before activation. The web test uses local self-signed TLS only inside an isolated browser context; production TLS verification is never disabled. Keep automatic merge off through disposable GitHub/OIDC and separately authorized provider acceptance. Reverting to an older runner requires quiescing hosted sessions and matching both immutable pins, since older runners do not implement hosted renew.

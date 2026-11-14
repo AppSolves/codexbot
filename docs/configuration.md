@@ -49,7 +49,7 @@ The first nonempty top-level line must begin with a configured trigger and `revi
 
 Aliases are textual commands, not guaranteed GitHub App mentions. A custom alias can notify an unrelated GitHub account with the same name. Existing @codexbot installations remain compatible. New automated setup uses @CBReview followed by the numeric repository ID to reduce collisions; it remains editable. Configure `bot: {trigger: "@CBReview", aliases: []}` for a short explicit alternative. Avoid adding the old name as an alias if the purpose is avoiding an independent connector. Changing a trigger never changes the App's publishing identity. See [trigger isolation](review-rollout.md).
 
-Effort syntax recognizes none/minimal/low/medium/high/xhigh/max, but the selected model must actually advertise the requested value. Omission preserves Codex defaults. Catalog discovery does not prove account entitlement; completed inference is required. Never substitute an unsupported value or change billing modes.
+Effort syntax recognizes none/minimal/low/medium/high/xhigh/max/ultra, but the selected model must actually advertise the requested value. Omission preserves Codex defaults. Catalog discovery does not prove account entitlement; completed inference is required. Never substitute an unsupported value or change billing modes.
 
 Model precedence is the explicit command override, then `review.model`, then the Codex catalog default. Model identifiers use 1–100 ASCII letters, digits, dots, underscores or hyphens, cannot begin with a flag hyphen and must match an actual catalog entry. Effort is validated against that selected model; a model override never silently changes an unsupported requested effort. Existing snapshots without `command.model` retain the previous behavior. Overrides are included in the existing request idempotency key and remain subject to normal authorization and quotas; they grant no merge permissions.
 
@@ -63,3 +63,7 @@ Model precedence is the explicit command override, then `review.model`, then the
 | Complete clean result, zero findings, approval enabled | APPROVE |
 
 Supplementary coverage is reported separately and does not alone disable approval. Any finding, even very low confidence, prevents automatic approval/merge. The model cannot set thresholds. Suspicious text is quarantined wholesale into a generic non-approving report. See [security](security.md).
+
+## Browser settings
+
+The repository dashboard renders the same canonical fields, validates syntax/policy/thresholds and the generated pinned Codex model/effort catalog, and creates a reviewed configuration/workflow PR against the exact default-branch commit shown. Active settings remain unchanged until merge. Unsupported selections fail explicitly; model membership does not establish actual account entitlement. Existing configurations are not silently rewritten. Suspected secrets in a proposed policy are rejected before GitHub writes. Credentials are connected separately to the owning protected Environment, never YAML.

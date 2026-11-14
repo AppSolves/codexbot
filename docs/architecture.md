@@ -18,7 +18,7 @@ sequenceDiagram
   Worker->>GitHub: Attempt-bound workflow dispatch
   Actions->>Worker: GitHub OIDC prepare
   Worker->>Actions: One-repository read token + installation/actor ciphertext
-  Actions->>GitHub: Immutable commit/tree/blob collection; revoke read token
+  Actions->>GitHub: Immutable commit/tree/blob collection and bounded context broker
   Actions->>Worker: Persist encrypted token rotation with lease/CAS
   Actions->>Reviewer: Read-only data, no credentials or external network
   Reviewer->>Proxy: Unix socket inference request
@@ -39,7 +39,7 @@ The manifest distinguishes `diffComplete`, `requiredContextComplete` and supplem
 
 ## Isolated inference
 
-Nonroot Docker containers use read-only root filesystems, resource caps, no capabilities, no-new-privileges and private temporary homes. The reviewer has network=none and only context/socket read-only mounts. It has no Docker socket, GitHub/OIDC token, API key, refresh token or vault key. A separate audited proxy owns the access credential, only permits stateless streaming Responses inference at one HTTPS route, rejects hosted network tools, pins model/effort/service-tier selection and replaces provider errors. Default limits are 100 requests and a 20-minute turn. The host owns encrypted session rotation and all GitHub API access.
+Nonroot Docker containers use read-only root filesystems, resource caps, no capabilities, no-new-privileges and private temporary homes. The reviewer has network=none and only context/socket read-only mounts. It has no Docker socket, GitHub/OIDC token, API key, refresh token or vault key. A separate audited proxy owns the access credential, only permits stateless streaming Responses inference at one HTTPS route, rejects hosted network tools, pins model/effort/service-tier selection and replaces provider errors. Default limits are 100 requests and a 20-minute turn. The host owns CLI-session refresh and all context GitHub access. Approved hosted-session refresh stays on the Worker behind OIDC and leases.
 
 Codex 0.169.0 uses `approvalPolicy: never` for unattended inspection. The thread's read-only default remains, and each review turn explicitly selects `externalSandbox` with restricted network, relying on the unchanged Docker boundary. `never` is not a client approval grant: all server-initiated approval/tool/permission requests still receive JSON-RPC -32601 and cause the analysis to fail. Native declined commands also fail. At least one completed command with exit 0 is necessary before a turn can produce a review; this is execution evidence, not proof of full semantic coverage. Both the isolated entrypoint and trusted host validate completeness, exact head and changed-line references. Incomplete/quarantined/truncated/inconclusive output fails the review job; the protected publisher can still publish a non-approving fallback.
 
@@ -54,3 +54,11 @@ Public output is scanned before runner stdout, backend persistence and GitHub wr
 Publishing has leases, checkpoints and bounded retries. A GitHub pending review is created before submission, then resumed by its App-owned request/head/fingerprint marker after an ambiguous write. Review submission and merge intent are separate durable steps. Ready PRs use GitHub's expected-head native merge. Pending CI requires an App-bound required guard; it remains pending while the backend rechecks humans, credentials and policy. The native intent is disabled before guard release; final merging repeats authorization. Conflicts, unknown evidence and merge queues require manual action. No bypass rights are supported.
 
 See [operations](operations.md), [security](security.md) and [acceptance](acceptance.md) for failure handling, limitations and release gates.
+
+## Adaptive context and browser management
+
+The collector also writes a supplementary regular-file index (12 directories / 5,000 paths, no recursive tree dump). Explicit Python relative imports and Rust sibling modules join JS/TS dependencies; nearby Python/Go/Java test names are considered. A separate host Unix socket accepts only bounded base/head path requests for this authorized immutable repository. It never forwards arbitrary URLs, executes project code or exposes credentials. At most 24 requests share the existing byte/blob/API limits and per-SHA cache. Requested files that cannot be obtained invalidate completeness. The reviewer mount stays read-only and network=none. The read token now lasts through bounded context exploration; shutdown cancels/drains lookups and revokes it before temporary source cleanup. Failed token cleanup fails the review job.
+
+The system prompt asks for introduced, evidence-backed bugs traced through unchanged callers and dependencies, with trusted default-branch guidance subordinate to execution/output safety. Additional comment context is advisory. The model/effort CLI precedence is unchanged; a generated pinned-native catalog powers dashboard validation and distinguishes catalog membership from account entitlement.
+
+Browser auth, repository management, durable provisioning states, exact-base policy PRs and the explicit hosted decryption boundary are documented in [ADR 0001](web-onboarding.md). Migration 0004 is additive; existing CLI envelopes keep their AAD and keys. Native review receipt fingerprints/event policy are unchanged; human-readable summaries replace mechanical status/merge-noise text.

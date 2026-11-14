@@ -8,6 +8,17 @@ const SOURCE_TOKEN = RE2JS.compile(String.raw`\b(?:sk-[a-zA-Z0-9_-]{16,}|gh[pous
 
 export interface Finding { severity: 'critical' | 'high' | 'medium' | 'low'; confidence: number; path: string; line: number; side: 'LEFT' | 'RIGHT'; title: string; explanation: string; remediation: string }
 export interface Review { head_sha: string; result: 'clean' | 'findings' | 'inconclusive'; complete: boolean; summary: string; findings: Finding[]; output_truncated?: boolean; quarantined?: boolean }
+export function reviewSummary(review: Review, event: 'APPROVE' | 'COMMENT' | 'REQUEST_CHANGES', contextComplete: boolean): string {
+  const complete = review.complete && contextComplete && !review.quarantined && !review.output_truncated && review.result !== 'inconclusive';
+  const counts = (['critical','high','medium','low'] as const).flatMap(severity => {
+    const count = review.findings.filter(finding => finding.severity === severity).length;
+    return count ? [`${count} ${severity}`] : [];
+  });
+  const status = !complete ? 'Review incomplete. Required evidence or reliable analysis was unavailable.'
+    : event === 'REQUEST_CHANGES' ? 'Changes requested.' : 'Review complete.';
+  const findings = counts.length ? `Found ${counts.join(', ')} severity ${review.findings.length === 1 ? 'issue' : 'issues'}.` : complete ? 'No actionable issues found.' : 'No approval is authorized.';
+  return `**CodexBot Review**\n\n${status} ${findings}\n\n${publicText(review.summary)}${event === 'COMMENT' && complete ? '\n\nThis review is advisory. No changes were formally requested.' : ''}\n\nTests were not executed in the isolated review environment.`;
+}
 export function failedReview(head: string): Review {
   return { head_sha: head, result: 'inconclusive', complete: false,
     summary: 'CodexBot could not complete a valid review. Check workflow configuration, authentication, selected model access and usage allowance. No approval or merge is authorized.', findings: [] };

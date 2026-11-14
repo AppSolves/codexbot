@@ -180,32 +180,35 @@ export class Store {
       .bind(encoded, complete ? 1 : 0, id, runId).run(); requireCondition(result.meta.changes === 1, 'review_result_already_recorded', 409);
   }
   async removeInstallation(id: number): Promise<void> {
-    await this.db.batch([this.db.prepare('DELETE FROM sessions WHERE installation_id=?').bind(id), this.db.prepare('DELETE FROM requests WHERE installation_id=?').bind(id), this.db.prepare('DELETE FROM legacy_sessions WHERE installation_id=?').bind(id)]);
+    await this.db.batch([this.db.prepare('DELETE FROM sessions WHERE installation_id=?').bind(id), this.db.prepare('DELETE FROM requests WHERE installation_id=?').bind(id), this.db.prepare('DELETE FROM legacy_sessions WHERE installation_id=?').bind(id), this.db.prepare('DELETE FROM web_connections WHERE installation_id=?').bind(id), this.db.prepare('DELETE FROM web_operations WHERE installation_id=?').bind(id)]);
   }
   async removeRepository(repositoryId: number, installationId: number): Promise<void> {
     await this.db.batch([this.db.prepare('DELETE FROM sessions WHERE repository_id=? AND installation_id=?').bind(repositoryId, installationId),
       this.db.prepare('DELETE FROM requests WHERE repository_id=? AND installation_id=?').bind(repositoryId, installationId),
       this.db.prepare('DELETE FROM legacy_sessions WHERE repository_id=? AND installation_id=?').bind(repositoryId, installationId)]);
+    await this.db.batch([this.db.prepare('DELETE FROM web_connections WHERE repository_id=? AND installation_id=?').bind(repositoryId, installationId), this.db.prepare('DELETE FROM web_operations WHERE repository_id=? AND installation_id=?').bind(repositoryId, installationId)]);
   }
   async session(repositoryId: number, actorId: number, installationId: number): Promise<{ envelope: Envelope; version: number } | null> {
     const row = await this.db.prepare('SELECT envelope,version FROM sessions WHERE repository_id=? AND actor_id=? AND installation_id=?').bind(repositoryId, actorId, installationId).first<{ envelope: string; version: number }>();
     return row ? { envelope: JSON.parse(row.envelope) as Envelope, version: row.version } : null;
   }
   async saveSession(repositoryId: number, actorId: number, envelope: Envelope, installationId: number): Promise<void> {
-    const result = await this.db.prepare(`INSERT INTO sessions(repository_id,actor_id,envelope,installation_id) VALUES(?,?,?,?)
+    const result = await this.db.prepare(`INSERT INTO sessions(repository_id,actor_id,envelope,installation_id) SELECT ?,?,?,? WHERE NOT EXISTS(SELECT 1 FROM web_operations WHERE installation_id=? AND repository_id=? AND lease_until>?)
       ON CONFLICT(installation_id,repository_id,actor_id) DO UPDATE SET envelope=excluded.envelope,version=sessions.version+1 WHERE sessions.lease_until<?`)
-      .bind(repositoryId, actorId, JSON.stringify(envelope), installationId, Date.now()).run(); requireCondition(result.meta.changes === 1, 'session_busy', 409);
+      .bind(repositoryId, actorId, JSON.stringify(envelope), installationId, installationId, repositoryId, Date.now(), Date.now()).run(); requireCondition(result.meta.changes === 1, 'session_busy', 409);
   }
   async acquire(snapshot: RequestSnapshot): Promise<void> {
-    const result = await this.db.prepare('UPDATE sessions SET lease_request=?,lease_until=? WHERE repository_id=? AND actor_id=? AND installation_id=? AND (lease_until<? OR lease_request=?)')
-      .bind(snapshot.id, Date.now() + REQUEST_LIFETIME_MS, snapshot.repositoryId, snapshot.actorId, snapshot.installationId, Date.now(), snapshot.id).run(); requireCondition(result.meta.changes === 1, 'session_missing_or_in_use', 409);
+    const result = await this.db.prepare('UPDATE sessions SET lease_request=?,lease_until=? WHERE repository_id=? AND actor_id=? AND installation_id=? AND (lease_until<? OR lease_request=?) AND NOT EXISTS(SELECT 1 FROM web_operations WHERE installation_id=? AND repository_id=? AND lease_until>?)')
+      .bind(snapshot.id, Date.now() + REQUEST_LIFETIME_MS, snapshot.repositoryId, snapshot.actorId, snapshot.installationId, Date.now(), snapshot.id, snapshot.installationId, snapshot.repositoryId, Date.now()).run(); requireCondition(result.meta.changes === 1, 'session_missing_or_in_use', 409);
   }
-  async rotate(snapshot: RequestSnapshot, version: number, envelope: Envelope): Promise<void> {
-    const result = await this.db.prepare('UPDATE sessions SET envelope=?,version=version+1 WHERE repository_id=? AND actor_id=? AND installation_id=? AND version=? AND lease_request=? AND lease_until>?')
-      .bind(JSON.stringify(envelope), snapshot.repositoryId, snapshot.actorId, snapshot.installationId, version, snapshot.id, Date.now()).run(); requireCondition(result.meta.changes === 1, 'session_rotation_conflict_reconnect_required', 409);
+  async rotate(snapshot: RequestSnapshot, version: number, envelope: Envelope, operationLease: string | null = null): Promise<void> {
+    const result = await this.db.prepare('UPDATE sessions SET envelope=?,version=version+1 WHERE repository_id=? AND actor_id=? AND installation_id=? AND version=? AND lease_request=? AND lease_until>? AND (? IS NULL OR EXISTS(SELECT 1 FROM web_operations WHERE installation_id=? AND repository_id=? AND lease=? AND lease_until>?))')
+      .bind(JSON.stringify(envelope), snapshot.repositoryId, snapshot.actorId, snapshot.installationId, version, snapshot.id, Date.now(), operationLease, snapshot.installationId, snapshot.repositoryId, operationLease, Date.now()).run(); requireCondition(result.meta.changes === 1, 'session_rotation_conflict_reconnect_required', 409);
   }
   async deleteSession(repositoryId: number, actorId: number, installationId: number): Promise<void> {
-    await this.db.prepare('DELETE FROM sessions WHERE repository_id=? AND actor_id=? AND installation_id=?').bind(repositoryId, actorId, installationId).run();
+    const removed = await this.db.prepare('DELETE FROM sessions WHERE repository_id=? AND actor_id=? AND installation_id=? AND NOT EXISTS(SELECT 1 FROM web_operations WHERE installation_id=? AND repository_id=? AND lease_until>?)')
+      .bind(repositoryId, actorId, installationId, installationId, repositoryId, Date.now()).run();
+    requireCondition(removed.meta.changes || !await this.session(repositoryId, actorId, installationId), 'session_busy', 409);
   }
   async release(snapshot: RequestSnapshot): Promise<void> {
     await this.db.prepare('UPDATE sessions SET lease_request=NULL,lease_until=0 WHERE repository_id=? AND actor_id=? AND installation_id=? AND lease_request=?')
@@ -264,6 +267,10 @@ export class Store {
   }
   async cleanup(): Promise<void> {
     await this.db.batch([
+      this.db.prepare('DELETE FROM web_transactions WHERE expires_at<?').bind(Date.now()),
+      this.db.prepare('DELETE FROM web_sessions WHERE expires_at<?').bind(Date.now()),
+      this.db.prepare('DELETE FROM web_rate_limits WHERE expires_at<?').bind(Date.now()),
+      this.db.prepare('DELETE FROM web_operations WHERE lease_until<?').bind(Date.now()),
       this.db.prepare(`UPDATE deliveries SET phase='failed',lease_until=0 WHERE phase='processing' AND lease_until<? AND attempts>=?`).bind(Date.now(), MAX_RECOVERY_ATTEMPTS),
       this.db.prepare(`UPDATE requests SET state='failed',publish_phase='failed' WHERE state='publishing' AND publish_until<? AND publish_attempts>=?`).bind(Date.now(), MAX_RECOVERY_ATTEMPTS),
       this.db.prepare(`UPDATE requests SET state='failed',publish_phase='failed',failure_code=COALESCE(failure_code,'request_expired') WHERE state IN ('created','dispatched','running','reviewed','publishing') AND created_at<? AND merge_phase NOT IN ('queued','arming','cancelling')`).bind(Date.now() - REQUEST_LIFETIME_MS),

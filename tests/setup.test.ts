@@ -1,8 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Octokit } from '@octokit/rest';
-import { parse } from 'yaml';
-import { callerWorkflow, setupPullRequest, ensureProtectedEnvironment } from '../src/setup.js';
+import { parse, stringify } from 'yaml';
+import { callerWorkflow, callerWorkflowMatches, configurationPullRequest, setupPullRequest, ensureProtectedEnvironment } from '../src/setup.js';
+import { DEFAULT_CONFIG } from '../src/core/config.js';
 import { RELEASE } from './fixtures.js';
 await test('generated caller pins reusable code and guards named Environment credentials', () => {
   const yaml = callerWorkflow('operator/codexbot', RELEASE, 'https://self.invalid');
@@ -11,6 +12,38 @@ await test('generated caller pins reusable code and guards named Environment cre
   assert.deepEqual(workflow.jobs.review.secrets, { CODEXBOT_VAULT_KEY: '${{ secrets.CODEXBOT_VAULT_KEY }}', CODEXBOT_API_KEY: '${{ secrets.CODEXBOT_API_KEY }}' });
   assert.deepEqual(workflow.permissions, {}); assert.equal(workflow.jobs.review.with.backend, 'https://self.invalid');
   assert.match(yaml, /dispatch_attempt/); assert.throws(() => callerWorkflow('operator/codexbot', 'main', 'https://self.invalid'));
+});
+await test('caller readiness ignores YAML key order and preserves the supported boolean Docker-cache option, without relaxing credential guards', () => {
+  const current = parse(callerWorkflow('operator/codexbot', RELEASE, 'https://self.invalid'));
+  current.jobs.review.with.docker_cache=true;
+  const reordered=stringify({jobs:current.jobs,...Object.fromEntries(Object.entries(current).filter(([key])=>key!=='jobs'))});
+  assert.equal(callerWorkflowMatches(reordered,'operator/codexbot',RELEASE,'https://self.invalid'),true);
+  current.jobs.review.secrets.CODEXBOT_VAULT_KEY=''; assert.equal(callerWorkflowMatches(stringify(current),'operator/codexbot',RELEASE,'https://self.invalid'),false);
+});
+await test('configuration PR changes only requested leaves, preserves existing comments and rejects sensitive values before writes', async () => {
+  const base='a'.repeat(40), head='c'.repeat(40), writes: Record<string,unknown>[]=[];
+  const previous='# Keep repository guidance\nreview:\n  auto_approve: true\n';
+  const github=new Octokit({request:{fetch:async (input: Parameters<typeof fetch>[0],init?: Parameters<typeof fetch>[1])=>{
+    const path=decodeURIComponent(new URL(String(input)).pathname), method=init?.method??'GET';
+    const body=init?.body?JSON.parse(String(init.body)) as Record<string,unknown>:{};
+    if(method!=='GET')writes.push(body);
+    if(path==='/repos/owner/repo')return Response.json({default_branch:'main'});
+    if(path.includes('/contents/'))return Response.json({type:'file',size:previous.length,content:Buffer.from(previous).toString('base64')});
+    if(path.includes('/git/ref/heads/codexbot/'))return Response.json({},{status:404});
+    if(path.endsWith('/git/ref/heads/main'))return Response.json({object:{sha:base}});
+    if(path.includes('/git/commits/')&&method==='GET')return Response.json({tree:{sha:'b'.repeat(40)}});
+    if(path.endsWith('/git/trees'))return Response.json({sha:'d'.repeat(40)});
+    if(path.endsWith('/git/commits'))return Response.json({sha:head});
+    if(path.endsWith('/git/refs'))return Response.json({});
+    if(path.endsWith('/pulls'))return Response.json(method==='GET'?[]:{html_url:'https://github.com/owner/repo/pull/1'});
+    throw new Error('Unexpected configuration fixture API');
+  }},log:{debug(){},info(){},warn(){},error(){}}});
+  const config=structuredClone(DEFAULT_CONFIG); config.review.auto_approve=false;
+  await configurationPullRequest(github,'owner/repo',base,stringify(config));
+  const tree=writes.find(body=>body.tree)!.tree as {path:string;content:string}[];
+  assert.deepEqual(tree,[{path:'.codexbot.yml',content:'# Keep repository guidance\nreview:\n  auto_approve: false\n',mode:'100644',type:'blob'}]);
+  writes.length=0;config.authorization.whitelist='AKIA'+'A'.repeat(16);
+  await assert.rejects(configurationPullRequest(github,'owner/repo',base,stringify(config)),/must_not_contain_secrets/);assert.equal(writes.length,0);
 });
 function setupFixture() {
   const writes: { path: string; body: Record<string, unknown> }[] = []; let exists = true, branch = false, pr = false, fail = '';
@@ -71,10 +104,11 @@ await test('credential onboarding preserves existing Environment protections and
     if (path.endsWith('/deployment-branch-policies')) return Response.json({ total_count: 1, branch_policies: [{ name: 'main', type: 'branch' }] });
     if (init?.method === 'PUT') { writes++; return Response.json({}); }
     if (mode === 'missing') return Response.json({}, { status: 404 });
-    return Response.json({ deployment_branch_policy: mode === 'protected' ? { protected_branches: false, custom_branch_policies: true } : null, protection_rules: [{ type: 'required_reviewers' }] });
+    return Response.json({ deployment_branch_policy: mode === 'protected' ? { protected_branches: false, custom_branch_policies: true } : mode === 'broad' ? { protected_branches:true,custom_branch_policies:false } : null, protection_rules: [{ type: 'required_reviewers' }] });
   };
   const github = new Octokit({ auth: 'fixture', request: { fetch: fetcher }, log: { debug() {}, info() {}, warn() {}, error() {} } });
   await ensureProtectedEnvironment(github, 'owner/repo', 'codexbot-5'); assert.equal(writes, 0);
+  mode='broad'; await assert.rejects(ensureProtectedEnvironment(github,'owner/repo','codexbot-5',undefined,true),/only_trusted_default_branch/); assert.equal(writes,0);
   mode = 'unprotected'; await assert.rejects(ensureProtectedEnvironment(github, 'owner/repo', 'codexbot-5')); assert.equal(writes, 0);
   mode = 'missing'; protectedBranch = false; await assert.rejects(ensureProtectedEnvironment(github, 'owner/repo', 'codexbot-5'), /protect_default_branch/); assert.equal(writes, 0);
   protectedBranch = true; await ensureProtectedEnvironment(github, 'owner/repo', 'codexbot-5'); assert.equal(writes, 1);

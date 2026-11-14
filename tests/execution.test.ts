@@ -129,7 +129,7 @@ await test('Codex model selection, RPC rejection and failed/interrupted turns ke
 await test('actual review job records incomplete fallback, releases acquired lease, and STILL rejects analysis failure', async () => {
   const saved = { ...process.env }, request = snapshot(); request.config.credentials.mode = 'api-key';
   const submissions: Record<string, unknown>[] = [], operations: string[] = [], logs: unknown[][] = [];
-  let rejectReporting = false;
+  let rejectReporting = false, rejectReadTokenCleanup = false;
   let containerOutput: unknown = null, unavailableContext = false, runs = 0;
   Object.assign(process.env, { CODEXBOT_BACKEND: 'https://broker.invalid', CODEXBOT_REQUEST_ID: request.id, CODEXBOT_API_KEY: sensitive,
     CODEXBOT_CREDENTIAL_OWNER: '5', CODEXBOT_INSTALLATION_ID: '1', CODEXBOT_IMAGE: 'sha256:fixture', ACTIONS_ID_TOKEN_REQUEST_URL: 'https://oidc.invalid/token', ACTIONS_ID_TOKEN_REQUEST_TOKEN: sensitive });
@@ -159,7 +159,7 @@ await test('actual review job records incomplete fallback, releases acquired lea
       if (operation === 'result') submissions.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
       return Response.json({ status: 'recorded' });
     }
-    if (url.pathname.endsWith('/installation/token')) return new Response(null, { status: 204 });
+    if (url.pathname.endsWith('/installation/token')) return rejectReadTokenCleanup ? Response.json({ message: sensitive }, { status: 503 }) : new Response(null, { status: 204 });
     if (url.pathname.endsWith('/pulls/4')) return Response.json({ head: { sha: request.head }, base: { sha: request.base }, changed_files: 0 });
     if (url.pathname.endsWith('/pulls/4/files')) return Response.json([]);
     if (url.pathname.includes('/git/commits/')) return Response.json({ sha: url.pathname.split('/').at(-1), tree: { sha: 'e'.repeat(40) } });
@@ -181,6 +181,9 @@ await test('actual review job records incomplete fallback, releases acquired lea
     rejectReporting = false; containerOutput = clean();
     await reviewJob(); assert.equal(submissions.at(-1)!.context_complete, true);
     assert.equal(submissions.at(-1)!.failure, undefined);
+    rejectReadTokenCleanup = true;
+    await assert.rejects(reviewJob(), /read_token_cleanup_failed/); assert.equal(operations.at(-1), 'release');
+    rejectReadTokenCleanup = false;
     containerOutput = { ...clean(), complete: false, result: 'inconclusive', summary: 'Inspection was insufficient to complete a review; no approval is authorized.' };
     await assert.rejects(reviewJob(), /review_incomplete/);
     assert.equal(submissions.at(-1)!.context_complete, false);

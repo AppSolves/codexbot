@@ -32,6 +32,12 @@ jobs:
         run: npm run test:clean
       - run: npm run check
       - run: npm run test:workers
+      - name: Verify pinned Codex catalog without inference
+        run: npm run catalog:check
+      - name: Install pinned browser for local web acceptance
+        run: node node_modules/playwright/cli.js install --with-deps chromium
+      - name: Browser onboarding against local workerd and D1 (synthetic providers)
+        run: npm run test:web
       - run: docker build --tag codexbot-review:local .
       - run: npm run test:sandbox
       - name: Verify pinned Trivy and reject vulnerable runtime images
