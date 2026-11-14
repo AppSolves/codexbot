@@ -12,7 +12,7 @@ await test('hosted config, manifest and generated callers agree on Workers.dev w
   const config = JSON.parse(await readFile('wrangler.jsonc', 'utf8'));
   assert.equal(config.name, 'codexbot'); assert.equal(config.workers_dev, true); assert.equal(config.preview_urls, false);
   assert.equal(config.vars.PUBLIC_URL, DEFAULT_BACKEND); assert.equal(config.vars.MERGE_DEPLOYMENT_AUTHORIZED, 'false');
-  assert.equal(config.vars.TRUSTED_WORKFLOW, 'AppSolves/codexbot/.github/workflows/review.yml@37177671027e29017b0d6559cc6fa788ca885d60');
+  assert.equal(config.vars.TRUSTED_WORKFLOW, 'AppSolves/codexbot/.github/workflows/review.yml@bb9a7017ff449e6bc03f5c435fe0459d9e8298b8');
   assert.deepEqual(config.routes, []);
   const manifest = JSON.parse(await readFile('app-manifest.json', 'utf8'));
   assert.equal(manifest.url, DEFAULT_BACKEND); assert.equal(manifest.hook_attributes.url, `${DEFAULT_BACKEND}/webhook`);
