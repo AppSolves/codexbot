@@ -31,7 +31,7 @@
 		"PUBLIC_URL": "https://codexbot.appsolves.workers.dev",
 		"GITHUB_APP_ID": "5754181",
 		"GITHUB_APP_SLUG": "codexbot-review",
-		"TRUSTED_WORKFLOW": "AppSolves/codexbot/.github/workflows/review.yml@929ff2a5ceea93227c5ff35cb58b6c8a8a279072",
+		"TRUSTED_WORKFLOW": "AppSolves/codexbot/.github/workflows/review.yml@29c62540ac880db0afc34cf68c02be7368cb1551",
 		"CHATGPT_DEPLOYMENT_AUTHORIZED": "true",
 		"MERGE_DEPLOYMENT_AUTHORIZED": "false",
 		"MERGE_ACCEPTANCE_REPOSITORY_ID": "",
