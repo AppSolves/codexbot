@@ -72,7 +72,7 @@ async function login(oauth: OAuth, profile: Profile, persist: () => Promise<void
 }
 
 async function main(): Promise<void> {
-  const parsed = parseArgs({ allowPositionals: true, options: { repository: { type: 'string' }, backend: { type: 'string' }, source: { type: 'string' }, ref: { type: 'string' }, 'setup-as-user': { type: 'boolean', default: false }, 'new-account': { type: 'boolean', default: false } } });
+  const parsed = parseArgs({ allowPositionals: true, options: { repository: { type: 'string' }, backend: { type: 'string' }, source: { type: 'string' }, ref: { type: 'string' }, 'setup-as-user': { type: 'boolean', default: false }, 'new-account': { type: 'boolean', default: false }, 'allow-automatic-reviews': {type:'boolean',default:false} } });
   const command = parsed.positionals[0];
   requireCondition(['setup', 'connect', 'connect-api-key', 'disconnect'].includes(command ?? ''), 'usage_setup_connect_connect_api_key_or_disconnect_with_repository_and_backend');
   const repository = parsed.values.repository ?? ''; splitRepo(repository);
@@ -111,12 +111,20 @@ async function main(): Promise<void> {
   // Existing restrictions are preserved; disconnect must remain possible without creating an Environment.
   if (command !== 'disconnect') for (const name of [environment, publishingEnvironment(Number(capability.installation_id))]) {
     operation = name === environment ? 'configuring the protected credential Environment' : 'configuring the protected publishing Environment';
-    await ensureProtectedEnvironment(github, repository, name);
+    await ensureProtectedEnvironment(github, repository, name,undefined,parsed.values['allow-automatic-reviews']);
   }
+  const consent=async(enabled:boolean,mode:'chatgpt'|'api-key')=>{
+    operation=enabled?'authorizing unattended reviews with this repository-owned connection':'revoking unattended credential assignment';
+    const response=await fetch(`${backend}/v1/session?repository=${encodeURIComponent(repository)}`,{method:'POST',headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json'},body:JSON.stringify({enabled,mode}),redirect:'error',signal:AbortSignal.timeout(15000)});
+    requireCliResponse(response,'automatic_review_consent_failed');
+    if(enabled)process.stdout.write(`Automatic PR-event reviews explicitly authorized for ${repository} using your connection. Set credentials.automatic_reviewer to ${user.login} through the trusted configuration. Manual commands never borrow this connection.\n`);
+  };
   if (command === 'connect-api-key') {
+    await consent(false,'api-key');
     operation = 'storing the API key in the credential Environment';
     requireCondition(process.env.CODEXBOT_API_KEY && !/[\r\n]/.test(process.env.CODEXBOT_API_KEY), 'set_CODEXBOT_API_KEY_in_process_environment');
     await gh(['secret', 'set', 'CODEXBOT_API_KEY', '--repo', repository, '--env', environment], process.env.CODEXBOT_API_KEY);
+    if(parsed.values['allow-automatic-reviews'])await consent(true,'api-key');
     process.stdout.write(`API key saved in ${environment}. Set credentials.mode to api-key in .codexbot.yml. Remove any old CODEXBOT_VAULT_KEY secret before switching modes. Billing is separate from ChatGPT.\n`); return;
   }
   const stateDirectory = join(homedir(), '.config', 'codexbot');
@@ -174,6 +182,7 @@ async function main(): Promise<void> {
     // Rotation belongs exclusively to the remote runtime from now on. Retain only registration/key/host locally.
     operation = 'clearing local tokens after session provisioning';
     profile.session = null; delete profile.pendingClient; await atomicPrivateFile(path, profile);
+    if(parsed.values['allow-automatic-reviews'])await consent(true,'chatgpt');
     const label = [...(session.email ?? session.subject)].filter(x => x.charCodeAt(0) >= 32 && x.charCodeAt(0) !== 127).join('');
     process.stdout.write(`ChatGPT account ${label} (${session.client_id}) connected for ${user.login} in ${repository}. Account/workspace access to the selected model is verified by the first successful inference, not by the model catalog. Remove any old CODEXBOT_API_KEY secret before switching modes.\n`);
   });

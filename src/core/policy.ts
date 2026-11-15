@@ -18,7 +18,7 @@ export function validatePolicy(policy: Policy): void {
   for (const pattern of [...patterns(policy.whitelist), ...patterns(policy.blacklist)]) compile(pattern);
 }
 export function policyAllows(login: string, policy: Policy): boolean {
-  if (!/^[a-zA-Z0-9][a-zA-Z0-9-]{0,38}$/.test(login)) return false;
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9-]{0,38}(?:\[bot\])?$/.test(login)) return false;
   const denies = patterns(policy.blacklist).filter(x => x !== '*');
   if (denies.some(x => compile(x).matcher(login).matches())) return false;
   return patterns(policy.whitelist).some(x => compile(x).matcher(login).matches());

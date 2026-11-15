@@ -4,7 +4,7 @@ import type { RequestSnapshot } from './store.js';
 import { splitRepo, permission, trustedConfig, verifyActor } from './github.js';
 import { authorize } from '../core/policy.js';
 import { requireCondition } from '../core/errors.js';
-import { mergeDisposition } from '../core/review.js';
+import { mergeDisposition, mergeRequested } from '../core/review.js';
 import { REQUEST_LIFETIME_MS } from '../core/limits.js';
 
 export interface MergeOptions { enabled: boolean; appId: number }
@@ -32,6 +32,7 @@ export async function invalidateMerge(github: Octokit, snapshot: RequestSnapshot
 }
 export async function controlMerge(github: Octokit, snapshot: RequestSnapshot, config: Config, appSlug: string, options: MergeOptions, beforeWrite: () => Promise<void> = async () => {}): Promise<string> {
   if (!options.enabled) return 'deployment_merge_acceptance_gate_closed';
+  if (!mergeRequested(snapshot)) return 'policy_denied';
   requireCondition(Date.now() - snapshot.createdAt < REQUEST_LIFETIME_MS, 'merge_intent_expired', 410);
   const repo = splitRepo(snapshot.repository);
   const state = await github.graphql<MergeQuery>(QUERY, { ...repo, number: snapshot.pr }), pr = state.repository.pullRequest;
@@ -39,7 +40,8 @@ export async function controlMerge(github: Octokit, snapshot: RequestSnapshot, c
   const stop = async (reason: string) => { await invalidateMerge(github, snapshot, appSlug, options.appId); return reason; };
   const liveConfig = await trustedConfig(github, snapshot.repository, snapshot.defaultBranch);
   await verifyActor(github, snapshot.actor, snapshot.actorId);
-  const role = await permission(github, snapshot.repository, snapshot.actor);
+  const role = await permission(github, snapshot.repository, snapshot.actor, snapshot.actorId);
+  if (snapshot.triggerActor && (role!=='admin' || liveConfig.credentials.automatic_reviewer?.toLowerCase()!==snapshot.actor.toLowerCase())) return stop('automatic_review_authorization_revoked');
   if (!liveConfig.review.enabled || !liveConfig.review.auto_approve || !liveConfig.merge.enabled || !authorize(snapshot.actor, role, liveConfig.merge.authorization, true)) return stop('merge_authorization_revoked');
   if (JSON.stringify(liveConfig) !== JSON.stringify(config)) return stop('merge_policy_changed');
   if (pr.headRefOid !== snapshot.head || pr.baseRefOid !== snapshot.base || pr.state !== 'OPEN' || pr.isDraft) return stop('stale_or_closed_pull_request');
@@ -54,7 +56,9 @@ export async function controlMerge(github: Octokit, snapshot: RequestSnapshot, c
   let protection: Awaited<ReturnType<typeof github.rest.repos.getBranchProtection>>['data'] | undefined;
   try { protection = (await github.rest.repos.getBranchProtection({ ...repo, branch: pr.baseRefName })).data; }
   catch (error) { requireCondition(error && typeof error === 'object' && 'status' in error && error.status === 404 && rules.length > 0, 'branch_protection_not_verifiable', 403); }
-  const humanMinimum = Math.max(config.merge.minimum_human_approvals, protection?.required_pull_request_reviews?.required_approving_review_count ?? 0,
+  const specialHumanRules = protection?.required_pull_request_reviews?.require_code_owner_reviews || protection?.required_pull_request_reviews?.require_last_push_approval ||
+    rules.some(rule => rule.type === 'pull_request' && (rule.parameters?.require_code_owner_review || rule.parameters?.require_last_push_approval));
+  const humanMinimum = Math.max(config.merge.minimum_human_approvals, specialHumanRules ? 1 : 0, protection?.required_pull_request_reviews?.required_approving_review_count ?? 0,
     ...rules.filter(x => x.type === 'pull_request').map(x => x.parameters?.required_approving_review_count ?? 0));
   const reviews = await github.paginate(github.rest.pulls.listReviews, { ...repo, pull_number: snapshot.pr, per_page: 100 }, response => {
     requireCondition(response.data.length < 100, 'human_review_history_requires_manual_review'); return response.data;
@@ -71,7 +75,7 @@ export async function controlMerge(github: Octokit, snapshot: RequestSnapshot, c
     if (['write','maintain','admin'].includes(await permission(github, snapshot.repository, review.user!.login, userId))) humans++;
     if (humans >= humanMinimum) break;
   }
-  if (humans < humanMinimum || ['CHANGES_REQUESTED','REVIEW_REQUIRED'].includes(pr.reviewDecision ?? '')) return stop('independent_human_approvals_required');
+  if (pr.reviewDecision==='CHANGES_REQUESTED') return stop('human_changes_requested');
   const contexts = pr.commits.nodes[0]?.commit.statusCheckRollup?.contexts;
   if (!contexts || contexts.pageInfo.hasNextPage) return stop('check_evidence_unavailable');
   const checks = contexts.nodes.filter(x => !(x.__typename === 'CheckRun' && x.name === config.merge.guard_check && x.checkSuite?.app?.databaseId === options.appId));
@@ -81,6 +85,11 @@ export async function controlMerge(github: Octokit, snapshot: RequestSnapshot, c
     ...rules.filter(x => x.type === 'required_status_checks').flatMap(x => x.parameters?.required_status_checks ?? []).map(x => ({ name: x.context, app: x.integration_id }))];
   const guarded = required.some(x => x.name === config.merge.guard_check && x.app === options.appId);
   const missing = required.filter(x => x.name !== config.merge.guard_check).some(required => !checks.some(x => (x.name ?? x.context) === required.name && (!required.app || required.app === -1 || x.checkSuite?.app?.databaseId === required.app)));
+  if (humans < humanMinimum || pr.reviewDecision==='REVIEW_REQUIRED') {
+    await stop('independent_human_approvals_required');
+    // Keep only the durable worker intent. Native auto-merge stays disabled until real humans qualify.
+    return 'queued';
+  }
   const disposition = mergeDisposition({ head: pr.headRefOid, expectedHead: snapshot.head, open: pr.state === 'OPEN', draft: pr.isDraft,
     mergeStateStatus: pr.mergeStateStatus, reviewDecision: pr.reviewDecision, authorized: true, explicitlyRequested: snapshot.command.merge,
     event: 'APPROVE', checks: missing ? 'pending' : status, humans: humans >= humanMinimum, protected: branch.protected, queue: false }, config);

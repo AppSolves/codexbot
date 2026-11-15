@@ -34,6 +34,8 @@
 		"TRUSTED_WORKFLOW": "AppSolves/codexbot/.github/workflows/review.yml@badae8262bc531c8dd02a4f7357d2dbb25b3e754",
 		"CHATGPT_DEPLOYMENT_AUTHORIZED": "true",
 		"MERGE_DEPLOYMENT_AUTHORIZED": "false",
+		"MERGE_ACCEPTANCE_REPOSITORY_ID": "",
+		"MERGE_ACCEPTANCE_INSTALLATION_ID": "",
 		"WEB_ENABLED": "false",
 		"GITHUB_CLIENT_ID": "Iv23liRS1tl8zCodzTEr",
 		"OPENAI_WEB_CLIENT_ID": "",

@@ -1,3 +1,4 @@
+import { mergeRequested, deploymentMergeEnabled } from '../core/review.js';
 import { Store } from './store.js';
 import { ingest } from './webhook.js';
 import { AppError, requireCondition } from '../core/errors.js';
@@ -54,13 +55,14 @@ export async function recover(env: Env): Promise<void> {
       requireCondition(data.id === snapshot.installationId && !data.suspended_at, 'installation_no_longer_valid', 403);
       requireCondition(snapshot.config.credentials.mode !== 'chatgpt' || env.CHATGPT_DEPLOYMENT_AUTHORIZED === 'true', 'chatgpt_deployment_authorization_revoked', 403);
       if (snapshot.config.credentials.mode === 'chatgpt') requireCondition(await store.session(snapshot.repositoryId, snapshot.actorId, snapshot.installationId), 'chatgpt_connection_revoked', 403);
-      const { github } = await installationClient(env, snapshot.installationId, snapshot.repositoryId, { contents: snapshot.command.merge ? 'write' : 'read', pull_requests: 'write',
-        ...(snapshot.command.merge && env.MERGE_DEPLOYMENT_AUTHORIZED === 'true' ? { checks: 'write', administration: 'read' } as const : {}) });
+      await store.authorizeAutomatic(snapshot);
+      const { github } = await installationClient(env, snapshot.installationId, snapshot.repositoryId, { contents: mergeRequested(snapshot) ? 'write' : 'read', pull_requests: 'write',
+        ...(mergeRequested(snapshot) && deploymentMergeEnabled(env,snapshot) ? { checks: 'write', administration: 'read' } as const : {}) });
       const result = await publish(github, snapshot, JSON.parse(row.result!) as unknown, row.context_complete === 1, env.GITHUB_APP_SLUG,
-        { checkpoint: (reviewId, phase, merge) => store.checkpoint(id, lease!, reviewId, phase, merge), beforeWrite: () => store.heartbeat(id, lease!), merge: { enabled: env.MERGE_DEPLOYMENT_AUTHORIZED === 'true', appId: Number(env.GITHUB_APP_ID) } });
+        { checkpoint: (reviewId, phase, merge) => store.checkpoint(id, lease!, reviewId, phase, merge), beforeWrite: async () => {await store.authorizeAutomatic(snapshot);await store.heartbeat(id,lease!);}, merge: { enabled: deploymentMergeEnabled(env,snapshot), appId: Number(env.GITHUB_APP_ID) } });
       await store.published(id, result.reviewId, lease);
     } catch (error) {
-      if (active?.command.merge && env.MERGE_DEPLOYMENT_AUTHORIZED === 'true') {
+      if (active && mergeRequested(active) && deploymentMergeEnabled(env,active)) {
         try {
           const { github } = await installationClient(env, active.installationId, active.repositoryId, { pull_requests: 'write', checks: 'write' });
           await invalidateMerge(github, active, env.GITHUB_APP_SLUG, Number(env.GITHUB_APP_ID));

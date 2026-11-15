@@ -1,4 +1,4 @@
-import { test } from 'node:test';
+import { test, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { database } from './sqlite.js';
 import { Store } from '../src/worker/store.js';
@@ -57,4 +57,32 @@ await test('cleanup releases only terminal or expired session leases, preserving
     await store.transition(request.id, 'created', 'failed'); await store.cleanup();
     await store.acquire({ ...request, id: crypto.randomUUID() }); await assert.rejects(store.acquire({ ...other, id: crypto.randomUUID() }));
   } finally { sqlite.close(); }
+});
+
+await test('automatic owner consent is installation/repository scoped, survives refresh and is revoked by reprovisioning or disconnect',async()=>{
+  const {db,sqlite}=database(),store=new Store(db),request=snapshot();request.config.credentials.automatic_reviewer='alice';request.triggerActor={login:'bob',id:6};
+  try{
+    await assert.rejects(store.automaticConsent(2,1,5,'alice','chatgpt'),/connect_own_credentials/);
+    await store.saveSession(2,5,await seal({},randomSecret(),'fixture'),1);await store.automaticConsent(2,1,5,'alice','chatgpt');request.automaticGrantId=(await store.automaticGrant(2,1))!.id;
+    await store.acquire(request);await store.rotate(request,1,await seal({},randomSecret(),'rotated'));await store.authorizeAutomatic(request);await store.release(request);
+    await assert.rejects(store.authorizeAutomatic({...request,installationId:9}),/authorization_revoked/);await assert.rejects(store.authorizeAutomatic({...request,repositoryId:9}),/authorization_revoked/);
+    await store.saveSession(2,5,await seal({},randomSecret(),'reconnected'),1);await assert.rejects(store.authorizeAutomatic(request),/authorization_revoked/);
+    await store.automaticConsent(2,1,5,'alice','chatgpt');await store.deleteSession(2,5,1);assert.equal(await store.automaticGrant(2,1),null);
+  }finally{sqlite.close();}
+});
+
+await test('revoked or replaced owner consent cannot rotate credentials, renew a publication lease or revive an old automatic intent',async()=>{
+  const {db,sqlite}=database(),store=new Store(db),request=snapshot();request.config.credentials.automatic_reviewer='alice';request.triggerActor={login:'bob',id:6};
+  const value=await seal({},randomSecret(),'owner');
+  try{
+    await store.saveSession(2,5,value,1);await store.automaticConsent(2,1,5,'alice','chatgpt');request.automaticGrantId=(await store.automaticGrant(2,1))!.id;
+    await store.create(request);await store.acquire(request);await store.transition(request.id,'created','running','123');await store.result(request.id,clean(),true,'123');const lease=await store.claimPublication(request.id,'123');await store.heartbeat(request.id,lease);
+    await store.automaticConsent(2,1,5,'alice','chatgpt');assert.notEqual((await store.automaticGrant(2,1))!.id,request.automaticGrantId);
+    await assert.rejects(store.authorizeAutomatic(request),/authorization_revoked/);await assert.rejects(store.rotate(request,1,value),/rotation_conflict/);assert.equal((await store.session(2,5,1))!.version,1);
+    await assert.rejects(store.heartbeat(request.id,lease),/publication_lease_lost/);
+    const current={...request,automaticGrantId:(await store.automaticGrant(2,1))!.id};await store.release(request);
+    const prepare=db.prepare.bind(db);const race=mock.method(db,'prepare',(sql:string)=>{if(sql.startsWith('UPDATE sessions SET lease_request='))sqlite.prepare('DELETE FROM automatic_review_grants').run();return prepare(sql);});
+    try{await assert.rejects(store.acquire(current),/session_missing_or_in_use/);}finally{race.mock.restore();}
+    assert.equal(sqlite.prepare('SELECT lease_request FROM sessions').get()!.lease_request,null);
+  }finally{sqlite.close();}
 });

@@ -1,6 +1,6 @@
-# Repository installation and browser onboarding
+# Repository installation and CLI provisioning
 
-Use the website's Get Started flow for GitHub sign-in, native App installation/repository selection, verified repository setup, credential connection and policy management. The browser implementation is opt-in until the operator completes [hosted registration and activation](web-onboarding.md). Existing configured repositories are reconciled live; setup and policy updates create PRs for review. The CLI below remains an independent/self-hosted and recovery alternative, not a requirement for normal browser onboarding.
+This release uses the CLI once for credential provisioning. Install/select the GitHub App, protect the default branch, create and merge the workflow/configuration setup PR, then connect ChatGPT using the commands below. Ongoing automatic reviews and merges run on GitHub Actions without a running CLI or personal machine. Browser OAuth is deferred; WEB_ENABLED and OPENAI_HOSTED_INFERENCE_AUTHORIZED remain false until the separate website client is provisioned.
 
 The hosted backend and CLI default is `https://codexbot.appsolves.workers.dev`. Self-hosted operators supply their own `--backend` and source pin. Existing ChatGPT connections must follow the [origin cutover and reconnect procedure](origin-migration.md) before using this new origin; they are not transferable ciphertext.
 
@@ -93,4 +93,6 @@ Disconnect retrieves/revokes the latest ChatGPT session, deletes the encrypted r
 
 ## Verify before enabling privileges
 
-Run [advisory acceptance](acceptance.md), then independently enable approval if appropriate. Merge needs a separate whitelist, human approvals, protected branch, explicit --merge and the operator's deployment acceptance gate. Pending CI also requires the App-bound required guard and optional merge permissions. Ready PRs use a native exact-head merge. Unknown/conflicting/queue states are manual-only; the bot never bypasses protections.
+Run [advisory acceptance](acceptance.md), then independently enable approval if appropriate. Merge needs a separate whitelist, protected branch, either explicit --merge or owner-opted-in automatic merge-on-approval, and the operator's deployment acceptance gate. Choose Fully Autonomous (0 humans) or Human-in-the-Loop (1–6); stricter GitHub human requirements remain enforced. Pending CI also requires the App-bound required guard and optional merge permissions. Ready PRs use a native exact-head merge. Unknown/conflicting/queue states are manual-only; the bot never bypasses protections.
+
+For unattended reviews from authorized contributors without provider accounts, connect the administrator's own repository credential with `--allow-automatic-reviews`, then opt into `credentials.automatic_reviewer: YOUR_LOGIN` and `review.auto_review: true` through protected configuration. The event actor still passes the repository review policy. Never copy another repository's vault, refresh token or Environment secrets. See [explicit credential consent](configuration.md#unattended-credential-consent).

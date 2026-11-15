@@ -42,7 +42,7 @@ Perform each mutation through reviewed disposable configuration/PR changes. Do n
 | Advisory/uncertain/binary/large/truncated/essential-context missing | COMMENT and no merge; irrelevant supplementary omissions alone do not invalidate a tiny PR |
 | Head/base/default-policy/source pin changes during review | Old result cannot approve or merge the new context; new request required |
 | Review accepted then response lost / publisher crash | Reconcile same pending/submitted App review; no duplicate approval; merge separate |
-| Ready protected PR, passing required CI and current independent humans | Native expected-head merge only after separate merge authorization and explicit --merge |
+| Ready protected PR, passing required CI and the mode/GitHub-required independent humans | Native expected-head merge only after separate merge authorization and explicit --merge or admitted automatic policy intent |
 | Pending required CI with App-bound required guard | Native intent may queue; guard stays pending; backend rechecks before disabling intent/releasing guard/final guarded merge |
 | Known failed/missing/unknown CI, conflicts or required human missing | No merge; no native intent when failure/human denial is known |
 | Bot approval would otherwise satisfy human count | Independent exact-head non-author humans still required at configured/branch/ruleset minimum |
@@ -51,7 +51,7 @@ Perform each mutation through reviewed disposable configuration/PR changes. Do n
 | Required merge queue | Explicit manual-only outcome; no direct merge or queue bypass |
 | Two installations, same repository/actor history | Installation-bound session lookup/lease/AAD; old ciphertext cannot be used in the new installation |
 
-Enable MERGE_DEPLOYMENT_AUTHORIZED only after recording the applicable rows as passed, then opt in repository policy and the separate whitelist. The check source must be this App's ID (REST app_id / ruleset integration_id), not any integration. For human approvals, count current-head APPROVED reviews from distinct write-capable users other than the author. Include CODEOWNERS, stale-approval dismissal and rulesets in the live matrix; bot approval is never counted as a human.
+Enable MERGE_DEPLOYMENT_AUTHORIZED only after recording the applicable rows as passed, then opt in repository policy and the separate whitelist. The check source must be this App's ID (REST app_id / ruleset integration_id), not any integration. When human approvals are required by the selected mode or GitHub, count current-head APPROVED reviews from distinct write-capable users other than the author. Include CODEOWNERS, stale-approval dismissal and rulesets in the live matrix; bot approval is never counted as a human.
 
 ## Optional real OpenAI protocol acceptance
 

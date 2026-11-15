@@ -11,15 +11,15 @@ export interface Config {
   bot: { trigger: string; aliases: string[] };
   authorization: Policy;
   review: { enabled: boolean; auto_review: boolean; auto_approve: boolean; request_changes: boolean; model: string | null; effort: Effort | null; blocking_confidence: number; advisory_confidence: number };
-  merge: { enabled: boolean; method: 'squash' | 'merge' | 'rebase'; authorization: Policy; minimum_human_approvals: number; guard_check: string };
-  credentials: { mode: 'chatgpt' | 'api-key' };
+  merge: { enabled: boolean; auto_merge_on_approval: boolean; method: 'squash' | 'merge' | 'rebase'; authorization: Policy; minimum_human_approvals: number; guard_check: string };
+  credentials: { mode: 'chatgpt' | 'api-key'; automatic_reviewer: string | null };
   quotas: { user_per_day: number; repository_per_day: number; installation_per_day: number; concurrent_repository: number; concurrent_installation: number; cooldown_seconds: number; reruns_per_day: number };
 }
 export const DEFAULT_CONFIG: Config = {
   version: 1, bot: { trigger: '@codexbot', aliases: [] }, authorization: { whitelist: '', blacklist: '*' },
   review: { enabled: true, auto_review: false, auto_approve: true, request_changes: true, model: null, effort: null, blocking_confidence: 0.9, advisory_confidence: 0.7 },
-  merge: { enabled: false, method: 'squash', authorization: { whitelist: '', blacklist: '*' }, minimum_human_approvals: 1, guard_check: 'CodexBot reviewed commit' },
-  credentials: { mode: 'chatgpt' },
+  merge: { enabled: false, auto_merge_on_approval: false, method: 'squash', authorization: { whitelist: '', blacklist: '*' }, minimum_human_approvals: 0, guard_check: 'CodexBot reviewed commit' },
+  credentials: { mode: 'chatgpt', automatic_reviewer: null },
   quotas: { user_per_day: 10, repository_per_day: 40, installation_per_day: 200, concurrent_repository: 1, concurrent_installation: 4, cooldown_seconds: 60, reruns_per_day: 2 }
 };
 const policySchema = { type: 'object', additionalProperties: false, properties: {
@@ -34,10 +34,10 @@ const schema = { type: 'object', additionalProperties: false, properties: {
     effort: { enum: [null, ...EFFORTS] }, blocking_confidence: { type: 'number', minimum: 0.5, maximum: 1 }, advisory_confidence: { type: 'number', minimum: 0, maximum: 1 }
   } },
   merge: { type: 'object', additionalProperties: false, properties: {
-    enabled: { type: 'boolean' }, method: { enum: ['squash', 'merge', 'rebase'] }, authorization: policySchema,
-    minimum_human_approvals: { type: 'integer', minimum: 1, maximum: 6 }, guard_check: { type: 'string', minLength: 1, maxLength: 80, pattern: '^[A-Za-z0-9 _.-]+$' }
+    enabled: { type: 'boolean' }, auto_merge_on_approval: { type: 'boolean' }, method: { enum: ['squash', 'merge', 'rebase'] }, authorization: policySchema,
+    minimum_human_approvals: { type: 'integer', minimum: 0, maximum: 6 }, guard_check: { type: 'string', minLength: 1, maxLength: 80, pattern: '^[A-Za-z0-9 _.-]+$' }
   } },
-  credentials: { type: 'object', additionalProperties: false, properties: { mode: { enum: ['chatgpt', 'api-key'] } } },
+  credentials: { type: 'object', additionalProperties: false, properties: { mode: { enum: ['chatgpt', 'api-key'] }, automatic_reviewer: {type:['string','null'],pattern:'^[A-Za-z0-9][A-Za-z0-9-]{0,38}$',maxLength:39} } },
   quotas: { type: 'object', additionalProperties: false, properties: Object.fromEntries(Object.keys(DEFAULT_CONFIG.quotas).map(key => [key, { type: 'integer', minimum: key === 'cooldown_seconds' ? 0 : 1, maximum: key === 'cooldown_seconds' ? 86400 : key.startsWith('concurrent') ? 10 : 1000 }])) }
 } };
 const validate = new Ajv({ strict: true, allowUnionTypes: true }).compile<Partial<Config>>(schema);

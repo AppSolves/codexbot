@@ -65,12 +65,12 @@ await test('known AppError codes survive, while arbitrary messages, codes, malfo
 const preload = `
 import childProcess from 'node:child_process';
 import {syncBuiltinESMExports} from 'node:module';
-const spawn = childProcess.spawn, scenario = process.env.CODEXBOT_TEST_SCENARIO;
+const spawn = childProcess.spawn, scenario = process.env.CODEXBOT_TEST_SCENARIO;let consentPhase=0,keyStored=false;
 childProcess.spawn = (file, args, options) => {
   if (file !== 'gh') return spawn(file, args, options);
   if (scenario === 'missing-gh') throw Object.assign(new Error(${JSON.stringify(sensitive)}), {code:'ENOENT'});
   if (args.join(' ') === 'auth token') return spawn(process.execPath, ['-e', 'process.stdout.write("fixture-github-token")'], options);
-  if (scenario === 'api-key-success' && args[0] === 'secret' && args[1] === 'set') return spawn(process.execPath, ['-e', 'process.stdin.resume()'], options);
+  if (scenario.startsWith('api-key') && args[0] === 'secret' && args[1] === 'set') {if(scenario==='api-key-consent'&&consentPhase!==1)throw new Error('Consent must be reset before replacement');keyStored=true;return spawn(process.execPath, ['-e', 'process.stdin.resume()'], options);}
   throw new Error('Unexpected fixture gh operation');
 };
 syncBuiltinESMExports();
@@ -85,6 +85,7 @@ globalThis.fetch = async (input, init) => {
     if (scenario === 'backend-failure') return Response.json({error:${JSON.stringify(sensitive)}},{status:503});
     return Response.json({environmentSecrets:true,installation_id:123,chatgpt_deployment_authorized:true});
   }
+  if (url.origin === process.env.CODEXBOT_TEST_BACKEND && url.pathname === '/v1/session' && init.method === 'POST') { const body=JSON.parse(init.body);if(body.mode!=='api-key')throw new Error('Unexpected consent mode');if(body.enabled===false){consentPhase=1;return Response.json({status:'automatic_reviews_revoked'});}if(scenario==='api-key-consent'&&body.enabled===true&&consentPhase===1&&keyStored){consentPhase=2;return Response.json({status:'automatic_reviews_authorized'});}throw new Error('Unexpected consent'); }
   if (scenario === 'oauth-discovery-failure' && url.origin === 'https://auth.openai.com') throw new TypeError(${JSON.stringify(sensitive)}, {cause:Object.assign(new Error('fixture DNS failure'),{code:'ENOTFOUND'})});
   if (url.origin !== 'https://api.github.com') throw new Error('Fixture denied external network');
   if (url.pathname === '/user') return Response.json({id:5,login:'fixtureuser'});
@@ -92,19 +93,20 @@ globalThis.fetch = async (input, init) => {
   if (url.pathname === '/repos/owner/repo/environments') return Response.json({environments:[],total_count:0});
   if (url.pathname === '/repos/owner/repo/branches/main') return Response.json({protected:true});
   if (url.pathname.startsWith('/repos/owner/repo/environments/')) {
+    if (scenario === 'api-key-consent') {if(url.pathname.endsWith('/deployment-branch-policies'))return Response.json({total_count:1,branch_policies:[{name:'main',type:'branch'}]});return Response.json({deployment_branch_policy:{protected_branches:false,custom_branch_policies:true}});}
     if (scenario === 'api-key-success' || scenario === 'oauth-discovery-failure') return Response.json({deployment_branch_policy:{protected_branches:true}});
     if (init.method === 'GET') return Response.json({message:'Not Found'},{status:404});
     return Response.json({message:${JSON.stringify(sensitive)},errors:[{code:'invalid',message:${JSON.stringify(sensitive)}}]},{status:422});
   }
   throw new Error('Unexpected fixture HTTP operation');
 };`;
-function runCli(scenario: string, command = 'connect', backend: string | null = 'https://broker.invalid') {
+function runCli(scenario: string, command = 'connect', backend: string | null = 'https://broker.invalid', automatic = false) {
   const root = resolve('.local'); mkdirSync(root, { recursive: true });
   const home = mkdtempSync(join(root, 'cli-errors-'));
   const env = Object.assign(Object.create(null) as NodeJS.ProcessEnv, { CODEXBOT_TEST_SCENARIO: scenario, CODEXBOT_TEST_BACKEND: backend ?? DEFAULT_BACKEND, CODEXBOT_API_KEY: secrets[2]!, HOME: home, USERPROFILE: home });
   for (const name of ['PATH', 'Path', 'SystemRoot', 'WINDIR', 'TMP', 'TEMP']) if (process.env[name]) env[name] = process.env[name]!;
   try {
-    const result = spawnSync(process.execPath, ['--import', 'tsx', '--import', `data:text/javascript,${encodeURIComponent(preload)}`, 'src/cli.ts', command, '--repository', 'owner/repo', ...(backend ? ['--backend', backend] : []), ...(command === 'setup' ? ['--source', 'operator/codexbot', '--ref', 'd'.repeat(40)] : [])], { encoding: 'utf8', env, timeout: 20_000 });
+    const result = spawnSync(process.execPath, ['--import', 'tsx', '--import', `data:text/javascript,${encodeURIComponent(preload)}`, 'src/cli.ts', command, '--repository', 'owner/repo', ...(backend ? ['--backend', backend] : []), ...(automatic?['--allow-automatic-reviews']:[]), ...(command === 'setup' ? ['--source', 'operator/codexbot', '--ref', 'd'.repeat(40)] : [])], { encoding: 'utf8', env, timeout: 20_000 });
     const profiles = join(home, '.config', 'codexbot');
     return { ...result, profiles: existsSync(profiles) ? readdirSync(profiles).filter(name => name.endsWith('.session.json')) : [] };
   }
@@ -142,4 +144,9 @@ await test('actual CLI setup/connect defaults to Workers.dev, preserves self-hos
     assert.deepEqual(connected.profiles, [`${new URL(backend ?? DEFAULT_BACKEND).host}-2-5.session.json`]);
     noSecrets(connected.stderr);
   }
+});
+
+await test('actual API-key CLI grants unattended consent only after strict owning Environment provisioning and explicit opt-in',()=>{
+  const result=runCli('api-key-consent','connect-api-key','https://broker.invalid',true);
+  assert.equal(result.status,0,result.stderr);assert.match(result.stdout,/Automatic PR-event reviews explicitly authorized/);assert.equal(result.stderr,'');noSecrets(result.stdout);
 });

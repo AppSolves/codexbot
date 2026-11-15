@@ -1,6 +1,6 @@
 import type { Octokit } from '@octokit/rest';
 import { authorize } from '../core/policy.js';
-import { decision, publicText, validateReview, failedReview, completePatch, normalizeReview, findingDisposition, reviewSummary } from '../core/review.js';
+import { decision, publicText, validateReview, failedReview, completePatch, normalizeReview, findingDisposition, reviewSummary, mergeRequested } from '../core/review.js';
 import { sha256 } from '../core/crypto.js';
 import { requireCondition, AppError } from '../core/errors.js';
 import { splitRepo, permission, trustedConfig, verifyActor } from './github.js';
@@ -23,14 +23,15 @@ export async function discardPendingReview(github: Octokit, snapshot: RequestSna
 export async function publish(github: Octokit, snapshot: RequestSnapshot, output: unknown, contextComplete: boolean, appSlug: string, options: PublishOptions = {}): Promise<{ reviewId: number; event: string; merge: string }> {
   const repo = splitRepo(snapshot.repository);
   const { data: current } = await github.rest.pulls.get({ ...repo, pull_number: snapshot.pr });
-  requireCondition(current.head.sha === snapshot.head && current.base.sha === snapshot.base && (current.state === 'open' || (current.merged && snapshot.command.merge)) && !current.draft, 'stale_or_closed_pull_request', 409);
+  requireCondition(current.head.sha === snapshot.head && current.base.sha === snapshot.base && (current.state === 'open' || (current.merged && mergeRequested(snapshot))) && !current.draft, 'stale_or_closed_pull_request', 409);
   const { data: repository } = await github.rest.repos.get(repo);
   requireCondition(repository.id === snapshot.repositoryId && repository.owner.id === snapshot.ownerId, 'repository_identity_changed', 403);
   const { data: trustedBranch } = await github.rest.repos.getBranch({ ...repo, branch: repository.default_branch });
   requireCondition(repository.default_branch === snapshot.defaultBranch && trustedBranch.commit.sha === snapshot.workflowSha, 'trusted_policy_or_workflow_revision_changed', 409);
   const config = await trustedConfig(github, snapshot.repository, repository.default_branch);
   await verifyActor(github, snapshot.actor, snapshot.actorId);
-  const livePermission = await permission(github, snapshot.repository, snapshot.actor);
+  const livePermission = await permission(github, snapshot.repository, snapshot.actor, snapshot.actorId);
+  requireCondition(!snapshot.triggerActor || (livePermission==='admin' && config.credentials.automatic_reviewer?.toLowerCase()===snapshot.actor.toLowerCase()),'automatic_review_authorization_revoked',403);
   requireCondition(config.review.enabled && authorize(snapshot.actor, livePermission, config.authorization), 'review_authorization_revoked', 403);
   const files = await github.paginate(github.rest.pulls.listFiles, { ...repo, pull_number: snapshot.pr, per_page: 100 });
   requireCondition(files.length === current.changed_files && files.length <= 200, 'diff_incomplete');
@@ -41,7 +42,7 @@ export async function publish(github: Octokit, snapshot: RequestSnapshot, output
   const computedEvent = decision(review, config, contextComplete);
   const event = current.user?.login === `${appSlug}[bot]` ? 'COMMENT' : computedEvent;
   const marker = `<!-- codexbot:${snapshot.id}:${snapshot.head} -->`;
-  const fingerprint = `<!-- codexbot-result:${await sha256(JSON.stringify({ review, event, contextComplete, mergeIntent: snapshot.command.merge ? snapshot.actor : null }))} -->`;
+  const fingerprint = `<!-- codexbot-result:${await sha256(JSON.stringify({ review, event, contextComplete, mergeIntent: mergeRequested(snapshot) ? {actor:snapshot.actor,mode:snapshot.command.merge?'explicit':'automatic'} : null }))} -->`;
   let historyPages = 0;
   const reviews = await github.paginate(github.rest.pulls.listReviews, { ...repo, pull_number: snapshot.pr, per_page: 100 }, response => {
     requireCondition(++historyPages <= 10, 'review_history_limit_requires_reconciliation');
@@ -60,7 +61,8 @@ export async function publish(github: Octokit, snapshot: RequestSnapshot, output
     requireCondition(branch.commit.sha === snapshot.workflowSha, 'trusted_policy_or_workflow_revision_changed', 409);
     const liveConfig = await trustedConfig(github, snapshot.repository, branch.commit.sha);
     await verifyActor(github, snapshot.actor, snapshot.actorId);
-    requireCondition(JSON.stringify(liveConfig) === JSON.stringify(config) && liveConfig.review.enabled && authorize(snapshot.actor, await permission(github, snapshot.repository, snapshot.actor), liveConfig.authorization), 'review_authorization_revoked', 403);
+    if (snapshot.triggerActor) requireCondition(await permission(github,snapshot.repository,snapshot.actor,snapshot.actorId)==='admin' && liveConfig.credentials.automatic_reviewer?.toLowerCase()===snapshot.actor.toLowerCase(),'automatic_review_authorization_revoked',403);
+    requireCondition(JSON.stringify(liveConfig) === JSON.stringify(config) && liveConfig.review.enabled && authorize(snapshot.actor, await permission(github, snapshot.repository, snapshot.actor, snapshot.actorId), liveConfig.authorization), 'review_authorization_revoked', 403);
   };
   const existing = reviews.find(x => (x.body?.includes(marker) || x.body?.includes(fingerprint)) && [expectedState, 'PENDING'].includes(x.state) && x.user?.type === 'Bot' && x.user?.login === `${appSlug}[bot]` && x.commit_id === snapshot.head);
   let reviewId: number;
@@ -73,7 +75,7 @@ export async function publish(github: Octokit, snapshot: RequestSnapshot, output
     await assertPublicationAllowed();
     await options.beforeWrite?.();
     const { data } = await github.rest.pulls.createReview({ ...repo, pull_number: snapshot.pr, commit_id: snapshot.head,
-      body: `${marker}\n${fingerprint}\n${reviewSummary(review, event, contextComplete)}${snapshot.command.merge ? `\n\nConditional merge explicitly requested by ${publicText(snapshot.actor)}.` : ''}`,
+      body: `${marker}\n${fingerprint}\n${reviewSummary(review, event, contextComplete)}${mergeRequested(snapshot) ? `\n\nConditional merge ${snapshot.command.merge ? 'explicitly requested' : 'enabled by repository policy for authorized requester'} ${publicText(snapshot.actor)}.` : ''}`,
       comments: review.findings.map(f => ({ path: f.path, line: f.line, side: f.side, body: `**${f.severity.toUpperCase()}: ${publicText(f.title)}**\n\n${publicText(f.explanation)}\n\n${publicText(f.remediation)}\n\nConfidence: ${f.confidence}; policy: ${findingDisposition(f, config)}.` }))
     });
     reviewId = data.id;
@@ -87,7 +89,7 @@ export async function publish(github: Octokit, snapshot: RequestSnapshot, output
   }
   await options.checkpoint?.(reviewId, 'submitted', 'pending');
   if (current.merged) { await options.checkpoint?.(reviewId, 'submitted', 'merged'); return { reviewId, event, merge: 'merged' }; }
-  if (!snapshot.command.merge || event !== 'APPROVE') return { reviewId, event, merge: 'not_requested_or_not_approved' };
+  if (!mergeRequested(snapshot) || event !== 'APPROVE') return { reviewId, event, merge: 'not_requested_or_not_approved' };
   let merge: string;
   try { merge = await controlMerge(github, snapshot, config, appSlug, options.merge ?? { enabled: false, appId: 0 }, async () => {
     await options.checkpoint?.(reviewId, 'submitted', 'arming');

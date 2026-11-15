@@ -8,6 +8,6 @@
   "public": true,
   "request_oauth_on_install": false,
   "setup_on_update": true,
-  "default_permissions": { "metadata": "read", "contents": "write", "pull_requests": "write", "actions": "write", "workflows": "write", "administration": "write", "environments": "write" },
+  "default_permissions": { "metadata": "read", "contents": "write", "pull_requests": "write", "actions": "write", "checks": "write", "workflows": "write", "administration": "write", "environments": "write" },
   "default_events": ["issue_comment", "pull_request"]
 }

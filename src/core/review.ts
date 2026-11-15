@@ -129,12 +129,19 @@ export function publicText(text: string): string {
   const redacted = scanSecrets(text).length ? '[Content quarantined by output policy]' : SOURCE_TOKEN.matcher(text).replaceAll('[REDACTED]');
   return redacted.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/@/g, '@\u200b').replace(/\[/g, '\\[').replace(/!\[/g, '!\\[');
 }
+/** Operator-controlled disposable acceptance scope; the public merge gate stays closed during live tests. */
+export function deploymentMergeEnabled(env: {MERGE_DEPLOYMENT_AUTHORIZED:string;MERGE_ACCEPTANCE_REPOSITORY_ID?:string;MERGE_ACCEPTANCE_INSTALLATION_ID?:string}, request: {repositoryId:number;installationId:number}): boolean {
+  return env.MERGE_DEPLOYMENT_AUTHORIZED==='true' || (env.MERGE_ACCEPTANCE_REPOSITORY_ID===String(request.repositoryId) && env.MERGE_ACCEPTANCE_INSTALLATION_ID===String(request.installationId));
+}
+export function mergeRequested(snapshot: { command: { merge: boolean }; mergeIntent?: 'automatic' }): boolean {
+  return snapshot.command.merge || snapshot.mergeIntent === 'automatic';
+}
 export interface MergeState {
   head: string; expectedHead: string; open: boolean; draft: boolean; mergeStateStatus: string; reviewDecision: string | null;
   authorized: boolean; explicitlyRequested: boolean; event: string; checks: 'passed' | 'pending' | 'failed'; humans: boolean; protected: boolean; queue: boolean;
 }
 export function mergeDisposition(state: MergeState, config: Config): string {
-  if (!config.merge.enabled || !state.authorized || !state.explicitlyRequested || state.event !== 'APPROVE') return 'policy_denied';
+  if (!config.merge.enabled || !state.authorized || (!state.explicitlyRequested && !config.merge.auto_merge_on_approval) || state.event !== 'APPROVE') return 'policy_denied';
   if (state.head !== state.expectedHead || !state.open || state.draft) return 'stale_or_closed';
   if (!state.protected) return 'protection_required';
   if (state.queue) return 'manual_merge_queue';
