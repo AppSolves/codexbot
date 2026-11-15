@@ -1,9 +1,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { reviewSummary, decision } from '../src/core/review.js';
+import { reviewSummary, decision, normalizeReview, type Review, REVIEW_SCHEMA } from '../src/core/review.js';
 import { clean, HEAD, snapshot } from './fixtures.js';
 import { publish } from '../src/worker/publish.js';
 import { githubFixture } from './github-fixture.js';
+await test('incomplete reports expose bounded orchestration state without raw diagnostics and preserve the native COMMENT',async()=>{
+ const review:Review={...clean(),complete:false,result:'findings',summary:'A valid finding was identified; another analysis question remains unresolved.',findings:[{severity:'high',confidence:0.99,path:'src/auth.ts',line:2,side:'RIGHT',title:'Verify authorization',explanation:'An introduced missing check exposes records.',remediation:'Require repository permission.'}],orchestration:{planned_units:6,completed_units:3,synthesis_complete:false,unfinished_reasons:['unresolved_analysis','continuation_limit']}};
+ const fixture=githubFixture(),result=await publish(fixture.github,snapshot(),review,false,'codexbot');assert.equal(result.event,'COMMENT');const body=fixture.calls.find(c=>c.method==='POST'&&c.path.endsWith('/reviews'))!.body;assert(String(body.body).includes(review.summary));assert.match(String(body.body),/Analysis coverage: 3\/6 groups completed\. Final synthesis: incomplete/);assert.match(String(body.body),/`unresolved_analysis`/);assert.equal((body.comments as unknown[]).length,1);
+ assert.equal(Object.hasOwn(REVIEW_SCHEMA.properties,'orchestration'),false,'Models cannot supply host status');assert.equal(decision({...review,orchestration:{planned_units:1,completed_units:1,synthesis_complete:true,unfinished_reasons:[]}},snapshot().config,true),'COMMENT','Metadata cannot promote an incomplete review');
+ for(const orchestration of [{...review.orchestration,planned_units:33},{...review.orchestration,completed_units:7},{...review.orchestration,unfinished_reasons:['private/source.ts OAuth-private-code']},{...review.orchestration,path:'private/source.ts OAuth-private-code'}]){const unsafe={...review,orchestration} as unknown as Review;assert(!reviewSummary(unsafe,'COMMENT',false).includes('private/source.ts'));assert(!reviewSummary(unsafe,'COMMENT',false).includes('Analysis coverage:'));assert.equal(normalizeReview(unsafe,HEAD).complete,false);}
+});
 await test('human-readable summaries preserve native event semantics across severity, confidence and completeness', () => {
   const config = snapshot().config;
   for (const severity of ['critical','high','medium','low'] as const) for (const confidence of [0.01,0.7,0.9,1]) for (const complete of [false,true]) {

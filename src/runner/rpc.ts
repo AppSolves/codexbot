@@ -7,7 +7,7 @@ export class Rpc {
   private pending = new Map<number, { method: string; resolve: (value: unknown) => void; reject: (error: Error) => void }>();
   private failure: ExecutionError | null = null;
   private buffer = '';
-  private notifications: ((method: string, params: unknown) => void)[] = [];
+  private notifications = new Set<(method: string, params: unknown) => void>();
   constructor(private readonly child: ChildProcessWithoutNullStreams) {
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', (chunk: string) => this.receive(chunk));
@@ -17,7 +17,7 @@ export class Rpc {
       ...(code !== null ? { exit_code: code } : {}), ...(signal ? { signal } : {}) })));
     child.stdin.on('error', () => this.fail(new ExecutionError({ component: 'codex_process', code: 'codex_process_failed' })));
   }
-  onNotification(listener: (method: string, params: unknown) => void): void { this.notifications.push(listener); }
+  onNotification(listener: (method: string, params: unknown) => void): () => void { this.notifications.add(listener); return () => { this.notifications.delete(listener); }; }
   request(method: string, params: unknown): Promise<unknown> {
     const id = ++this.nextId;
     if (this.failure) return Promise.reject(this.failure);

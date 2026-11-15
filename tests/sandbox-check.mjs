@@ -8,6 +8,7 @@ import { setTimeout, clearTimeout } from 'node:timers';
 import { DEFAULT_CONFIG } from '../dist/src/core/config.js';
 import { cleanupReviewContainers } from '../dist/src/runner/docker.js';
 import { ExecutionDiagnostics } from '../dist/src/core/execution.js';
+import {buildReviewPlan} from '../dist/src/runner/orchestration.js';
 
 // Runs real pinned Codex and real container isolation with synthetic Responses SSE, no credentials/quota.
 const id = randomUUID(), volume = `codexbot-test-${id}`, proxy = `codexbot-test-proxy-${id}`, review = `codexbot-test-review-${id}`;
@@ -21,6 +22,7 @@ await mkdir(directory, { recursive: true });
 for (const [path, value] of [['request.json', snapshot], ['manifest.json', { complete: true }], ['diff.json', []], ['trusted-instructions.json', []]]) await writeFile(join(directory, path), JSON.stringify(value));
 await mkdir(join(directory, 'source'));
 await writeFile(join(directory, 'source', 'fixture.txt'), 'sandbox-read-only-fixture\n');
+await buildReviewPlan(directory,head,snapshot.base,[]);
 const output = JSON.stringify(result);
 const item = { id: 'msg_fixture', type: 'message', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: output, annotations: [] }] };
 const events = [
@@ -44,7 +46,9 @@ globalThis.fetch = async (url, init) => {
   return new Response(${JSON.stringify(events)}, {headers:{'content-type':'text/event-stream'}});
 };
 createInferenceServer('fixture-only',{},detail=>process.stderr.write(executionEnvelope(detail)+'\\n'),value=>process.stderr.write(proxyRequestEnvelope(value)+'\\n')).listen('/run/proxy/inference.sock',()=>process.stdout.write('ready\\n'));`;
-const common = ['--label', `codexbot.run=${id}`, '--network=none', '--read-only', '--cap-drop=ALL', '--security-opt=no-new-privileges', '--pids-limit=128', '--memory=2g', '--user=1000:1000', '--tmpfs=/tmp:rw,noexec,nosuid,size=128m,uid=1000', '--tmpfs=/home/codex:rw,nosuid,size=128m,uid=1000'];
+const uid=process.getuid?.()??1000,gid=process.getgid?.()??1000;
+assert.notEqual(uid,0,'Run sandbox acceptance as a nonroot runner.');
+const common = ['--label', `codexbot.run=${id}`, '--network=none', '--read-only', '--cap-drop=ALL', '--security-opt=no-new-privileges', '--pids-limit=128', '--memory=2g', `--user=${uid}:${gid}`, `--tmpfs=/tmp:rw,noexec,nosuid,size=128m,uid=${uid}`, `--tmpfs=/home/codex:rw,nosuid,size=128m,uid=${uid}`];
 const partial = randomUUID();
 try {
   await cleanupReviewContainers(partial); // No accepted create is a successful cleanup.
@@ -53,7 +57,7 @@ try {
   assert.equal(docker(['ps', '-a', '--filter', `label=codexbot.run=${partial}`, '--format', '{{.ID}}']).trim(), '');
   docker(['volume', 'create', volume]);
   // Named-volume ownership preparation is confined to this disposable volume.
-  docker(['run', '--rm', '--network=none', '--user=0:0', '--mount', `type=volume,src=${volume},dst=/run/proxy`, '--entrypoint=node', 'codexbot-review:local', '-e', "require('fs').chownSync('/run/proxy',1000,1000)"]);
+  docker(['run', '--rm', '--network=none', '--user=0:0', '--mount', `type=volume,src=${volume},dst=/run/proxy`, '--entrypoint=node', 'codexbot-review:local', '-e', `require('fs').chownSync('/run/proxy',${uid},${gid})`]);
   docker(['create', '--name', proxy, ...common, '--mount', `type=volume,src=${volume},dst=/run/proxy`, 'codexbot-review:local', 'node', '--input-type=module', '-e', proxyScript]);
   docker(['start', proxy]);
   await new Promise((resolveReady, reject) => {

@@ -266,6 +266,9 @@ export class Store {
       .bind(code, stage, status, runId, id, runId).run(); return result.meta.changes === 1;
   }
   async noteFailure(id: string, runId: string, code: string, stage: string, status: number | null = null): Promise<void> {
+    if(code==='review_job_failed'){
+      await this.db.prepare('UPDATE requests SET failure_code=COALESCE(failure_code,?),failure_stage=COALESCE(failure_stage,?),failure_status=COALESCE(failure_status,?),context_complete=0 WHERE id=? AND run_id=?').bind(code,stage,status,id,runId).run();return;
+    }
     await this.db.prepare(`UPDATE requests SET failure_code=?,failure_stage=?,failure_status=?,context_complete=CASE WHEN ?='review_job_failed' THEN 0 ELSE context_complete END WHERE id=? AND run_id=?`)
       .bind(code, stage, status, code, id, runId).run();
   }

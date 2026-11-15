@@ -18,6 +18,14 @@ import { parseCommand } from '../src/core/command.js';
 
 const finding: Finding = { severity: 'high', confidence: 0.99, path: 'src/auth.ts', line: 2, side: 'RIGHT', title: 'Missing permission check', explanation: 'Untrusted callers can access the record.', remediation: 'Check repository permission.' };
 const secrets = ['AKIA' + 'A'.repeat(16), 'ASIA' + 'B'.repeat(16), '-----BEGIN RSA PRIVATE KEY-----\nfixture\n-----END RSA PRIVATE KEY-----', 'postgresql://alice:private-password@db.example/db', 'Bearer abcdefghijklmnopqrstuvwxyz', 'ghp_' + 'a'.repeat(36), 'sk-proj-' + 'a'.repeat(32), 'eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJhbGljZSJ9.abcdefghijklmnopqrstuvwx', 'xoxb-1234567890123456-abcdef', 'password = supersecretsample', '![image](https://exfil.invalid/token)', '<https://exfil.invalid/token>'];
+await test('valid incomplete reviews retain summary and inline findings but publish COMMENT without merge',async()=>{
+ const f=githubFixture(),request=snapshot(),output={...clean(),complete:false,result:'findings' as const,summary:'Analysis found an authorization defect but could not resolve another required question.',findings:[finding]};request.command.merge=true;
+ const result=await publish(f.github,request,output,false,'codexbot');assert.equal(result.event,'COMMENT');
+ const write=f.calls.find(c=>c.method==='POST'&&c.path.endsWith('/reviews'));assert(write);const body=write.body as {body:string;comments:{path:string;line:number;body:string}[]};assert(body.body.includes(output.summary));assert.equal(body.comments[0]!.path,finding.path);assert.equal(body.comments[0]!.line,finding.line);assert(body.comments[0]!.body.includes(finding.title));assert(!f.calls.some(c=>c.path.includes('graphql')||c.path.endsWith('/merge')));
+});
+await test('failed workflow conclusion cannot overwrite the primary analysis failure or restore completeness',async()=>{
+ const {db,sqlite}=database(),store=new Store(db),request=snapshot();try{await store.create(request);await store.prepare(request.id,'1');await store.noteFailure(request.id,'1','review_incomplete','result',null);await store.noteFailure(request.id,'1','review_job_failed','workflow',null);const {row}=await store.get(request.id);assert.equal(row.failure_code,'review_incomplete');assert.equal(row.failure_stage,'result');assert.equal(row.context_complete,0);}finally{sqlite.close();}
+});
 await test('per-review model is persisted and included in same-head idempotency without bypassing quotas', async () => {
   const { db, sqlite } = database(), store = new Store(db), first = snapshot();
   first.config.quotas.cooldown_seconds = 0; first.config.quotas.concurrent_repository = 2;

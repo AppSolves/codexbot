@@ -2,12 +2,15 @@ import { test, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import childProcess from 'node:child_process';
 import http from 'node:http';
+import {readFile} from 'node:fs/promises';
+import {join} from 'node:path';
+import type {ReviewPlan} from '../src/runner/orchestration.js';
 import{createHash}from'node:crypto';
 import { syncBuiltinESMExports } from 'node:module';
 import { EventEmitter } from 'node:events';
 import { PassThrough, Writable } from 'node:stream';
 import { AppError } from '../src/core/errors.js';
-import { diagnostic, ReviewCompletionError } from '../src/core/diagnostics.js';
+import { diagnostic, ReviewCompletionError, type ReviewCompletion } from '../src/core/diagnostics.js';
 import { ExecutionDiagnostics, ExecutionError, executionEnvelope, executionFailure } from '../src/core/execution.js';
 import { docker } from '../src/runner/docker.js';
 import { runCodex } from '../src/runner/engine.js';
@@ -111,17 +114,17 @@ await test('Codex model selection, RPC rejection and failed/interrupted turns ke
         const send = (value: unknown) => process.stdout.write(JSON.stringify(value) + '\n');
         queueMicrotask(() => {
           if (message.method === 'turn/start' && scenario === 'rpc') { send({ id: message.id, error: { code: -32602, message: sensitive } }); return; }
-          send({ id: message.id, result: message.method === 'model/list' ? { data: [{ model: 'fixture', isDefault: true }], nextCursor: null } : message.method === 'thread/start' ? { thread: { id: 'fixture' } } : {} });
+          send({ id: message.id, result: message.method === 'model/list' ? { data: [{ model: 'fixture', isDefault: true }], nextCursor: null } : message.method === 'thread/start' ? { thread: { id: 'fixture' } } : message.method==='turn/start'?{turn:{id:'turn-fixture'}}:{} });
           if (message.method === 'turn/start') {
-            if (scenario !== 'no-inspection') send({ method: 'item/completed', params: { item: { type: 'commandExecution', status: scenario === 'declined' ? 'declined' : 'completed', exitCode: scenario === 'declined' ? null : 0 } } });
-            send({ method: 'item/completed', params: { item: { type: 'agentMessage', text: sensitive } } });
-            send({ method: 'turn/completed', params: { turn: { status: ['invalid-json','no-inspection','declined'].includes(scenario) ? 'completed' : scenario, error: { message: sensitive } } } });
+            if (scenario !== 'no-inspection') send({ method: 'item/completed', params: { threadId:'fixture',turnId:'turn-fixture', item: { type: 'commandExecution', status: scenario === 'declined' ? 'declined' : 'completed', exitCode: scenario === 'declined' ? null : 0 } } });
+            send({ method: 'item/completed', params: { threadId:'fixture',turnId:'turn-fixture', item: { type: 'agentMessage', text: sensitive } } });
+            send({ method: 'turn/completed', params: { threadId:'fixture',turn: { id:'turn-fixture',status: ['invalid-json','no-inspection','declined'].includes(scenario) ? 'completed' : scenario, error: { message: sensitive } } } });
           }
         });
       }); return process;
     }); syncBuiltinESMExports();
     try {
-      await assert.rejects(runCodex(request, scenario==='image-model'?JSON.stringify({binaryFiles:[{format:'png',snapshots:[{side:'head',path:'image.png',sha:request.head}]}]}):'{}'), error => {
+      await assert.rejects(runCodex(request, scenario==='image-model'?JSON.stringify({binaryFiles:[{format:'png',snapshots:[{side:'head',path:'image.png',sha:request.head}]}]}):'{}',{head:request.head,base:request.base,files:[],binaries:[],units:[]}), error => {
         assert.ok(error instanceof ExecutionError);
         assert.equal(error.detail.code, ({ model: 'configured_model_not_in_codex_catalog', 'image-model':'configured_model_does_not_support_images', rpc: 'codex_rpc_rejected', failed: 'codex_turn_failed', interrupted: 'codex_turn_interrupted', 'invalid-json': 'codex_output_not_json', 'no-inspection': 'codex_inspection_not_performed', declined: 'codex_inspection_denied' } as Record<string, string>)[scenario]);
         assert.ok(!JSON.stringify(diagnostic(error, 'analyzing')).includes(sensitive)); return true;
@@ -133,7 +136,7 @@ await test('actual review job records incomplete fallback, releases acquired lea
   const saved = { ...process.env }, request = snapshot(); request.config.credentials.mode = 'api-key';
   const submissions: Record<string, unknown>[] = [], operations: string[] = [], logs: unknown[][] = [];
   let rejectReporting = false, rejectReadTokenCleanup = false;
-  let containerOutput: unknown = null, unavailableContext = false, runs = 0, onDemandMissing = false, probeOnly=false;
+  let containerOutput: unknown = null, unavailableContext = false, runs = 0, onDemandMissing = false, probeOnly=false, partialExecutionFailure=false;
   let contextSocket='',contextListener:http.Server|undefined;
   const realServer=http.createServer;
   const serverMock=mock.method(http,'createServer',(...args:Parameters<typeof http.createServer>)=>{const server=realServer(...args);contextListener=server;server.once('listening',()=>{const address=server.address();if(typeof address==='string')contextSocket=address;});return server;});
@@ -150,7 +153,12 @@ await test('actual review job records incomplete fallback, releases acquired lea
       if (args[0] === 'run') {
         runs++;
         if(onDemandMissing){await new Promise<void>((resolve,reject)=>{const req=http.request({socketPath:contextSocket,path:probeOnly?'/probe':'/file',method:'POST'},res=>{let body='';res.on('data',x=>{body+=String(x);});res.on('end',()=>{try{assert.deepEqual(JSON.parse(body),probeOnly?{exists:false}:{available:false});resolve();}catch(error){reject(error);}});});req.on('error',reject);req.end(JSON.stringify({snapshot:'head',path:'private-missing-name.ts'}));});}
-        if (containerOutput !== null) process.stdout.write(JSON.stringify(containerOutput));
+        if (containerOutput !== null) {
+          const mount=args.find(arg=>arg.startsWith('type=bind,src=')&&arg.endsWith(',dst=/workspace,readonly'))!;
+          const directory=mount.slice('type=bind,src='.length,-',dst=/workspace,readonly'.length),plan=JSON.parse(await readFile(join(directory,'review-plan.json'),'utf8')) as ReviewPlan;
+          const review=containerOutput as {complete:boolean;result:string};const complete=review.complete&&review.result!=='inconclusive';
+          process.stdout.write(JSON.stringify({review:containerOutput,coverage:plan.units.map(u=>({id:u.id,sha256:u.sha256,complete,attempts:1,reasons:complete?[]:['model_incomplete']})),synthesis:complete,turns:plan.units.length+(plan.units.length===1?0:1),reasons:complete?[]:['model_incomplete'],failure:partialExecutionFailure?{component:'turn',code:'codex_turn_failed'}:null}));
+        }
         else process.stderr.write(executionEnvelope({ component: 'turn', code: 'codex_turn_failed' }) + '\n');
       }
       if (args[0] === 'logs') process.stderr.write(executionEnvelope({ component: 'provider', code: 'provider_http_failed', upstream_status: 401 }) + '\n');
@@ -177,6 +185,7 @@ await test('actual review job records incomplete fallback, releases acquired lea
     throw new Error('Unexpected fixture route');
   });
   const logger = mock.method(console, 'error', (...args: unknown[]) => logs.push(args));
+  const withoutStatus=(value:unknown)=>{const {orchestration,...review}=value as Record<string,unknown>;assert.equal((orchestration as {planned_units:number}).planned_units,1);return review;};
   try {
     await assert.rejects(reviewJob(), error => { assert.ok(error instanceof ExecutionError); assert.equal(error.detail.code, 'codex_turn_failed'); assert.equal(error.proxyFailure?.upstream_status, 401); return true; });
     assert.equal(submissions.length, 1); assert.equal(submissions[0]!.context_complete, false);
@@ -192,11 +201,16 @@ await test('actual review job records incomplete fallback, releases acquired lea
     await reviewJob(); assert.equal(submissions.at(-1)!.context_complete, true);
     assert.equal(submissions.at(-1)!.failure, undefined);
     onDemandMissing=true;probeOnly=true;containerOutput=clean();
-    await reviewJob();assert.equal(submissions.at(-1)!.context_complete,true);assert.equal(submissions.at(-1)!.failure,undefined);assert.deepEqual(submissions.at(-1)!.output,clean());
+    await reviewJob();assert.equal(submissions.at(-1)!.context_complete,true);assert.equal(submissions.at(-1)!.failure,undefined);assert.deepEqual(withoutStatus(submissions.at(-1)!.output),clean());
+    const partial={...clean(),complete:false,result:'findings',summary:'A validated finding remains, but another required analysis question is unfinished.',findings:[{severity:'high',confidence:0.99,path:'auth.ts',line:2,side:'RIGHT',title:'Synthetic race condition',explanation:'A stale value can overwrite a newer result.',remediation:'Guard the update.'}]};containerOutput=partial;
+    await assert.rejects(reviewJob(),error=>{assert(error instanceof ReviewCompletionError);assert.equal(error.completion.context_complete,true);assert.equal(error.completion.output_complete,false);assert.equal(error.completion.orchestration?.completed_units,0);return true;});assert.deepEqual(withoutStatus(submissions.at(-1)!.output),partial);assert.equal(submissions.at(-1)!.context_complete,false);assert.equal(decision(submissions.at(-1)!.output as ReturnType<typeof clean>,request.config,true),'COMMENT');
+    partialExecutionFailure=true;await assert.rejects(reviewJob(),error=>{assert(error instanceof ExecutionError);assert.equal(error.detail.code,'codex_turn_failed');assert.equal(error.proxyFailure?.upstream_status,401);return true;});assert.deepEqual(withoutStatus(submissions.at(-1)!.output),partial);partialExecutionFailure=false;
+    const boundary={...clean(),result:'findings' as const,summary:'',findings:Array.from({length:40},(_,i)=>({severity:'low' as const,confidence:0.99,path:'auth.ts',line:2,side:'RIGHT' as const,title:'Boundary finding '+i,explanation:'e'.repeat(1100),remediation:'r'.repeat(100)}))};boundary.summary='s'.repeat(59_950-Buffer.byteLength(JSON.stringify(boundary)));assert(boundary.summary.length>=20&&boundary.summary.length<=8000);assert.equal(Buffer.byteLength(JSON.stringify(boundary)),59_950);containerOutput=boundary;
+    await assert.rejects(reviewJob(),error=>{assert(error instanceof ReviewCompletionError);assert.equal(error.completion.output_truncated,true);return true;});assert.equal((submissions.at(-1)!.output as {output_truncated:boolean}).output_truncated,true);assert.equal((submissions.at(-1)!.output as {findings:unknown[]}).findings.length,40);assert.equal(submissions.at(-1)!.context_complete,false);
     probeOnly=false;
     containerOutput={...clean(),result:'findings',findings:[{severity:'high',confidence:0.99,path:'auth.ts',line:2,side:'RIGHT',title:'Synthetic race condition',explanation:'A stale value can overwrite a newer result.',remediation:'Guard the update.'}]};
     await assert.rejects(reviewJob(),error=>{assert(error instanceof ReviewCompletionError);assert.equal(error.completion.context_complete,false);assert.equal(error.completion.required_context_complete,false);assert.equal(error.completion.diff_complete,true);assert.equal(error.completion.output_complete,true);assert.equal(error.completion.output_result,'findings');assert.equal(error.completion.context_failure_code,'context_path_missing');return true;});
-    assert.deepEqual(submissions.at(-1)!.output,containerOutput);assert.equal(submissions.at(-1)!.context_complete,false);assert.equal(decision(submissions.at(-1)!.output as ReturnType<typeof clean>,request.config,false),'COMMENT');assert.equal((submissions.at(-1)!.failure as {stage:string}).stage,'result');assert(!JSON.stringify(logs).includes('private-missing-name'));assert.equal(operations.at(-1),'release');
+    assert.deepEqual(withoutStatus(submissions.at(-1)!.output),containerOutput);assert.equal(submissions.at(-1)!.context_complete,false);assert.equal(decision(submissions.at(-1)!.output as ReturnType<typeof clean>,request.config,false),'COMMENT');assert.equal((submissions.at(-1)!.failure as {stage:string}).stage,'result');assert(!JSON.stringify(logs).includes('private-missing-name'));assert.equal(operations.at(-1),'release');
     onDemandMissing=false;containerOutput=clean();
     rejectReadTokenCleanup = true;
     await assert.rejects(reviewJob(), /read_token_cleanup_failed/); assert.equal(operations.at(-1), 'release');
@@ -206,7 +220,7 @@ await test('actual review job records incomplete fallback, releases acquired lea
     assert.equal(submissions.at(-1)!.context_complete, false);
     assert.equal((submissions.at(-1)!.output as { result: string }).result, 'inconclusive');
     assert.equal((submissions.at(-1)!.failure as { code: string }).code, 'review_incomplete');
-    assert.deepEqual((submissions.at(-1)!.failure as {completion:unknown}).completion,{context_complete:true,diff_complete:true,required_context_complete:true,output_complete:false,output_result:'inconclusive',quarantined:false,output_truncated:false});
+    assert.deepEqual((submissions.at(-1)!.failure as {completion:unknown}).completion,{context_complete:true,diff_complete:true,required_context_complete:true,output_complete:false,output_result:'inconclusive',quarantined:false,output_truncated:false,orchestration:{planned_units:1,completed_units:0,synthesis_complete:false,unfinished_reasons:['model_incomplete']}});
     containerOutput = { ...clean(), complete: false }; // A clean label cannot override incomplete analysis.
     await assert.rejects(reviewJob(), /review_output_invalid/);
     assert.equal((submissions.at(-1)!.output as { result: string }).result, 'inconclusive');
@@ -237,4 +251,7 @@ await test('runner waits for the provider refresh window without consuming a tok
 await test('final completion diagnostics project only conditions and approved failure codes, never arbitrary detail',()=>{
  const value={context_complete:false,diff_complete:true,required_context_complete:false,output_complete:true,output_result:'findings' as const,quarantined:false,output_truncated:false,context_failure_code:sensitive,message:sensitive,path:sensitive,summary:sensitive};
  const report=diagnostic(new ReviewCompletionError(value),'result');assert.equal(report.code,'review_incomplete');assert.equal(report.stage,'result');assert.equal(report.status,undefined);assert.equal(report.completion!.context_failure_code,undefined);assert.equal(Object.keys(report.completion!).length,7);assert(!JSON.stringify(report).includes(sensitive));
+ const untrusted={...value,orchestration:{planned_units:2,completed_units:1,synthesis_complete:true,unfinished_reasons:['unreviewed_changes',sensitive,null,'unreviewed_changes']}} as unknown as ReviewCompletion;
+ const bounded=diagnostic(new ReviewCompletionError(untrusted),'result');assert.deepEqual(bounded.completion!.orchestration,{planned_units:2,completed_units:1,synthesis_complete:true,unfinished_reasons:['unreviewed_changes']});assert(!JSON.stringify(bounded).includes(sensitive));
+ for(const invalid of [{planned_units:33,completed_units:1},{planned_units:2,completed_units:3},{planned_units:NaN,completed_units:1}])assert.equal(diagnostic(new ReviewCompletionError({...untrusted,orchestration:{...untrusted.orchestration!,...invalid}}),'result').completion!.orchestration,undefined);
 });
