@@ -1,16 +1,19 @@
 import { test, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import childProcess from 'node:child_process';
+import http from 'node:http';
+import{createHash}from'node:crypto';
 import { syncBuiltinESMExports } from 'node:module';
 import { EventEmitter } from 'node:events';
 import { PassThrough, Writable } from 'node:stream';
 import { AppError } from '../src/core/errors.js';
-import { diagnostic } from '../src/core/diagnostics.js';
+import { diagnostic, ReviewCompletionError } from '../src/core/diagnostics.js';
 import { ExecutionDiagnostics, ExecutionError, executionEnvelope, executionFailure } from '../src/core/execution.js';
 import { docker } from '../src/runner/docker.js';
 import { runCodex } from '../src/runner/engine.js';
 import { Rpc } from '../src/runner/rpc.js';
 import { reviewJob, waitForRefresh } from '../src/runner/main.js';
+import { decision } from '../src/core/review.js';
 import { snapshot, clean } from './fixtures.js';
 
 const sensitive = 'Bearer fixture-private-credential OAuth-code private-source prompt-provider-message';
@@ -130,7 +133,11 @@ await test('actual review job records incomplete fallback, releases acquired lea
   const saved = { ...process.env }, request = snapshot(); request.config.credentials.mode = 'api-key';
   const submissions: Record<string, unknown>[] = [], operations: string[] = [], logs: unknown[][] = [];
   let rejectReporting = false, rejectReadTokenCleanup = false;
-  let containerOutput: unknown = null, unavailableContext = false, runs = 0;
+  let containerOutput: unknown = null, unavailableContext = false, runs = 0, onDemandMissing = false, probeOnly=false;
+  let contextSocket='',contextListener:http.Server|undefined;
+  const realServer=http.createServer;
+  const serverMock=mock.method(http,'createServer',(...args:Parameters<typeof http.createServer>)=>{const server=realServer(...args);contextListener=server;server.once('listening',()=>{const address=server.address();if(typeof address==='string')contextSocket=address;});return server;});
+  const blob=Buffer.from('context\nold\n'),blobSha=createHash('sha1').update('blob '+blob.length+'\0').update(blob).digest('hex');
   Object.assign(process.env, { CODEXBOT_BACKEND: 'https://broker.invalid', CODEXBOT_REQUEST_ID: request.id, CODEXBOT_API_KEY: sensitive,
     CODEXBOT_CREDENTIAL_OWNER: '5', CODEXBOT_INSTALLATION_ID: '1', CODEXBOT_IMAGE: 'sha256:fixture', ACTIONS_ID_TOKEN_REQUEST_URL: 'https://oidc.invalid/token', ACTIONS_ID_TOKEN_REQUEST_TOKEN: sensitive });
   delete process.env.CODEXBOT_VAULT_KEY;
@@ -138,16 +145,17 @@ await test('actual review job records incomplete fallback, releases acquired lea
   Object.defineProperty(process, 'getuid', { value: () => 1000, configurable: true }); Object.defineProperty(process, 'getgid', { value: () => 1000, configurable: true });
   const spawn = mock.method(childProcess, 'spawn', (_file: string, args: string[]) => {
     const process = child();
-    queueMicrotask(() => {
+    queueMicrotask(() => {void(async()=>{
       if (args[0] === 'logs' && args.includes('--follow')) { process.stdout.write('codexbot-proxy-ready\n'); return; }
       if (args[0] === 'run') {
         runs++;
+        if(onDemandMissing){await new Promise<void>((resolve,reject)=>{const req=http.request({socketPath:contextSocket,path:probeOnly?'/probe':'/file',method:'POST'},res=>{let body='';res.on('data',x=>{body+=String(x);});res.on('end',()=>{try{assert.deepEqual(JSON.parse(body),probeOnly?{exists:false}:{available:false});resolve();}catch(error){reject(error);}});});req.on('error',reject);req.end(JSON.stringify({snapshot:'head',path:'private-missing-name.ts'}));});}
         if (containerOutput !== null) process.stdout.write(JSON.stringify(containerOutput));
         else process.stderr.write(executionEnvelope({ component: 'turn', code: 'codex_turn_failed' }) + '\n');
       }
       if (args[0] === 'logs') process.stderr.write(executionEnvelope({ component: 'provider', code: 'provider_http_failed', upstream_status: 401 }) + '\n');
       process.stdout.end(); process.stderr.end(); process.emit('close', args[0] === 'run' && containerOutput === null ? 1 : 0, null);
-    }); return process;
+    })().catch(()=>process.emit('error',new Error('Synthetic context fixture failed')));}); return process;
   }); syncBuiltinESMExports();
   const fetcher = mock.method(globalThis, 'fetch', async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
     const url = new URL(String(input));
@@ -156,14 +164,16 @@ await test('actual review job records incomplete fallback, releases acquired lea
       const operation = url.pathname.split('/').at(-1)!; operations.push(operation);
       if (operation === 'prepare') return Response.json({ snapshot: request, read_token: sensitive });
       if (operation === 'result' && rejectReporting) return Response.json({ error: 'internal_error', message: sensitive }, { status: 503 });
+      if(operation==='result'&&onDemandMissing)assert.equal(contextListener!.listening,false,'Context lookups must drain before result submission');
       if (operation === 'result') submissions.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
       return Response.json({ status: 'recorded' });
     }
     if (url.pathname.endsWith('/installation/token')) return rejectReadTokenCleanup ? Response.json({ message: sensitive }, { status: 503 }) : new Response(null, { status: 204 });
-    if (url.pathname.endsWith('/pulls/4')) return Response.json({ head: { sha: request.head }, base: { sha: request.base }, changed_files: 0 });
-    if (url.pathname.endsWith('/pulls/4/files')) return Response.json([]);
+    if (url.pathname.endsWith('/pulls/4')) return Response.json({ head: { sha: request.head }, base: { sha: request.base }, changed_files: onDemandMissing?1:0 });
+    if (url.pathname.endsWith('/pulls/4/files')) return Response.json(onDemandMissing?[{filename:'auth.ts',status:'modified',patch:'@@ -1,2 +1,2 @@\n context\n-old\n+new'}]:[]);
     if (url.pathname.includes('/git/commits/')) return Response.json({ sha: url.pathname.split('/').at(-1), tree: { sha: 'e'.repeat(40) } });
-    if (url.pathname.includes('/git/trees/')) return Response.json({ sha: 'e'.repeat(40), truncated: unavailableContext, tree: [] });
+    if (url.pathname.includes('/git/trees/')) return Response.json({ sha: 'e'.repeat(40), truncated: unavailableContext, tree: onDemandMissing?[{path:'auth.ts',type:'blob',mode:'100644',size:blob.length,sha:blobSha}]:[] });
+    if(url.pathname.includes('/git/blobs/'))return Response.json({sha:blobSha,encoding:'base64',content:blob.toString('base64')});
     throw new Error('Unexpected fixture route');
   });
   const logger = mock.method(console, 'error', (...args: unknown[]) => logs.push(args));
@@ -181,6 +191,13 @@ await test('actual review job records incomplete fallback, releases acquired lea
     rejectReporting = false; containerOutput = clean();
     await reviewJob(); assert.equal(submissions.at(-1)!.context_complete, true);
     assert.equal(submissions.at(-1)!.failure, undefined);
+    onDemandMissing=true;probeOnly=true;containerOutput=clean();
+    await reviewJob();assert.equal(submissions.at(-1)!.context_complete,true);assert.equal(submissions.at(-1)!.failure,undefined);assert.deepEqual(submissions.at(-1)!.output,clean());
+    probeOnly=false;
+    containerOutput={...clean(),result:'findings',findings:[{severity:'high',confidence:0.99,path:'auth.ts',line:2,side:'RIGHT',title:'Synthetic race condition',explanation:'A stale value can overwrite a newer result.',remediation:'Guard the update.'}]};
+    await assert.rejects(reviewJob(),error=>{assert(error instanceof ReviewCompletionError);assert.equal(error.completion.context_complete,false);assert.equal(error.completion.required_context_complete,false);assert.equal(error.completion.diff_complete,true);assert.equal(error.completion.output_complete,true);assert.equal(error.completion.output_result,'findings');assert.equal(error.completion.context_failure_code,'context_path_missing');return true;});
+    assert.deepEqual(submissions.at(-1)!.output,containerOutput);assert.equal(submissions.at(-1)!.context_complete,false);assert.equal(decision(submissions.at(-1)!.output as ReturnType<typeof clean>,request.config,false),'COMMENT');assert.equal((submissions.at(-1)!.failure as {stage:string}).stage,'result');assert(!JSON.stringify(logs).includes('private-missing-name'));assert.equal(operations.at(-1),'release');
+    onDemandMissing=false;containerOutput=clean();
     rejectReadTokenCleanup = true;
     await assert.rejects(reviewJob(), /read_token_cleanup_failed/); assert.equal(operations.at(-1), 'release');
     rejectReadTokenCleanup = false;
@@ -189,6 +206,7 @@ await test('actual review job records incomplete fallback, releases acquired lea
     assert.equal(submissions.at(-1)!.context_complete, false);
     assert.equal((submissions.at(-1)!.output as { result: string }).result, 'inconclusive');
     assert.equal((submissions.at(-1)!.failure as { code: string }).code, 'review_incomplete');
+    assert.deepEqual((submissions.at(-1)!.failure as {completion:unknown}).completion,{context_complete:true,diff_complete:true,required_context_complete:true,output_complete:false,output_result:'inconclusive',quarantined:false,output_truncated:false});
     containerOutput = { ...clean(), complete: false }; // A clean label cannot override incomplete analysis.
     await assert.rejects(reviewJob(), /review_output_invalid/);
     assert.equal((submissions.at(-1)!.output as { result: string }).result, 'inconclusive');
@@ -198,7 +216,7 @@ await test('actual review job records incomplete fallback, releases acquired lea
     assert.equal((submissions.at(-1)!.failure as { code: string }).code, 'required_tree_unverifiable');
     assert.equal(operations.at(-1), 'release');
   } finally {
-    fetcher.mock.restore(); logger.mock.restore(); spawn.mock.restore(); syncBuiltinESMExports();
+    fetcher.mock.restore(); logger.mock.restore(); spawn.mock.restore();serverMock.mock.restore(); syncBuiltinESMExports();
     if (uid) Object.defineProperty(process, 'getuid', uid); else Reflect.deleteProperty(process, 'getuid');
     if (gid) Object.defineProperty(process, 'getgid', gid); else Reflect.deleteProperty(process, 'getgid');
     for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key]; Object.assign(process.env, saved);
@@ -214,4 +232,9 @@ await test('runner waits for the provider refresh window without consuming a tok
     await waitForRefresh(now-1);
     for(const earliest of [NaN,Infinity,-1,Date.now()+25*60000+1])await assert.rejects(waitForRefresh(earliest),{code:'oauth_refresh_window_unavailable'});
   }finally{t.mock.timers.reset();}
+});
+
+await test('final completion diagnostics project only conditions and approved failure codes, never arbitrary detail',()=>{
+ const value={context_complete:false,diff_complete:true,required_context_complete:false,output_complete:true,output_result:'findings' as const,quarantined:false,output_truncated:false,context_failure_code:sensitive,message:sensitive,path:sensitive,summary:sensitive};
+ const report=diagnostic(new ReviewCompletionError(value),'result');assert.equal(report.code,'review_incomplete');assert.equal(report.stage,'result');assert.equal(report.status,undefined);assert.equal(report.completion!.context_failure_code,undefined);assert.equal(Object.keys(report.completion!).length,7);assert(!JSON.stringify(report).includes(sensitive));
 });
