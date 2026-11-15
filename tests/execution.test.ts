@@ -10,7 +10,7 @@ import { syncBuiltinESMExports } from 'node:module';
 import { EventEmitter } from 'node:events';
 import { PassThrough, Writable } from 'node:stream';
 import { AppError } from '../src/core/errors.js';
-import { diagnostic, ReviewCompletionError } from '../src/core/diagnostics.js';
+import { diagnostic, ReviewCompletionError, type ReviewCompletion } from '../src/core/diagnostics.js';
 import { ExecutionDiagnostics, ExecutionError, executionEnvelope, executionFailure } from '../src/core/execution.js';
 import { docker } from '../src/runner/docker.js';
 import { runCodex } from '../src/runner/engine.js';
@@ -248,4 +248,7 @@ await test('runner waits for the provider refresh window without consuming a tok
 await test('final completion diagnostics project only conditions and approved failure codes, never arbitrary detail',()=>{
  const value={context_complete:false,diff_complete:true,required_context_complete:false,output_complete:true,output_result:'findings' as const,quarantined:false,output_truncated:false,context_failure_code:sensitive,message:sensitive,path:sensitive,summary:sensitive};
  const report=diagnostic(new ReviewCompletionError(value),'result');assert.equal(report.code,'review_incomplete');assert.equal(report.stage,'result');assert.equal(report.status,undefined);assert.equal(report.completion!.context_failure_code,undefined);assert.equal(Object.keys(report.completion!).length,7);assert(!JSON.stringify(report).includes(sensitive));
+ const untrusted={...value,orchestration:{planned_units:2,completed_units:1,synthesis_complete:true,unfinished_reasons:['unreviewed_changes',sensitive,null,'unreviewed_changes']}} as unknown as ReviewCompletion;
+ const bounded=diagnostic(new ReviewCompletionError(untrusted),'result');assert.deepEqual(bounded.completion!.orchestration,{planned_units:2,completed_units:1,synthesis_complete:true,unfinished_reasons:['unreviewed_changes']});assert(!JSON.stringify(bounded).includes(sensitive));
+ for(const invalid of [{planned_units:33,completed_units:1},{planned_units:2,completed_units:3},{planned_units:NaN,completed_units:1}])assert.equal(diagnostic(new ReviewCompletionError({...untrusted,orchestration:{...untrusted.orchestration!,...invalid}}),'result').completion!.orchestration,undefined);
 });
