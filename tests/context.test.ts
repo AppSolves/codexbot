@@ -8,10 +8,10 @@ import { join } from 'node:path';
 import { collectContext, type ContextLookup } from '../src/runner/context.js';
 import { snapshot, HEAD, BASE, WORKFLOW, files } from './fixtures.js';
 
-type Options = { language?: 'py' | 'rs'; mode?: string; truncated?: boolean; binary?: boolean; corrupt?: boolean; status?: string; patch?: string; apiStatus?: number; missingFiles?: boolean; dependency?: 'present' | 'missing' };
+type Options = { source?: string; language?: 'py' | 'rs'; mode?: string; truncated?: boolean; binary?: boolean; corrupt?: boolean; status?: string; patch?: string; apiStatus?: number; missingFiles?: boolean; dependency?: 'present' | 'missing' };
 async function fixture(options: Options = {}, exercise?: (lookup: ContextLookup, directory: string) => Promise<void>) {
   const directory = await mkdtemp(join(tmpdir(), 'codexbot-context-'));
-  const requested: string[] = [], blob = Buffer.from(options.binary ? 'binary\0data' : options.language === 'py' ? 'from .dep import check\nfixture context text' : options.language === 'rs' ? 'mod dep;\nfixture context text' : options.dependency ? 'import { check } from "./dep.js";\nfixture context text' : 'fixture context text');
+  const requested: string[] = [], blob = Buffer.from(options.source ?? (options.binary ? 'binary\0data' : options.language === 'py' ? 'from .dep import check\nfixture context text' : options.language === 'rs' ? 'mod dep;\nfixture context text' : options.dependency ? 'import { check } from "./dep.js";\nfixture context text' : 'fixture context text'));
   const blobSha = createHash('sha1').update(`blob ${blob.length}\0`).update(blob).digest('hex');
   const dependency = Buffer.from('export const check = () => true;'), dependencySha = createHash('sha1').update(`blob ${dependency.length}\0`).update(dependency).digest('hex');
   const root = 'e'.repeat(40), src = 'f'.repeat(40);
@@ -99,4 +99,16 @@ await test('missing or oversized diffs are explicitly incomplete even with compl
 });
 await test('404 and rate-limit commit resolution cannot yield a complete context', async () => {
   for (const apiStatus of [404, 403, 429]) assert.equal((await fixture({ apiStatus })).result.complete, false);
+});
+
+await test('literal imports inside generated code, templates and comments are not essential dependencies',async()=>{
+  const source=`const generated = "import {check} from './missing.js';";
+const template = \`require('./missing.cjs')\`;
+// export {check} from './missing.ts';
+/* import('./missing.mjs'); */
+export const fixture = {generated,template};`;
+  const result=await fixture({source});assert.equal(result.result.complete,true);assert.equal(result.result.requiredContextComplete,true);
+  for(const source of ["export {check} from './missing.js';","const x = import('./missing.js');","const x = require('./missing.js');","import x = require('./missing.js');"]){
+    const missing=await fixture({source});assert.equal(missing.result.complete,false,source);assert.equal(missing.result.requiredContextComplete,false,source);
+  }
 });

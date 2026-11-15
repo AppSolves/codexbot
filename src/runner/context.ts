@@ -1,3 +1,4 @@
+import ts from 'typescript';
 import type { Octokit } from '@octokit/rest';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
@@ -115,8 +116,18 @@ export async function collectContext(github: Octokit, snapshot: RequestSnapshot,
   for (const file of changed) for (const [label, commit, filename] of [['base', snapshot.base, file.previous_filename ?? file.filename], ['head', snapshot.head, file.filename]] as const) {
     if (!/\.[cm]?[jt]sx?$/.test(filename)) continue;
     const text = written.get(`${label}/${filename}`)?.toString('utf8') ?? '';
-    for (const match of text.matchAll(/(?:from\s*|import\s*\(?|require\()\s*['"](\.{1,2}\/[^'"]{1,200})['"]/g)) {
-      const path = posix.normalize(posix.join(posix.dirname(filename!), match[1]!));
+    const imports: string[] = [];
+    const visit = (node: ts.Node): void => {
+      const specifier = (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) ? node.moduleSpecifier
+        : ts.isImportEqualsDeclaration(node) && ts.isExternalModuleReference(node.moduleReference) ? node.moduleReference.expression
+        : ts.isCallExpression(node) && (node.expression.kind === ts.SyntaxKind.ImportKeyword || (ts.isIdentifier(node.expression) && node.expression.text === 'require')) ? node.arguments[0] : undefined;
+      if (specifier && ts.isStringLiteralLike(specifier) && /^\.{1,2}\//.test(specifier.text)) imports.push(specifier.text);
+      ts.forEachChild(node, visit);
+    };
+    // Parse syntax: generated code strings and comments are not actual module dependencies.
+    visit(ts.createSourceFile(filename, text, ts.ScriptTarget.Latest, true));
+    for (const specifier of imports) {
+      const path = posix.normalize(posix.join(posix.dirname(filename!), specifier));
       if (posix.extname(path) && !/\.(?:[cm]?[jt]sx?|json)$/.test(path)) continue;
       if (dependencies.has(`${label}/${path}`)) continue;
       if (!safePath(path) || dependencies.size >= 24) { limited(true); continue; }
