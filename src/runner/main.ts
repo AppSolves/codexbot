@@ -6,7 +6,7 @@ import type { RequestSnapshot } from '../worker/store.js';
 import type { Envelope } from '../core/crypto.js';
 import { unseal, seal, sessionBinding } from '../core/crypto.js';
 import { record, requireCondition, AppError } from '../core/errors.js';
-import { diagnostic, FAILURE_CODES, BROKER_CODES } from '../core/diagnostics.js';
+import { diagnostic, FAILURE_CODES, BROKER_CODES, ReviewCompletionError } from '../core/diagnostics.js';
 import { OAuth, validateSession } from '../auth/oauth.js';
 import { broker, backendUrl, checkWorkload } from './broker.js';
 import { collectContext } from './context.js';
@@ -88,8 +88,14 @@ export async function reviewJob(): Promise<void> {
     stage = 'result';
     try { validateReview(output, snapshot.head, JSON.parse(await readFile(join(directory, 'diff.json'), 'utf8')) as ChangedFile[],binaryLocations(manifest.binaryFiles)); }
     catch { throw new AppError('review_output_invalid'); }
-    submission = { output, context_complete: manifest.complete };
-    requireCondition(manifest.complete && output.complete && output.result !== 'inconclusive' && !output.quarantined && !output.output_truncated, 'review_incomplete');
+    // Keep validated findings even if draining reveals unavailable essential context.
+    submission = { output, context_complete: false };
+    await closeContext(); closeContext=undefined;
+    submission.context_complete=manifest.complete;
+    if(!(manifest.complete&&manifest.diffComplete&&manifest.requiredContextComplete&&output.complete&&output.result!=='inconclusive'&&!output.quarantined&&!output.output_truncated))throw new ReviewCompletionError({
+      context_complete:manifest.complete,diff_complete:manifest.diffComplete,required_context_complete:manifest.requiredContextComplete,
+      output_complete:output.complete,output_result:output.result,quarantined:output.quarantined===true,output_truncated:output.output_truncated===true,
+      ...(manifest.failureCodes[0]?{context_failure_code:manifest.failureCodes[0]}:{})});
     await broker(backend, id, 'result', submission);
   } catch (error) {
     const report = diagnostic(error, stage); console.error(JSON.stringify(report));

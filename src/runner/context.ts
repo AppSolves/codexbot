@@ -146,10 +146,11 @@ export async function collectContext(github: Octokit, snapshot: RequestSnapshot,
   if (register) {
     let requests = 0, serial = Promise.resolve();
     register(async (label, path) => {
-      requireCondition((label === 'base' || label === 'head') && safePath(path) && ++requests <= 24, 'context_lookup_rejected');
+      try {requireCondition((label === 'base' || label === 'head') && safePath(path) && ++requests <= 24, 'context_lookup_rejected');}
+      catch(error){limited(true,error);manifest.complete=false;const work=serial.then(()=>writeFile(join(directory,'manifest.json'),JSON.stringify(manifest),{mode:0o600}));serial=work.catch(()=>{});await work;throw error;}
       let available = false;
       const work = serial.then(async () => {
-        await collect(label, label === 'head' ? snapshot.head : snapshot.base, path, false);
+        await collect(label, label === 'head' ? snapshot.head : snapshot.base, path, true);
         available = written.has(`${label}/${path}`);
         if (!available) { manifest.requiredContextComplete = false; manifest.complete = false; }
         await writeFile(join(directory, 'manifest.json'), JSON.stringify(manifest), { mode: 0o600 });

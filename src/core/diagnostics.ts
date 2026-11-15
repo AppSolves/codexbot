@@ -4,7 +4,7 @@ import { ExecutionError, executionFailure, proxyRequestDiagnostic, type ProxyReq
 export const REVIEW_STAGES = ['environment','prepare','context','credentials','analyzing','result','publish','release'] as const;
 export const FAILURE_CODES = new Set(['missing_environment_credentials','ambiguous_environment_credentials','credential_owner_mismatch','missing_read_token',
   'api_key_missing_or_ambiguous_credentials','vault_key_missing_or_ambiguous_credentials','invalid_envelope','invalid_vault_key','invalid_saved_session',
-  'context_api_budget','context_collection_timeout','context_diff_size_limit','context_text_patch_truncated','context_unsupported_binary','context_binary_unverifiable','context_binary_size_limit','context_non_text_source','context_missing_dependency','context_file_size_limit','context_byte_budget','context_required_evidence_unavailable','required_file_missing_or_special','blob_integrity_failure','required_tree_unverifiable','review_incomplete','review_context_incomplete','review_output_invalid','read_token_cleanup_failed',
+  'context_lookup_rejected','context_api_budget','context_collection_timeout','context_diff_size_limit','context_text_patch_truncated','context_unsupported_binary','context_binary_unverifiable','context_binary_size_limit','context_non_text_source','context_missing_dependency','context_file_size_limit','context_byte_budget','context_required_evidence_unavailable','required_file_missing_or_special','blob_integrity_failure','required_tree_unverifiable','review_incomplete','review_context_incomplete','review_output_invalid','read_token_cleanup_failed',
   'oauth_refresh_too_early','oauth_refresh_window_unavailable',
   'session_too_short_reconnect_required','review_image_missing','isolated_review_failed','proxy_start_failed','docker_unavailable','docker_cleanup_failed_check_runner',
   'oauth_grant_invalid_reconnect_required','chatgpt_plan_usage_permission_missing','oauth_token_endpoint_failed','oauth_token_exchange_uncertain_reconnect_required',
@@ -30,10 +30,26 @@ github_actions_oidc_unavailable invalid_oidc_endpoint github_oidc_request_failed
 export class BrokerError extends AppError {
   constructor(public readonly operation: string, status: number, public readonly remoteCode: string | null) { super(`broker_${operation}_failed`, status); }
 }
-export function diagnostic(error: unknown, stage: string): { event: string; stage: string; code: string; status?: number; broker_code?: string; execution?: ExecutionFailure; proxy_failure?: ExecutionFailure; proxy_cleanup?: ExecutionFailure; proxy_request?: Omit<ProxyRequestDiagnostic,'primary'|'cleanup'> } {
+export interface ReviewCompletion {
+  context_complete: boolean; diff_complete: boolean; required_context_complete: boolean;
+  output_complete: boolean; output_result: 'clean' | 'findings' | 'inconclusive'; quarantined: boolean; output_truncated: boolean;
+  context_failure_code?: string;
+}
+/** Only fixed completion conditions leave the trusted runner, never paths or model text. */
+export class ReviewCompletionError extends AppError {
+  readonly completion: ReviewCompletion;
+  constructor(value: ReviewCompletion) {
+    super('review_incomplete');
+    this.completion={context_complete:value.context_complete===true,diff_complete:value.diff_complete===true,required_context_complete:value.required_context_complete===true,
+      output_complete:value.output_complete===true,output_result:value.output_result==='clean'?'clean':value.output_result==='findings'?'findings':'inconclusive',quarantined:value.quarantined===true,output_truncated:value.output_truncated===true,
+      ...(typeof value.context_failure_code==='string'&&FAILURE_CODES.has(value.context_failure_code)?{context_failure_code:value.context_failure_code}:{})};
+  }
+}
+export function diagnostic(error: unknown, stage: string): { event: string; stage: string; code: string; status?: number; broker_code?: string; execution?: ExecutionFailure; proxy_failure?: ExecutionFailure; proxy_cleanup?: ExecutionFailure; proxy_request?: Omit<ProxyRequestDiagnostic,'primary'|'cleanup'>; completion?: ReviewCompletion } {
   const result: ReturnType<typeof diagnostic> = {
     event: 'review_failed', stage: REVIEW_STAGES.includes(stage as typeof REVIEW_STAGES[number]) ? stage : 'environment', code: 'external_or_execution_failure'
   };
+  if(error instanceof ReviewCompletionError){result.code=error.code;result.completion=error.completion;return result;}
   if (error instanceof ExecutionError) {
     result.code = error.code;
     result.execution = executionFailure(error.detail)!;

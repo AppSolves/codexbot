@@ -1,5 +1,10 @@
 # Security and behavior changes
 
+## Unreleased — final context completion
+
+- Report the exact trusted-host/model completion conditions when analysis cannot be accepted. Preserve findings and fail closed when on-demand essential evidence becomes unavailable.
+- Record required on-demand failure reasons and close/drain lookups before the final result check, preventing late context mutation after submission. No inference, context-budget or approval-policy relaxation.
+
 ## Unreleased — inference diagnostics
 
 - Preserve correlated per-request primary and cleanup errors, bounded HTTP/SSE metadata and allowlisted transport causes. A consumer closing after a completed SSE response is no longer mislabeled as a provider failure; successful retries clear stale failures.

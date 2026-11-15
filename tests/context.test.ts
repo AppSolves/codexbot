@@ -9,7 +9,7 @@ import { collectContext, type ContextLookup } from '../src/runner/context.js';
 import { snapshot, HEAD, BASE, WORKFLOW, files } from './fixtures.js';
 
 type Options = { source?: string; language?: 'py' | 'rs'; mode?: string; truncated?: boolean; binary?: boolean; corrupt?: boolean; status?: string; patch?: string; apiStatus?: number; missingFiles?: boolean; dependency?: 'present' | 'missing' };
-async function fixture(options: Options = {}, exercise?: (lookup: ContextLookup, directory: string) => Promise<void>) {
+async function fixture(options: Options = {}, exercise?: (lookup: ContextLookup, directory: string, manifest: Awaited<ReturnType<typeof collectContext>>) => Promise<void>) {
   const directory = await mkdtemp(join(tmpdir(), 'codexbot-context-'));
   const requested: string[] = [], blob = Buffer.from(options.source ?? (options.binary ? 'binary\0data' : options.language === 'py' ? 'from .dep import check\nfixture context text' : options.language === 'rs' ? 'mod dep;\nfixture context text' : options.dependency ? 'import { check } from "./dep.js";\nfixture context text' : 'fixture context text'));
   const blobSha = createHash('sha1').update(`blob ${blob.length}\0`).update(blob).digest('hex');
@@ -44,7 +44,7 @@ async function fixture(options: Options = {}, exercise?: (lookup: ContextLookup,
   try {
     let lookup: ContextLookup | undefined;
     const result = await collectContext(new Octokit({ request: { fetch: fetcher }, log: { debug() {}, info() {}, warn() {}, error() {} } }), snapshot(), directory, exercise ? reader => { lookup = reader; } : undefined);
-    if (exercise) { assert.ok(lookup); await exercise(lookup, directory); }
+    if (exercise) { assert.ok(lookup); await exercise(lookup, directory,result); }
     const instructions = await readFile(join(directory, 'trusted-instructions.json'), 'utf8');
     return { result, requested, instructions };
   } finally { await rm(directory, { recursive: true, force: true }); }
@@ -111,4 +111,18 @@ export const fixture = {generated,template};`;
   for(const source of ["type X = import('./missing.js').X;","export {check} from './missing.js';","const x = import('./missing.js');","const x = require('./missing.js');","import x = require('./missing.js');"]){
     const missing=await fixture({source});assert.equal(missing.result.complete,false,source);assert.equal(missing.result.requiredContextComplete,false,source);
   }
+});
+
+await test('initially complete context becomes incomplete after an essential on-demand miss, with a safe durable reason',async()=>{
+ const {result}=await fixture({},async(lookup,directory,manifest)=>{
+  assert.equal(manifest.complete,true);assert.equal(manifest.diffComplete,true);
+  assert.equal(await lookup('head','src/private-missing-name.ts'),false);
+  assert.equal(manifest.complete,false);assert.equal(manifest.requiredContextComplete,false);assert(manifest.failureCodes.includes('required_file_missing_or_special'));
+  const persisted=JSON.parse(await readFile(join(directory,'manifest.json'),'utf8'));
+  assert.equal(persisted.complete,false);assert.equal(persisted.requiredContextComplete,false);assert(!JSON.stringify(persisted.failureCodes).includes('private-missing-name'));
+  assert.equal(await lookup('head','src/old.ts'),true);assert.equal(manifest.complete,false,'A later success must not erase missing essential evidence');
+ });assert.equal(result.complete,false);
+});
+await test('exhausting on-demand lookup allowance cannot leave an approving context flag',async()=>{
+ await fixture({},async(lookup,_directory,manifest)=>{for(let n=0;n<24;n++)assert.equal(await lookup('head','src/old.ts'),true);assert.equal(manifest.complete,true);await assert.rejects(lookup('head','src/old.ts'),/context_lookup_rejected/);assert.equal(manifest.complete,false);assert.equal(manifest.requiredContextComplete,false);assert(manifest.failureCodes.includes('context_lookup_rejected'));});
 });
