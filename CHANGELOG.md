@@ -1,5 +1,7 @@
 # Security and behavior changes
 
+- Allow an explicit, bounded operator request budget only for the exact disposable acceptance tenant. Preserve all counters, other quotas, authorization, protected policy and native review requirements; disabled by default.
+
 - Parse real JS/TS import syntax with the existing pinned TypeScript compiler when selecting essential context. Generated-code strings/comments no longer cause false missing-dependency failures; actual missing imports/exports/require calls remain fail-closed.
 
 - Honor public read access for authorized non-collaborator PR events only when explicitly assigned to a consenting repository admin. Private repositories, manual commands, tenant identity checks and separate merge authorization are unchanged.

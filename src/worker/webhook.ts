@@ -11,7 +11,7 @@ import { updateProgress } from './progress.js';
 import { AdmissionError, recordRejection, type RejectionCode, type RejectionIdentity } from './admission.js';
 import { publishRejection } from './rejections.js';
 
-export interface BackendConfig extends GitHubCredentials { DB: D1Database; PUBLIC_URL: string; GITHUB_APP_SLUG: string; TRUSTED_WORKFLOW: string; CHATGPT_DEPLOYMENT_AUTHORIZED: string }
+export interface BackendConfig extends GitHubCredentials { DB: D1Database; PUBLIC_URL: string; GITHUB_APP_SLUG: string; TRUSTED_WORKFLOW: string; CHATGPT_DEPLOYMENT_AUTHORIZED: string; MERGE_ACCEPTANCE_REPOSITORY_ID?:string; MERGE_ACCEPTANCE_INSTALLATION_ID?:string; ACCEPTANCE_USER_PER_DAY?:string }
 /** Persist only fields needed for recovery; never copy issue/PR bodies or unrelated metadata. */
 export function compactWebhook(event: string, payload: unknown): unknown {
   const input = record(payload);
@@ -139,7 +139,9 @@ export async function ingest(event: string, payload: unknown, requestId: string,
     repository: liveRepo.full_name, defaultBranch: liveRepo.default_branch, workflowSha: branch.commit.sha,
     head: pr.head.sha, base: pr.base.sha, pr: prNumber, actor, actorId, ...(automaticGrantId ? {triggerActor:{login:sender.login,id:Number(sender.id),...(sender.type==='Bot'?{type:'Bot' as const}:{})},automaticGrantId} : {}), command, config, createdAt: Date.now(), ...(manual && Number.isSafeInteger(record(input.comment).id) ? {commandId:Number(record(input.comment).id)} : {}), commits: pr.commits, changedFiles: pr.changed_files
   };
-  try { snapshot = await store.create(snapshot, env.TRUSTED_WORKFLOW, manual); }
+  const scopedQuota=env.MERGE_ACCEPTANCE_REPOSITORY_ID===String(snapshot.repositoryId) && env.MERGE_ACCEPTANCE_INSTALLATION_ID===String(snapshot.installationId) ? env.ACCEPTANCE_USER_PER_DAY : undefined;
+  requireCondition(!scopedQuota || (/^[1-9]\d{0,3}$/.test(scopedQuota) && Number(scopedQuota)<=1000),'invalid_operator_request_quota',503);
+  try { snapshot = await store.create(snapshot, env.TRUSTED_WORKFLOW, manual, scopedQuota ? Number(scopedQuota) : undefined); }
   catch (error) {
     if (!(error instanceof AdmissionError)) throw error;
     if (manual) await publishRejection(env,error.rejection.id);

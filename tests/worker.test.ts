@@ -27,7 +27,7 @@ function signed(input: unknown, secret: string, delivery = crypto.randomUUID()):
 }
 async function fixture<T>(action: (env: Env, github: ReturnType<typeof githubFixture>) => Promise<T>): Promise<T> {
   const { db, sqlite } = database(), github = githubFixture(); github.config.credentials.mode = 'api-key';
-  const env: Env = { MERGE_ACCEPTANCE_REPOSITORY_ID:'',MERGE_ACCEPTANCE_INSTALLATION_ID:'',WEB_ENABLED: 'false', GITHUB_CLIENT_ID: '', OPENAI_WEB_CLIENT_ID: '', OPENAI_WEB_AUTH_METHOD: '', OPENAI_WEB_SCOPES: '', OPENAI_HOSTED_INFERENCE_AUTHORIZED: 'false', DB: db, PUBLIC_URL: 'https://broker.invalid', GITHUB_APP_ID: '42', GITHUB_APP_SLUG: 'codexbot', GITHUB_PRIVATE_KEY: pem, GITHUB_WEBHOOK_SECRET: 'fixture-webhook-secret'.repeat(2), TRUSTED_WORKFLOW: `operator/codexbot/.github/workflows/review.yml@${RELEASE}`, CHATGPT_DEPLOYMENT_AUTHORIZED: 'false', MERGE_DEPLOYMENT_AUTHORIZED: 'false' };
+  const env: Env = { ACCEPTANCE_USER_PER_DAY:'', MERGE_ACCEPTANCE_REPOSITORY_ID:'',MERGE_ACCEPTANCE_INSTALLATION_ID:'',WEB_ENABLED: 'false', GITHUB_CLIENT_ID: '', OPENAI_WEB_CLIENT_ID: '', OPENAI_WEB_AUTH_METHOD: '', OPENAI_WEB_SCOPES: '', OPENAI_HOSTED_INFERENCE_AUTHORIZED: 'false', DB: db, PUBLIC_URL: 'https://broker.invalid', GITHUB_APP_ID: '42', GITHUB_APP_SLUG: 'codexbot', GITHUB_PRIVATE_KEY: pem, GITHUB_WEBHOOK_SECRET: 'fixture-webhook-secret'.repeat(2), TRUSTED_WORKFLOW: `operator/codexbot/.github/workflows/review.yml@${RELEASE}`, CHATGPT_DEPLOYMENT_AUTHORIZED: 'false', MERGE_DEPLOYMENT_AUTHORIZED: 'false' };
   const replacement: typeof fetch = async (input, init) => String(input).includes('token.actions.githubusercontent.com/.well-known/jwks') ? Response.json({ keys: [jwk] }) : github.fetcher(input, init);
   const intercepted = mock.method(globalThis, 'fetch', replacement);
   try { return await action(env, github); } finally { intercepted.mock.restore(); sqlite.close(); }
@@ -416,4 +416,16 @@ await test('unconnected automation contributor requires explicit owner assignmen
   const manual={...payload(),sender:event.sender,comment:{...payload().comment,user:{id:41898282}}};
   assert.equal((await worker.fetch(signed(manual,env.GITHUB_WEBHOOK_SECRET),env)).status,403);
   assert.equal(f.calls.filter(call=>call.path.endsWith('/dispatches')).length,1);
+}));
+
+await test('explicit operator quota changes only the exact disposable tenant and preserves persisted policy and counters',async()=>fixture(async(env,f)=>{
+  f.config.quotas.user_per_day=1;f.config.quotas.cooldown_seconds=0;
+  const send=async(id:number)=>{const input=payload();return worker.fetch(signed({...input,comment:{...input.comment,id}},env.GITHUB_WEBHOOK_SECRET),env);};
+  assert.equal((await send(801)).status,202);const store=new Store(env.DB);const first=await env.DB.prepare('SELECT id FROM requests').first<{id:string}>();await store.transition(first!.id,'dispatched','failed');f.state.head='d'.repeat(40);
+  env.ACCEPTANCE_USER_PER_DAY='2';env.MERGE_ACCEPTANCE_REPOSITORY_ID='999';env.MERGE_ACCEPTANCE_INSTALLATION_ID='1';assert.equal((await send(802)).status,200);
+  env.MERGE_ACCEPTANCE_REPOSITORY_ID='2';env.MERGE_ACCEPTANCE_INSTALLATION_ID='999';assert.equal((await send(803)).status,200);
+  env.MERGE_ACCEPTANCE_INSTALLATION_ID='1';assert.equal((await send(804)).status,202);
+  assert.equal((await env.DB.prepare('SELECT count(*) AS n FROM requests').first<{n:number}>())!.n,2);
+  const saved=await env.DB.prepare("SELECT snapshot FROM requests WHERE state='dispatched'").first<{snapshot:string}>();assert.equal(JSON.parse(saved!.snapshot).config.quotas.user_per_day,1);assert.equal(f.config.quotas.user_per_day,1);
+  env.ACCEPTANCE_USER_PER_DAY='unbounded';assert.equal((await send(805)).status,503);
 }));
