@@ -179,7 +179,7 @@ export async function orchestrateReview(plan: ReviewPlan, evidence: (unit: Revie
       for (;;) {
         state.attempts++;
         turns++;
-        const result = turnReview(await turn(unit.id, JSON.stringify({ unit_id: unit.id, evidence: input, continuation: state.attempts > 1, unfinished_reasons: state.reasons }), reviewTurnSchema(unit.id)), unit.id, plan);
+        const result = turnReview(await turn(unit.id, JSON.stringify({ unit_id: unit.id, evidence: input, final_whole_pr_check:plan.units.length===1, instructions:plan.units.length===1?'This sole group contains every change. Complete the final whole-PR cross-file, dependency, security and compatibility synthesis in this response; unresolved questions require incomplete.':'Analyze this group with shared dependencies; a separate final cross-group synthesis follows.', continuation: state.attempts > 1, unfinished_reasons: state.reasons }), reviewTurnSchema(unit.id)), unit.id, plan);
         reviews.push(result.review);
         state.reasons = result.reasons;
         state.complete = result.reasons.length === 0;
@@ -192,7 +192,8 @@ export async function orchestrateReview(plan: ReviewPlan, evidence: (unit: Revie
         continuations++;
       }
     }
-    for (;;) {
+    if(plan.units.length===1){final=reviews.at(-1);synthesis=coverage[0]?.complete===true;}
+    else for (;;) {
       turns++;
       const result = turnReview(await turn('synthesis', JSON.stringify({ unit_id: 'synthesis', instructions: 'Reconcile cross-group dependencies, interfaces, security and compatibility across the entire PR. Inspect shared source as needed. Preserve evidence-backed findings; do not claim completion if a unit or consequential question remains unresolved. Missing runtime test execution and a partial supplementary file index alone are expected, not missing analysis.', coverage, unit_reviews: reviews, whole_pr: plan.files.map(f => ({ path: f.filename, status: f.status })) }), reviewTurnSchema('synthesis')), 'synthesis', plan);
       final = result.review;
@@ -258,7 +259,7 @@ export function validateExecution(value: unknown, plan: ReviewPlan): ReviewExecu
     extra += Number(state.attempts) - 1;
   }
   const synthesisTurns = Number(input.turns) - input.coverage.reduce((sum, c) => sum + Number(record(c).attempts), 0);
-  requireCondition(synthesisTurns >= 0 && synthesisTurns <= 1 + MAX_CONTINUATIONS && extra + Math.max(0, synthesisTurns - 1) <= MAX_CONTINUATIONS && (!input.synthesis || synthesisTurns > 0) && (input.failure === null || executionFailure(input.failure) !== null), 'review_coverage_invalid');
+  requireCondition(synthesisTurns >= 0 && synthesisTurns <= 1 + MAX_CONTINUATIONS && (plan.units.length!==1||synthesisTurns===0) && extra + Math.max(0, synthesisTurns - 1) <= MAX_CONTINUATIONS && (!input.synthesis || synthesisTurns > 0 || plan.units.length===1) && (input.failure === null || executionFailure(input.failure) !== null), 'review_coverage_invalid');
   let output: Review;
   try {
     output = validateReview(input.review, plan.head, plan.files, binaryLocations(plan.binaries));

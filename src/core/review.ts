@@ -4,10 +4,14 @@ import { requireCondition } from './errors.js';
 import { RE2JS } from 're2js';
 import { scanSecrets } from './dlp.js';
 import { MAX_RAW_REVIEW_BYTES, MAX_REVIEW_BYTES } from './limits.js';
+import { UNFINISHED_REASONS } from './execution.js';
 const SOURCE_TOKEN = RE2JS.compile(String.raw`\b(?:sk-[a-zA-Z0-9_-]{16,}|gh[pousr]_[a-zA-Z0-9_]{20,}|github_pat_[a-zA-Z0-9_]{20,}|eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]{16,})\b`);
 
 export interface Finding { severity: 'critical' | 'high' | 'medium' | 'low'; confidence: number; path: string; line: number | null; side: 'LEFT' | 'RIGHT'; title: string; explanation: string; remediation: string }
-export interface Review { head_sha: string; result: 'clean' | 'findings' | 'inconclusive'; complete: boolean; summary: string; findings: Finding[]; output_truncated?: boolean; quarantined?: boolean }
+export interface OrchestrationStatus { planned_units:number; completed_units:number; synthesis_complete:boolean; unfinished_reasons:typeof UNFINISHED_REASONS[number][] }
+export interface Review { head_sha: string; result: 'clean' | 'findings' | 'inconclusive'; complete: boolean; summary: string; findings: Finding[]; output_truncated?: boolean; quarantined?: boolean; orchestration?:OrchestrationStatus }
+const statusSchema={type:'object',additionalProperties:false,required:['planned_units','completed_units','synthesis_complete','unfinished_reasons'],properties:{planned_units:{type:'integer',minimum:1,maximum:32},completed_units:{type:'integer',minimum:0,maximum:32},synthesis_complete:{type:'boolean'},unfinished_reasons:{type:'array',maxItems:UNFINISHED_REASONS.length,uniqueItems:true,items:{enum:UNFINISHED_REASONS}}}};
+const validStatus=new Ajv().compile<OrchestrationStatus>(statusSchema);
 export function reviewSummary(review: Review, event: 'APPROVE' | 'COMMENT' | 'REQUEST_CHANGES', contextComplete: boolean, binaryFiles = 0): string {
   const complete = review.complete && contextComplete && !review.quarantined && !review.output_truncated && review.result !== 'inconclusive';
   const counts = (['critical','high','medium','low'] as const).flatMap(severity => {
@@ -17,7 +21,9 @@ export function reviewSummary(review: Review, event: 'APPROVE' | 'COMMENT' | 'RE
   const status = !complete ? 'Review incomplete. Required evidence or reliable analysis was unavailable.'
     : event === 'REQUEST_CHANGES' ? 'Changes requested.' : 'Review complete.';
   const findings = counts.length ? `Found ${counts.join(', ')} severity ${review.findings.length === 1 ? 'issue' : 'issues'}.` : complete ? 'No actionable issues found.' : 'No approval is authorized.';
-  return `**CodexBot Review**\n\n${status} ${findings}\n\n${publicText(review.summary)}${binaryFiles ? `\n\n${binaryFiles} PNG image change(s): immutable Git evidence verified; base/head images supplied to vision-capable Codex. An incomplete visual analysis cannot authorize approval or merge.` : ''}${review.findings.filter(f=>f.line===null).map(f=>`\n\n**${f.severity.toUpperCase()} image finding: ${publicText(f.path)} (${f.side}) — ${publicText(f.title)}**\n\n${publicText(f.explanation)}\n\n${publicText(f.remediation)}\n\nConfidence: ${f.confidence}`).join('')}${event === 'COMMENT' && complete ? '\n\nThis review is advisory. No changes were formally requested.' : ''}\n\nTests were not executed in the isolated review environment.`;
+  const coverage=review.orchestration;
+  const progress=!complete&&event==='COMMENT'&&validStatus(coverage)&&coverage.completed_units<=coverage.planned_units?`\n\nAnalysis coverage: ${coverage.completed_units}/${coverage.planned_units} groups completed. Final synthesis: ${coverage.synthesis_complete?'completed':'incomplete'}.${coverage.unfinished_reasons.length?' Unfinished reasons: '+coverage.unfinished_reasons.map(reason=>'`'+reason+'`').join(', ')+'.':''}`:'';
+  return `**CodexBot Review**\n\n${status} ${findings}\n\n${publicText(review.summary)}${progress}${binaryFiles ? `\n\n${binaryFiles} PNG image change(s): immutable Git evidence verified; base/head images supplied to vision-capable Codex. An incomplete visual analysis cannot authorize approval or merge.` : ''}${review.findings.filter(f=>f.line===null).map(f=>`\n\n**${f.severity.toUpperCase()} image finding: ${publicText(f.path)} (${f.side}) — ${publicText(f.title)}**\n\n${publicText(f.explanation)}\n\n${publicText(f.remediation)}\n\nConfidence: ${f.confidence}`).join('')}${event === 'COMMENT' && complete ? '\n\nThis review is advisory. No changes were formally requested.' : ''}\n\nTests were not executed in the isolated review environment.`;
 }
 export function failedReview(head: string, contextCode?: string): Review {
   const reasons:Record<string,string>={context_api_budget:'The 768-call source-collection budget was exceeded.',context_collection_timeout:'Source collection exceeded 120 seconds.',context_diff_size_limit:'Serialized text changes exceeded 6 MB.',context_byte_budget:'Essential source exceeded the 16 MB budget.',context_file_size_limit:'An essential source file exceeds 512 KB.',context_binary_size_limit:'Binary evidence exceeds 2 MB per file or 8 MB total.',context_unsupported_binary:'A missing patch could not be verified as a supported PNG image; unsupported binaries require manual inspection.',context_text_patch_truncated:'A textual patch is missing or truncated.'};
@@ -43,14 +49,14 @@ export const REVIEW_SCHEMA = {
 // OpenAI strict structured output requires every declared model field to be required.
 // Provenance flags belong to the trusted transport, never the model's output schema.
 const validate = new Ajv().compile<Review>({ ...REVIEW_SCHEMA, properties: { ...REVIEW_SCHEMA.properties,
-  output_truncated: { type: 'boolean' }, quarantined: { type: 'boolean' } } });
+  output_truncated: { type: 'boolean' }, quarantined: { type: 'boolean' }, orchestration:statusSchema } });
 
 /** Applied before transport, persistence and publication. No suspicious source text escapes. */
 export type ReviewRejectionReason = 'schema_invalid' | 'head_mismatch' | 'quarantined' | 'output_truncated';
 export function normalizeReview(value: unknown, head: string, onReject: (reason: ReviewRejectionReason) => void = () => {}): Review {
   const fallback = failedReview(head);
   if (scanSecrets(value).length) {onReject('quarantined');return { ...fallback, quarantined: true };}
-  if (!validate(value)) {onReject('schema_invalid');return fallback;}
+  if (!validate(value)||(value.orchestration&&value.orchestration.completed_units>value.orchestration.planned_units)) {onReject('schema_invalid');return fallback;}
   if (value.head_sha !== head) {onReject('head_mismatch');return fallback;}
   const review = structuredClone(value);
   const size = () => Buffer.byteLength(JSON.stringify(review));
@@ -107,6 +113,7 @@ export function completePatch(file: ChangedFile): boolean {
 }
 export function validateReview(value: unknown, head: string, files: ChangedFile[], binarySides:ReadonlySet<string> = new Set()): Review {
   requireCondition(validate(value), 'invalid_review_schema');
+  requireCondition(!value.orchestration||value.orchestration.completed_units<=value.orchestration.planned_units,'invalid_orchestration_status');
   requireCondition(value.head_sha === head, 'review_head_mismatch', 409);
   requireCondition(!(value.result === 'clean' && (value.findings.length > 0 || !value.complete)), 'contradictory_clean_review');
   requireCondition(!(value.result === 'findings' && value.findings.length === 0), 'empty_findings_result');

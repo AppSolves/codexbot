@@ -90,18 +90,22 @@ export async function reviewJob(): Promise<void> {
     let partialFailure:ExecutionError|undefined;
     const raw=await isolatedReview(image, directory, credentialPath, sockets,{minimumImages:reviewImages(JSON.stringify(manifest)).length},failure=>{partialFailure=failure;});
     stage = 'result';
-    const execution=validateExecution(raw,plan),output = normalizeReview(execution.review, snapshot.head);
+    const execution=validateExecution(raw,plan);let output = normalizeReview(execution.review, snapshot.head);
     try { validateReview(output, snapshot.head, JSON.parse(await readFile(join(directory, 'diff.json'), 'utf8')) as ChangedFile[],binaryLocations(manifest.binaryFiles)); }
     catch { throw new AppError('review_output_invalid'); }
     // Keep validated findings even if draining reveals unavailable essential context.
     submission = { output, context_complete: false };
     await closeContext(); closeContext=undefined;
     submission.context_complete=manifest.complete;
+    const coverage={planned_units:plan.units.length,completed_units:execution.coverage.filter(c=>c.complete).length,synthesis_complete:execution.synthesis,unfinished_reasons:[...new Set([...execution.reasons,...(manifest.complete?[]:['missing_required_context' as const])])]};
+    output=normalizeReview({...output,orchestration:coverage},snapshot.head);
+    if(output.output_truncated&&!coverage.unfinished_reasons.includes('output_truncated')){coverage.unfinished_reasons.push('output_truncated');output.orchestration=coverage;}
+    submission.output=output;
     if(partialFailure||execution.failure)throw partialFailure??new ExecutionError(execution.failure!);
     if(!(manifest.complete&&manifest.diffComplete&&manifest.requiredContextComplete&&output.complete&&output.result!=='inconclusive'&&!output.quarantined&&!output.output_truncated))throw new ReviewCompletionError({
       context_complete:manifest.complete,diff_complete:manifest.diffComplete,required_context_complete:manifest.requiredContextComplete,
       output_complete:output.complete,output_result:output.result,quarantined:output.quarantined===true,output_truncated:output.output_truncated===true,
-      orchestration:{planned_units:plan.units.length,completed_units:execution.coverage.filter(c=>c.complete).length,synthesis_complete:execution.synthesis,unfinished_reasons:execution.reasons},
+      orchestration:coverage,
       ...(manifest.failureCodes[0]?{context_failure_code:manifest.failureCodes[0]}:{})});
     await broker(backend, id, 'result', submission);
   } catch (error) {

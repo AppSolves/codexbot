@@ -2,6 +2,9 @@
 
 ## Unreleased — bounded review orchestration
 
+- Harden required visual-input retention against duplicate/substituted images; native multi-turn acceptance now uses four distinct PNGs across groups, continuation and synthesis.
+- Integrate final whole-PR checks for one-group reviews without raising budgets. Add bounded host-generated coverage/reason status to incomplete COMMENT reports and recheck output size after adding metadata.
+
 - Preserve valid incomplete model summaries/findings through the private result channel. The trusted runner still fails incomplete analysis; publication remains COMMENT without approval or merge.
 - Build immutable host-owned evidence groups, run bounded same-thread continuation and mandatory cross-group synthesis, and independently validate coverage before accepting completeness. All groups share the existing proxy, request/time limits and context lookup budget.
 - Preserve primary analysis failures when the workflow reports failure. Add deterministic and real pinned Codex/Docker coverage for large PRs, images, continuation, synthesis, evidence integrity and global budget exhaustion.

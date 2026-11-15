@@ -90,7 +90,7 @@ await test('global continuation cap and explicit synthesis cannot waive unfinish
   validateExecution(result, p);
 });
 await test('incomplete synthesis preserves its summary and valid findings and cannot approve an otherwise complete set of units', async () => {
-  const p = plan(1), result = await orchestrateReview(p, async () => '', async (id) => id === 'synthesis' ? { ...response(id, false, [finding]), review: { ...response(id, false, [finding]).review, summary: 'An unresolved cross-file question prevents a complete review.' } } : response(id));
+  const p = plan(2), result = await orchestrateReview(p, async () => '', async (id) => id === 'synthesis' ? { ...response(id, false, [finding]), review: { ...response(id, false, [finding]).review, summary: 'An unresolved cross-file question prevents a complete review.' } } : response(id));
   assert.equal(result.synthesis, false);
   assert.equal(result.review.complete, false);
   assert.match(result.review.summary, /unresolved cross-file/);
@@ -100,10 +100,10 @@ await test('incomplete synthesis preserves its summary and valid findings and ca
 });
 await test('a model cannot waive its missing essential or visual evidence by claiming a later complete synthesis', async () => {
   for (const reason of ['missing_required_context', 'visual_evidence_unavailable']) {
-    const p = plan(1);
+    const p = plan(2);
     let calls = 0;
     const result = await orchestrateReview(p, async () => '', async (id) => { calls++; return id === 'synthesis' ? response(id) : { ...response(id, false, [finding]), unfinished_reasons: [reason] }; });
-    assert.equal(calls, 2);
+    assert.equal(calls, 3);
     assert.equal(result.review.complete, false);
     assert.equal(result.coverage[0]!.complete, false);
     assert(result.reasons.includes(reason as typeof result.reasons[number]));
@@ -146,9 +146,14 @@ await test('more than forty findings retain highest severity with explicit incom
   validateExecution(result, p);
 });
 await test('a genuinely complete clean analysis is distinguishable from inconclusive work', async () => {
-  const p = plan(1), result = await orchestrateReview(p, async () => '', async (id) => response(id));
+  const p = plan(1);let calls=0;const result = await orchestrateReview(p, async () => '', async (id,input) => {calls++;assert.equal(id,'group-00');assert.equal(JSON.parse(input).final_whole_pr_check,true);assert.match(JSON.parse(input).instructions,/final whole-PR/);return response(id);});
+  assert.equal(calls,1);assert.equal(result.turns,1);assert.equal(result.synthesis,true);
+  assert.throws(()=>validateExecution({...result,turns:2},p),/review_coverage_invalid/);
   assert.equal(result.review.complete, true);
   assert.equal(result.review.result, 'clean');
   assert.equal(decision(result.review, DEFAULT_CONFIG, true), 'APPROVE');
   validateExecution(result, p);
+});
+await test('a sole group retains the global continuation cap and cannot skip an unfinished integrated final check',async()=>{
+ const p=plan(1);let calls=0;const result=await orchestrateReview(p,async()=>'',async id=>{calls++;return response(id,false,[finding]);});assert.equal(calls,3);assert.equal(result.turns,3);assert.equal(result.synthesis,false);assert.equal(result.review.complete,false);assert.equal(decision(result.review,DEFAULT_CONFIG,true),'COMMENT');validateExecution(result,p);
 });

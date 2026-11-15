@@ -8,6 +8,16 @@ function rejectionMetadata(value: ExecutionFailure) {
   assert(Number.isInteger(value.elapsed_ms)&&value.elapsed_ms!>=0&&value.elapsed_ms!<=1_320_000);
   return {request_index:1,elapsed_ms:value.elapsed_ms,stream_bytes:0,stream_frames:0,terminal_event:'none',abort_origin:'none'};
 }
+await test('required distinct image evidence stays bound across requests; duplicates, loss and substitution are rejected',async()=>{
+ const localFetch=globalThis.fetch;let calls=0;const intercepted=mock.method(globalThis,'fetch',async()=>{calls++;return new Response('data: {"type":"response.completed"}\n\n',{headers:{'content-type':'text/event-stream'}});});
+ const server=createInferenceServer('fixture-only',{minimumImages:4}),images=['AAAA','BBBB','CCCC','DDDD'].map(value=>({type:'input_image',image_url:'data:image/png;base64,'+value}));server.listen(0,'127.0.0.1');await once(server,'listening');const address=server.address();assert(address&&typeof address!=='string');
+ const post=async(input:unknown[])=>{const response=await localFetch(`http://127.0.0.1:${address.port}/v1/responses`,{method:'POST',body:JSON.stringify({model:'fixture',store:false,stream:true,input:[{role:'user',content:input}]})});await response.text();return response.status;};
+ try{assert.equal(await post(images),200);assert.equal(await post([...images,...images]),200);assert.equal(await post([images[0],images[0],images[0],images[0]]),403);assert.equal(await post(images.slice(0,3)),403);assert.equal(await post([...images.slice(0,3),{type:'input_image',image_url:'data:image/png;base64,EEEE'}]),403);assert.equal(await post(images),200);assert.equal(calls,3);}finally{server.closeAllConnections();server.close();intercepted.mock.restore();}
+});
+await test('identical native encodings are not mistaken for missing Git images when present in the trusted first input',async()=>{
+ const localFetch:typeof fetch=globalThis.fetch;const intercepted=mock.method(globalThis,'fetch',async()=>new Response('data: {"type":"response.completed"}\n\n',{headers:{'content-type':'text/event-stream'}}));const server=createInferenceServer('fixture-only',{minimumImages:4});server.listen(0,'127.0.0.1');await once(server,'listening');const address=server.address();assert(address&&typeof address!=='string');
+ try{for(const count of [4,4,3]){const response:Response=await localFetch(`http://127.0.0.1:${address.port}/v1/responses`,{method:'POST',body:JSON.stringify({model:'fixture',store:false,stream:true,input:Array.from({length:count},()=>({type:'input_image',image_url:'data:image/jpeg;base64,AAAA'}))})});assert.equal(response.status,count===4?200:403);await response.text();}}finally{server.closeAllConnections();server.close();intercepted.mock.restore();}
+});
 await test('API-key and ChatGPT adapters inject only their own bearer at the isolated inference boundary', async () => {
   for (const credential of ['fixture-personal-api-key', 'fixture-personal-oauth-token']) {
     const requests: { url: string; auth: string; body: string }[] = [];
