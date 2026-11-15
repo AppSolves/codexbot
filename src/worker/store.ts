@@ -48,7 +48,7 @@ export class Store {
       .bind(Date.now(), Date.now(), MAX_RECOVERY_ATTEMPTS).all<{ id: string }>();
     return results.map(x => x.id);
   }
-  async create(snapshot: RequestSnapshot, trustedWorkflow = '', feedback = false): Promise<RequestSnapshot> {
+  async create(snapshot: RequestSnapshot, trustedWorkflow = '', feedback = false, operatorUserQuota?: number): Promise<RequestSnapshot> {
     const existingRequest = () => this.db.prepare(`SELECT snapshot FROM requests WHERE id=? OR (installation_id=? AND repository_id=? AND actor_id=? AND json_extract(snapshot,'$.commandId')=?)`).bind(snapshot.id,snapshot.installationId,snapshot.repositoryId,snapshot.actorId,snapshot.commandId ?? null).first<{ snapshot: string }>();
     const existing = await existingRequest();
     if (existing) return JSON.parse(existing.snapshot) as RequestSnapshot;
@@ -57,7 +57,9 @@ export class Store {
     const key = await sha256(JSON.stringify({ installation: snapshot.installationId, repository: snapshot.repositoryId, owner: snapshot.ownerId,
       actor: snapshot.actorId, pr: snapshot.pr, head: snapshot.head, base: snapshot.base, branch: snapshot.defaultBranch,
       workflow: snapshot.workflowSha, trustedWorkflow, config: snapshot.config, command, mergeIntent: snapshot.mergeIntent ?? null, automaticGrantId:snapshot.automaticGrantId ?? null, rerun: snapshot.command.rerun ? snapshot.commandId ?? snapshot.id : null }));
-    const now = Date.now(), q = snapshot.config.quotas, day = now - 86_400_000, cooldown = now - q.cooldown_seconds * 1000;
+    requireCondition(operatorUserQuota===undefined || (Number.isSafeInteger(operatorUserQuota) && operatorUserQuota>=1 && operatorUserQuota<=1000),'invalid_operator_request_quota',503);
+    const q=operatorUserQuota===undefined?snapshot.config.quotas:{...snapshot.config.quotas,user_per_day:operatorUserQuota};
+    const now = Date.now(), day = now - 86_400_000, cooldown = now - q.cooldown_seconds * 1000;
     const insert = this.db.prepare(`INSERT OR IGNORE INTO requests(id,installation_id,repository_id,actor_id,snapshot,created_at,request_key,rerun)
       SELECT ?,?,?,?,?,?,?,? WHERE
       (SELECT count(*) FROM requests WHERE installation_id=? AND actor_id=? AND created_at>?)<? AND
@@ -72,7 +74,7 @@ export class Store {
         snapshot.installationId, day, q.installation_per_day, snapshot.installationId, snapshot.repositoryId, now - REQUEST_LIFETIME_MS, q.concurrent_repository,
         snapshot.installationId, now - REQUEST_LIFETIME_MS, q.concurrent_installation, snapshot.installationId, snapshot.repositoryId, snapshot.actorId, cooldown,
         snapshot.installationId, snapshot.actorId, day, snapshot.command.rerun ? q.reruns_per_day : 1001);
-    const [result] = await this.db.batch([insert, await admissionRejection(this.db, snapshot, key, now, feedback)]);
+    const [result] = await this.db.batch([insert, await admissionRejection(this.db, {...snapshot,config:{...snapshot.config,quotas:q}}, key, now, feedback)]);
     if (result!.meta.changes !== 1) {
       const rejected = await getRejection(this.db, await rejectionId(snapshot));
       if (!rejected) {
