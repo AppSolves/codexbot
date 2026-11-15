@@ -18,11 +18,11 @@ Set `bot.trigger: "@CBReview"` to use the example above. The legacy default `@co
 
 ## Status
 
-**CLI release acceptance in progress.** Real complete COMMENT and inline advisory reviews, native APPROVE, high-confidence REQUEST_CHANGES, token rotation and an exact-head autonomous App merge without human approval have been verified. Final unattended-contributor and Human-in-the-Loop live acceptance is still pending; no public release is claimed yet.
+**CLI-based beta.** CodexBot supports complete native COMMENT, APPROVE and REQUEST_CHANGES reviews, automatic reviews, owner-consented unattended credentials, Fully Autonomous merging and optional Human-in-the-Loop. Release evidence and remaining beta limitations are recorded in the GitHub release notes.
 
 Browser ChatGPT onboarding is intentionally deferred and is **not a release blocker**. Keep `WEB_ENABLED=false` and `OPENAI_HOSTED_INFERENCE_AUTHORIZED=false`. Installation redirects lead to the CLI instructions; no website OAuth client is needed for the approved existing CLI connection. Reviews and merges then run without an ongoing CLI process. See [configuration](docs/configuration.md) for explicit repository-owner credential assignment and the two merge modes.
 
-AI reviews can miss defects. GitHub protections, required CI, separate merge authorization and repository opt-in always apply. The global merge gate stays closed during final acceptance; live merge tests are restricted to the exact disposable repository and installation.
+AI reviews can miss defects. GitHub protections, required CI, separate merge authorization and repository opt-in always apply. Merging requires both deployment authorization and explicit repository opt-in. Fully Autonomous uses zero required humans; Human-in-the-Loop adds independent human approvals. Neither mode bypasses GitHub protections.
 
 ## What is implemented
 
