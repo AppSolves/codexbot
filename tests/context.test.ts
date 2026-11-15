@@ -108,7 +108,7 @@ const template = \`require('./missing.cjs')\`;
 /* import('./missing.mjs'); */
 export const fixture = {generated,template};`;
   const result=await fixture({source});assert.equal(result.result.complete,true);assert.equal(result.result.requiredContextComplete,true);
-  for(const source of ["export {check} from './missing.js';","const x = import('./missing.js');","const x = require('./missing.js');","import x = require('./missing.js');"]){
+  for(const source of ["type X = import('./missing.js').X;","export {check} from './missing.js';","const x = import('./missing.js');","const x = require('./missing.js');","import x = require('./missing.js');"]){
     const missing=await fixture({source});assert.equal(missing.result.complete,false,source);assert.equal(missing.result.requiredContextComplete,false,source);
   }
 });
