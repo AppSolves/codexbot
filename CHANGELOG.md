@@ -1,5 +1,7 @@
 # Security and behavior changes
 
+- Respect the provider's earliest refresh timestamp before runtime token renewal. Bound the credential wait and workflow lifetime, preserve exclusive leases/CAS and persist rotation before inference; classify premature/unavailable refresh windows without raw credential diagnostics.
+
 - Accept GitHub's documented immutable default OIDC subjects for new/renamed repositories, exactly binding owner ID, repository ID and Environment while retaining the legacy subject and all signed identity/workflow checks.
 
 - Add primary Fully Autonomous merging (0 humans), optional Human-in-the-Loop (1–6), owner-opted-in merge-on-approval and a repository/installation-scoped live acceptance gate. Preserve GitHub protections, native approval and exact-head checks.

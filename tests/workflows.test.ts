@@ -10,6 +10,7 @@ await test('reusable workflow has no GitHub write permissions, shared secrets or
   const text = await readFile('.github/workflows/review.yml', 'utf8'), workflow = record(parse(text));
   assert.deepEqual(workflow.permissions, {});
   const jobs = record(workflow.jobs);
+  assert.equal(record(jobs.review)['timeout-minutes'],50);
   for (const [name, value] of Object.entries(jobs)) {
     const job = record(value), permissions = record(job.permissions);
     assert.equal(job['runs-on'], 'ubuntu-24.04');

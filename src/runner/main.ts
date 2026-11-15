@@ -15,6 +15,13 @@ import type { ContextLookup } from './context.js';
 import { isolatedReview } from './docker.js';
 import { failedReview, normalizeReview, validateReview, type ChangedFile } from '../core/review.js';
 
+const REFRESH_WINDOW_MS = 25 * 60_000;
+export async function waitForRefresh(earliest: number): Promise<void> {
+  requireCondition(Number.isFinite(earliest) && earliest >= 0 && earliest - Date.now() <= REFRESH_WINDOW_MS, 'oauth_refresh_window_unavailable');
+  // Provider eligibility is a timestamp, not permission to send a premature refresh request.
+  while (Date.now() < earliest) await new Promise(resolve => setTimeout(resolve, earliest - Date.now()));
+}
+
 export async function reviewJob(): Promise<void> {
   const id = process.env.CODEXBOT_REQUEST_ID ?? '';
   let backend = '', temporary: string | undefined;
@@ -50,7 +57,8 @@ export async function reviewJob(): Promise<void> {
       const saved = record(prepared.session);
       const binding = sessionBinding(backend, snapshot.installationId, snapshot.repositoryId, snapshot.actorId);
       let session = validateSession(await unseal(saved.envelope as Envelope, process.env.CODEXBOT_VAULT_KEY, binding));
-      if (session.expires_at - Date.now() < 25 * 60_000) {
+      if (session.expires_at - Date.now() < REFRESH_WINDOW_MS) {
+        await waitForRefresh(session.earliest_refresh_at);
         if (session.hosted) {
           const renewed = record(await broker(backend, id, 'renew'));
           session = validateSession(await unseal(renewed.envelope as Envelope, process.env.CODEXBOT_VAULT_KEY, binding));

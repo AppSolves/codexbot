@@ -42,7 +42,7 @@ jobs:
   review:
     needs: source
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 50 # Provider refresh eligibility can require up to 25 minutes before bounded inference.
     environment: codexbot-${{ inputs.installation_id }}-${{ inputs.credential_owner }}
     permissions:
       contents: read
