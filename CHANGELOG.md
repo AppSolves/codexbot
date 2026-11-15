@@ -1,5 +1,9 @@
 # Security and behavior changes
 
+- Add primary Fully Autonomous merging (0 humans), optional Human-in-the-Loop (1–6), owner-opted-in merge-on-approval and a repository/installation-scoped live acceptance gate. Preserve GitHub protections, native approval and exact-head checks.
+- Add explicit CLI consent and protected repository assignment for unattended reviews of authorized contributors without provider accounts. Migration 0006 scopes grants by installation/repository/owner and fences each consent generation through leases, refresh and privileged publication. Manual commands never borrow an assigned connection.
+- Make CLI provisioning the current public onboarding path; browser OAuth remains deferred and disabled until its separate client is provisioned.
+
 - Admission feedback: precise atomic quota/duplicate/cooldown/concurrency outcomes, calculated UTC retry times and durable App-owned rejection comments; deterministic denials no longer churn webhook retries. Additive migration 0005 and bounded ambiguity-safe publication recovery.
 
 ## Unreleased — security remediation pass

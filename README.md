@@ -18,26 +18,28 @@ Set `bot.trigger: "@CBReview"` to use the example above. The legacy default `@co
 
 ## Status
 
-**Pre-release.** The existing production review pipeline is operational; this change preserves it. The browser onboarding and management flow is implemented and tested locally against real workerd/D1 with synthetic GitHub/OpenAI providers. It remains disabled until the operator provisions the actual approved website OAuth client, callbacks, inference scopes and workspace claim, then completes staged acceptance. No production deployment follows from a PR or local test.
+**Release acceptance in progress.** The existing production review pipeline is operational. The browser onboarding and management flow is implemented and tested locally against real workerd/D1 with synthetic GitHub/OpenAI providers. It remains disabled until the operator provisions the actual approved website OAuth client, callbacks, inference scopes and workspace claim, then completes staged acceptance. No production deployment follows from a PR or local test.
 
-See [web onboarding, credentials and activation](docs/web-onboarding.md) for the explicit hosted credential trust boundary and remaining live gates. AI reviews can miss defects; keep independent human review and CI. Automatic merging remains disabled.
+See [web onboarding, credentials and activation](docs/web-onboarding.md) for the explicit hosted credential trust boundary and remaining live gates. AI reviews can miss defects; keep required CI and choose human oversight according to repository policy. Automatic merging remains disabled.
 
 ## What is implemented
 
-- Browser GitHub PKCE sign-in, installation reconciliation, responsive repository dashboard, reviewed setup/configuration PRs and approved-client hosted ChatGPT OAuth with encrypted Environment provisioning; signed webhook intake, installation suspension/deletion handling and replay protection.
+- Signed webhook intake, installation lifecycle handling, replay protection, durable admission feedback and isolated review execution.
 - Configurable handle and command parser, default-deny whitelist/blacklist policy, RE2 matching, live GitHub identity/permission checks, separate merge policy.
 - ChatGPT OSS OAuth with PKCE, state, nonce, issued-client/account validation, encrypted session provisioning, persistent host IDs, serialized refresh and token rotation/revocation.
 - Independent personal API-key mode; no billing fallback between modes.
 - Official Codex app-server, model-catalog effort validation and JSON-schema output validation.
 - Read-only, resource-limited review container with **no network namespace connectivity and no credentials**. A Unix-socket proxy injects credentials only into fixed OpenAI Responses requests.
-- Separate publishing job, native inline reviews, exact-commit checks, conservative approvals, and explicitly requested native exact-head merge; pending CI is held behind an App-bound required check and durable intent.
+- Separate publishing job, native inline reviews, exact-commit checks, conservative approvals, and owner-opted-in or explicitly requested native exact-head merge; pending CI is held behind an App-bound required check and durable intent.
 - App-authored setup PR when Workflows permission is granted; a temporary user-credential setup alternative and manual installation.
 
-## Browser setup
+## Installation
 
-When the operator has activated web onboarding, open the [website](https://codexbot.appsolves.workers.dev/), sign in with GitHub, install/select repositories through GitHub, choose a repository you administer, create its setup PR and connect ChatGPT or your own API key. Review and merge the PR; refresh to verify readiness. Settings propose further PRs, never silent default-branch commits. Normal onboarding requires no terminal. Public repositories support protected Environments on GitHub Free; private repositories require suitable Pro/Team/Enterprise support. Existing CLI connections remain compatible and need an explicit disconnect before switching management mode.
+This release uses **CLI-based ChatGPT connection during initial setup**. Install the GitHub App, protect the default branch, create/merge the pinned caller setup PR, and connect the repository administrator's account with the commands below. Subsequent reviews, approvals and merges run unattended on GitHub Actions; no personal computer or running CLI is required.
 
-## CLI and self-hosted setup
+Browser onboarding and browser ChatGPT connection remain deferred: `WEB_ENABLED=false` and `OPENAI_HOSTED_INFERENCE_AUTHORIZED=false`. The separate website OAuth client has not been provisioned. The approved existing CLI deployment remains supported; do not copy its client registration into website settings.
+
+## CLI setup and self-hosting
 
 Requirements: Node 24+, GitHub CLI (`gh auth login`), a GitHub App/Worker deployment, a protected default branch, and GitHub-hosted Ubuntu runners with Docker. The onboarding CLI currently requires repository administrator access to create/protect credential Environments. Windows/macOS can run onboarding; production review orchestration runs on Linux.
 
@@ -67,7 +69,15 @@ npm run cli -- connect --repository OWNER/REPO --backend https://codexbot.appsol
 npm run cli -- connect-api-key --repository OWNER/REPO --backend https://codexbot.appsolves.workers.dev
 ```
 
-The ChatGPT flow displays **Continue with ChatGPT** and opens an official authorization URL using a loopback callback. Manual `auth.json` export is unnecessary. API-key mode requires `credentials.mode: api-key` in trusted configuration. Do not keep both mode secrets in the Environment.
+The ChatGPT flow displays an official **Continue with ChatGPT** authorization URL using a loopback callback. Manual `auth.json` export is unnecessary. API-key mode requires `credentials.mode: api-key` in trusted configuration. Do not keep both mode secrets in the Environment.
+
+For automatic reviews of authorized contributors without provider accounts, the administrator explicitly provisions a repository-scoped assignment once:
+
+```sh
+npm run cli -- connect --repository OWNER/REPO --backend https://codexbot.appsolves.workers.dev --allow-automatic-reviews
+```
+
+Then propose `review.auto_review: true` and `credentials.automatic_reviewer: YOUR_LOGIN` in the protected configuration. The event actor must still pass the review policy; allow the intended contributors explicitly. Quotas are charged to the consenting credential owner. Manual commands never borrow that connection. See [unattended credential consent](docs/configuration.md#unattended-credential-consent).
 
 5. Review and merge the setup PR. Configure whitelist/merge policies and an optional custom handle in `.codexbot.yml`. Protect both the default branch and credential/publishing Environments. Comment using the handle from your setup PR. New setup chooses `@CBReview<repository_id>` to reduce collisions; existing/manual `@codexbot` configurations remain supported.
 
@@ -77,17 +87,17 @@ Accepted requests receive one editable App-owned progress comment, separate from
 
 OpenAI documents dynamic registration for OSS/local integrations and a local-to-self-hosted credential transfer. **Paid/remotely hosted ChatGPT-plan integrations require additional OpenAI authorization.** This repository does not infer that ephemeral GitHub Actions or a centrally operated public service is automatically covered. The Worker rejects ChatGPT requests until the operator sets `CHATGPT_DEPLOYMENT_AUTHORIZED=true` after establishing deployment eligibility. See [authentication](docs/authentication.md) and the [official OSS guide](https://developers.openai.com/siwc/token-sharing-open-source).
 
-That gate does not affect API-key mode. The Worker has no OpenAI key and cannot spend the operator's personal allowance for users.
+That gate does not affect API-key mode. The Worker has no shared OpenAI key. Unattended reviews may use a repository administrator’s own connection only after explicit CLI consent and trusted repository assignment; no implicit credential fallback exists.
 
 ## Configuration
 
-See [the reference](docs/configuration.md) and [example](examples/codexbot.yml). Configuration comes from the default branch, never the PR. A clean, complete result can approve; sufficiently confident high/critical findings request changes; uncertain, incomplete or advisory results comment. Quotas, cooldowns and explicit bounded --rerun prevent repeated unbounded reviews. Automatic reviews and merge are opt-in. `--merge` cannot bypass GitHub protections.
+See [the reference](docs/configuration.md) and [example](examples/codexbot.yml). Configuration comes from the default branch, never the PR. A clean, complete result can approve; sufficiently confident high/critical findings request changes; uncertain, incomplete or advisory results comment. Quotas, cooldowns and explicit bounded --rerun prevent repeated unbounded reviews. Automatic reviews and merging are opt-in. Fully Autonomous uses `merge.auto_merge_on_approval: true` and `minimum_human_approvals: 0`; Human-in-the-Loop adds 1–6 independent human approvals. With automatic merging off, `--merge` remains the explicit request. Both modes honor GitHub protections and the separate merge whitelist. See [supported merge-mode protection settings](docs/configuration.md#merge-modes).
 
 ## Development and security
 
 [Architecture](docs/architecture.md) · [Threat model](docs/security.md) · [Development](docs/development.md) · [Validation](docs/validation.md) · [Security reporting](SECURITY.md) · [Contributing](CONTRIBUTING.md)
 
-AI review can miss defects and is vulnerable to semantic prompt manipulation. Isolation protects credentials and GitHub capabilities; it cannot prove that a model's clean verdict is correct. Keep independent required CI and human review rules. Context limits intentionally disable approval when coverage is limited.
+AI review can miss defects and is vulnerable to semantic prompt manipulation. Isolation protects credentials and GitHub capabilities; it cannot prove that a model's clean verdict is correct. Keep required CI and choose additional human review rules according to your repository policy. Context limits intentionally disable approval when coverage is limited.
 
 ## Security remediation and release gates
 

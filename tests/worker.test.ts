@@ -27,7 +27,7 @@ function signed(input: unknown, secret: string, delivery = crypto.randomUUID()):
 }
 async function fixture<T>(action: (env: Env, github: ReturnType<typeof githubFixture>) => Promise<T>): Promise<T> {
   const { db, sqlite } = database(), github = githubFixture(); github.config.credentials.mode = 'api-key';
-  const env: Env = { WEB_ENABLED: 'false', GITHUB_CLIENT_ID: '', OPENAI_WEB_CLIENT_ID: '', OPENAI_WEB_AUTH_METHOD: '', OPENAI_WEB_SCOPES: '', OPENAI_HOSTED_INFERENCE_AUTHORIZED: 'false', DB: db, PUBLIC_URL: 'https://broker.invalid', GITHUB_APP_ID: '42', GITHUB_APP_SLUG: 'codexbot', GITHUB_PRIVATE_KEY: pem, GITHUB_WEBHOOK_SECRET: 'fixture-webhook-secret'.repeat(2), TRUSTED_WORKFLOW: `operator/codexbot/.github/workflows/review.yml@${RELEASE}`, CHATGPT_DEPLOYMENT_AUTHORIZED: 'false', MERGE_DEPLOYMENT_AUTHORIZED: 'false' };
+  const env: Env = { MERGE_ACCEPTANCE_REPOSITORY_ID:'',MERGE_ACCEPTANCE_INSTALLATION_ID:'',WEB_ENABLED: 'false', GITHUB_CLIENT_ID: '', OPENAI_WEB_CLIENT_ID: '', OPENAI_WEB_AUTH_METHOD: '', OPENAI_WEB_SCOPES: '', OPENAI_HOSTED_INFERENCE_AUTHORIZED: 'false', DB: db, PUBLIC_URL: 'https://broker.invalid', GITHUB_APP_ID: '42', GITHUB_APP_SLUG: 'codexbot', GITHUB_PRIVATE_KEY: pem, GITHUB_WEBHOOK_SECRET: 'fixture-webhook-secret'.repeat(2), TRUSTED_WORKFLOW: `operator/codexbot/.github/workflows/review.yml@${RELEASE}`, CHATGPT_DEPLOYMENT_AUTHORIZED: 'false', MERGE_DEPLOYMENT_AUTHORIZED: 'false' };
   const replacement: typeof fetch = async (input, init) => String(input).includes('token.actions.githubusercontent.com/.well-known/jwks') ? Response.json({ keys: [jwk] }) : github.fetcher(input, init);
   const intercepted = mock.method(globalThis, 'fetch', replacement);
   try { return await action(env, github); } finally { intercepted.mock.restore(); sqlite.close(); }
@@ -46,7 +46,7 @@ await test('retained aliases expose only public pages; privileged routes never r
   for (const path of ['/', '/health']) {
     const response = await worker.fetch(new Request(`https://retired.invalid${path}`), env); assert.equal(response.status, 200);
     if (path === '/') {
-      const page = await response.text(); assert.ok(page.includes('Get started with GitHub'));
+      const page = await response.text(); assert.ok(page.includes('CLI setup instructions'));
       assert.ok(page.includes(`<link rel="canonical" href="${DEFAULT_BACKEND}/">`)); assert.ok(!page.includes('WORKER_URL'));
     }
   }
@@ -353,4 +353,65 @@ await test('fresh invalid commands get fixed feedback; unauthorized, other-bot, 
   f.config.authorization.whitelist='alice';
   assert.equal((await worker.fetch(signed(payload('@codexbot review --bad sensitive-fixture'),env.GITHUB_WEBHOOK_SECRET),env)).status,200);
   assert.equal(f.state.comments.length,1);assert.ok(!String(f.state.comments[0]!.body).includes('sensitive-fixture'));assert.equal(f.state.reviews.length,0);
+}));
+
+await test('policy-based merge intent is admitted only for independently merge-authorized reviewers without changing the original flag',async()=>{
+  for(const allowed of [true,false])await fixture(async(env,f)=>{
+    Object.assign(f.config.merge,{enabled:true,auto_merge_on_approval:true,minimum_human_approvals:0});f.config.merge.authorization.whitelist=allowed?'alice':'bob';
+    assert.equal((await worker.fetch(signed(payload(),env.GITHUB_WEBHOOK_SECRET),env)).status,202);
+    const row=await env.DB.prepare('SELECT snapshot FROM requests').first<{snapshot:string}>();const request=JSON.parse(row!.snapshot);
+    assert.equal(request.command.merge,false);assert.equal(request.mergeIntent,allowed?'automatic':undefined);
+  });
+});
+await test('automatic reviews on PR events bind credentials and optional merge intent to the authorized event actor',async()=>fixture(async(env,f)=>{
+  f.config.review.auto_review=true;f.config.authorization.whitelist='bob';Object.assign(f.config.merge,{enabled:true,auto_merge_on_approval:true});f.config.merge.authorization.whitelist='bob';f.config.quotas.cooldown_seconds=0;
+  for(const [index,action] of ['opened','synchronize','ready_for_review'].entries()){
+    f.state.head=String(index+1).repeat(40);
+    const input={action,installation:{id:1},repository:{id:2,full_name:'owner/repo'},sender:{id:6,login:'bob',type:'User'},number:4,pull_request:{updated_at:new Date().toISOString(),head:{sha:f.state.head}}};
+    const body=JSON.stringify(input);const response=await worker.fetch(new Request('https://broker.invalid/webhook',{method:'POST',body,headers:{'x-github-event':'pull_request','x-github-delivery':crypto.randomUUID(),'x-hub-signature-256':`sha256=${createHmac('sha256',env.GITHUB_WEBHOOK_SECRET).update(body).digest('hex')}`}}),env);
+    assert.equal(response.status,202);const dispatch=f.calls.filter(call=>call.path.endsWith('/dispatches')).at(-1)!;assert.equal((dispatch.body.inputs as Record<string,string>).credential_owner,'6');
+    const row=await env.DB.prepare("SELECT id,snapshot FROM requests WHERE actor_id=6 AND state='dispatched'").first<{id:string;snapshot:string}>();assert.ok(row);assert.equal(JSON.parse(row.snapshot).mergeIntent,'automatic');
+    // Synthetic test completion permits the next distinct PR event; no provider is invoked.
+    await env.DB.prepare("UPDATE requests SET state='failed' WHERE id=?").bind(row.id).run();
+    assert.equal(await new Store(env.DB).session(2,6,1),null);await assert.rejects(new Store(env.DB).acquire(JSON.parse(row.snapshot)),/session_missing_or_in_use/);
+  }
+  assert.equal(f.calls.filter(call=>call.path.endsWith('/dispatches')).length,3);
+}));
+
+await test('unconnected authorized contributor uses only an explicitly consenting assigned administrator for PR events, never manual commands',async()=>fixture(async(env,f)=>{
+  env.CHATGPT_DEPLOYMENT_AUTHORIZED='true';f.config.credentials={mode:'chatgpt',automatic_reviewer:'alice'};f.config.authorization.whitelist='*';f.config.review.auto_review=true;
+  f.state.permissionsByLogin={alice:'admin',bob:'read'};
+  const store=new Store(env.DB);await store.saveSession(2,5,await seal({},randomSecret(),'synthetic-owner'),1);
+  const event={action:'opened',installation:{id:1},repository:{id:2,full_name:'owner/repo'},sender:{id:6,login:'bob',type:'User'},number:4,pull_request:{updated_at:new Date().toISOString(),head:{sha:HEAD}}};
+  const send=async(action:string)=>{const body=JSON.stringify({...event,action});return worker.fetch(new Request('https://broker.invalid/webhook',{method:'POST',body,headers:{'x-github-event':'pull_request','x-github-delivery':crypto.randomUUID(),'x-hub-signature-256':`sha256=${createHmac('sha256',env.GITHUB_WEBHOOK_SECRET).update(body).digest('hex')}`}}),env);};
+  assert.equal((await send('opened')).status,200);assert.equal(f.calls.filter(call=>call.path.endsWith('/dispatches')).length,0,'Configuration alone cannot borrow credentials');
+  const consent=async(body:unknown)=>worker.fetch(new Request('https://broker.invalid/v1/session?repository=owner%2Frepo',{method:'POST',headers:{Authorization:'Bearer fixture-user-token'},body:JSON.stringify(body)}),env);
+  assert.equal((await consent({enabled:true,mode:'chatgpt',actor_id:6})).status,400);
+  assert.equal((await consent({enabled:true,mode:'chatgpt'})).status,200);assert.equal((await store.automaticGrant(2,1))!.actor_id,5);
+  assert.equal((await send('reopened')).status,202);
+  const row=await env.DB.prepare('SELECT snapshot FROM requests').first<{snapshot:string}>();const request=JSON.parse(row!.snapshot);
+  assert.equal(request.actorId,5);assert.equal(request.actor,'alice');assert.deepEqual(request.triggerActor,{login:'bob',id:6});assert.equal(await store.session(2,6,1),null);
+  assert.equal((f.calls.find(call=>call.path.endsWith('/dispatches'))!.body.inputs as Record<string,string>).credential_owner,'5');
+  await store.acquire(request);await store.release(request);
+  assert.equal((await consent({enabled:false})).status,200);await assert.rejects(store.acquire(request),/automatic_review_authorization_revoked/);
+  assert.equal((await worker.fetch(new Request(`https://broker.invalid/v1/requests/${request.id}/publish`,{method:'POST',headers:{Authorization:`Bearer ${await oidc('codexbot-publish-1')}`},body:'{}'}),env)).status,403);
+  await store.transition(request.id,'dispatched','failed');
+  const manual={...payload(),sender:{id:6,login:'bob',type:'User'},comment:{...payload().comment,user:{id:6}}};
+  assert.equal((await worker.fetch(signed(manual,env.GITHUB_WEBHOOK_SECRET),env)).status,202);
+  const own=await env.DB.prepare('SELECT snapshot FROM requests WHERE actor_id=6').first<{snapshot:string}>();assert.ok(own);assert.equal(JSON.parse(own.snapshot).triggerActor,undefined);assert.equal(await store.session(2,6,1),null);
+}));
+
+await test('unconnected automation contributor requires explicit owner assignment and cannot use it for manual commands', async () => fixture(async (env,f) => {
+  f.config.credentials={mode:'api-key',automatic_reviewer:'alice'};f.config.authorization.whitelist='*';f.config.review.auto_review=true;f.state.permissionsByLogin={alice:'admin','github-actions[bot]':'read'};
+  const store=new Store(env.DB);
+  const event={action:'opened',installation:{id:1},repository:{id:2,full_name:'owner/repo'},sender:{id:41898282,login:'github-actions[bot]',type:'Bot'},number:4,pull_request:{updated_at:new Date().toISOString(),head:{sha:HEAD}}};
+  const send=async()=>{const request=signed(event,env.GITHUB_WEBHOOK_SECRET);request.headers.set('x-github-event','pull_request');return worker.fetch(request,env);};
+  assert.equal((await send()).status,200);assert.equal(f.calls.filter(call=>call.path.endsWith('/dispatches')).length,0);
+  await store.automaticConsent(2,1,5,'alice','api-key');event.action='reopened';
+  assert.equal((await send()).status,202);
+  const row=await env.DB.prepare('SELECT snapshot FROM requests').first<{snapshot:string}>();const request=JSON.parse(row!.snapshot);
+  assert.equal(request.actorId,5);assert.deepEqual(request.triggerActor,{login:'github-actions[bot]',id:41898282,type:'Bot'});
+  const manual={...payload(),sender:event.sender,comment:{...payload().comment,user:{id:41898282}}};
+  assert.equal((await worker.fetch(signed(manual,env.GITHUB_WEBHOOK_SECRET),env)).status,403);
+  assert.equal(f.calls.filter(call=>call.path.endsWith('/dispatches')).length,1);
 }));

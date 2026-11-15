@@ -72,7 +72,7 @@ export async function ingest(event: string, payload: unknown, requestId: string,
     if (typeof comment.body !== 'string' || !/^@[a-zA-Z0-9]{1,39}\s+review(?=\s|$)/i.test(comment.body.trimStart().split(/\r?\n/, 1)[0] ?? '')) return 'no_command';
   }
   const sender = record(input.sender), repository = record(input.repository), installation = record(input.installation);
-  requireCondition(sender.type === 'User' && Number.isSafeInteger(sender.id) && typeof sender.login === 'string', 'human_sender_required', 403);
+  requireCondition((sender.type === 'User' || (automatic && sender.type === 'Bot')) && Number.isSafeInteger(sender.id) && typeof sender.login === 'string', 'human_sender_required', 403);
   const fullName = String(repository.full_name), repo = splitRepo(fullName);
   await verifiedInstallation(await appClient(env), fullName, Number(installation.id));
   const { github } = await installationClient(env, Number(installation.id), Number(repository.id), { contents: 'read', pull_requests: 'write', actions: 'write' });
@@ -81,8 +81,18 @@ export async function ingest(event: string, payload: unknown, requestId: string,
   const { data: branch } = await github.rest.repos.getBranch({ ...repo, branch: liveRepo.default_branch });
   const config = await trustedConfig(github, fullName, branch.commit.sha);
   if (!config.review.enabled || (!manual && !config.review.auto_review)) return 'disabled';
-  const livePermission = await permission(github, fullName, sender.login, Number(sender.id));
+  requireCondition(sender.type === 'User' || Boolean(config.credentials.automatic_reviewer), 'human_sender_required', 403);
+  let livePermission = await permission(github, fullName, sender.login, Number(sender.id), sender.type as 'User' | 'Bot');
   requireCondition(authorize(sender.login, livePermission, config.authorization), 'review_not_authorized', 403);
+  let actor=sender.login,actorId=Number(sender.id),automaticGrantId:string|undefined;
+  if (automatic && config.credentials.automatic_reviewer) {
+    const grant=await store.automaticGrant(liveRepo.id,Number(installation.id));
+    if (!grant || grant.actor.toLowerCase()!==config.credentials.automatic_reviewer.toLowerCase() || grant.credential_mode!==config.credentials.mode) return 'automatic_credential_not_authorized';
+    actor=grant.actor;actorId=grant.actor_id;automaticGrantId=grant.id;
+    livePermission=await permission(github,fullName,actor,actorId);
+    requireCondition(livePermission==='admin' && authorize(actor,livePermission,config.authorization),'automatic_reviewer_not_authorized',403);
+    if (config.credentials.mode==='chatgpt' && !await store.session(liveRepo.id,actorId,Number(installation.id))) return 'automatic_credential_not_connected';
+  }
   let prNumber: number;
   let command;
   const reject = async (code: RejectionCode): Promise<string> => {
@@ -123,8 +133,9 @@ export async function ingest(event: string, payload: unknown, requestId: string,
   requireCondition(Number.isSafeInteger(pr.commits) && pr.commits > 0 && Number.isSafeInteger(pr.changed_files) && pr.changed_files >= 0, 'invalid_pr_counts');
   let snapshot: RequestSnapshot = {
     id: requestId, installationId: Number(installation.id), repositoryId: liveRepo.id, ownerId: liveRepo.owner.id,
+    ...(!command.merge && config.merge.enabled && config.merge.auto_merge_on_approval && authorize(actor,livePermission,config.merge.authorization,true) ? {mergeIntent:'automatic' as const} : {}),
     repository: liveRepo.full_name, defaultBranch: liveRepo.default_branch, workflowSha: branch.commit.sha,
-    head: pr.head.sha, base: pr.base.sha, pr: prNumber, actor: sender.login, actorId: Number(sender.id), command, config, createdAt: Date.now(), ...(manual && Number.isSafeInteger(record(input.comment).id) ? {commandId:Number(record(input.comment).id)} : {}), commits: pr.commits, changedFiles: pr.changed_files
+    head: pr.head.sha, base: pr.base.sha, pr: prNumber, actor, actorId, ...(automaticGrantId ? {triggerActor:{login:sender.login,id:Number(sender.id),...(sender.type==='Bot'?{type:'Bot' as const}:{})},automaticGrantId} : {}), command, config, createdAt: Date.now(), ...(manual && Number.isSafeInteger(record(input.comment).id) ? {commandId:Number(record(input.comment).id)} : {}), commits: pr.commits, changedFiles: pr.changed_files
   };
   try { snapshot = await store.create(snapshot, env.TRUSTED_WORKFLOW, manual); }
   catch (error) {

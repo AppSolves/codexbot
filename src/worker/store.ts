@@ -10,7 +10,7 @@ import { MAX_REVIEW_BYTES, MAX_RECOVERY_ATTEMPTS, RECOVERY_LEASE_MS, REQUEST_LIF
 export interface RequestSnapshot {
   id: string; installationId: number; repositoryId: number; ownerId: number; repository: string; defaultBranch: string;
   workflowSha: string; head: string; base: string; pr: number; actor: string; actorId: number; command: ReviewCommand; config: Config; createdAt: number;
-  commits?: number; changedFiles?: number; commandId?: number;
+  commits?: number; changedFiles?: number; commandId?: number; mergeIntent?: 'automatic'; triggerActor?: { login: string; id: number; type?: 'User' | 'Bot' }; automaticGrantId?: string;
 }
 export interface RequestRow {
   id: string; snapshot: string; state: string; run_id: string | null; review_id: number | null; result: string | null; context_complete: number;
@@ -56,7 +56,7 @@ export class Store {
     const command = { ...snapshot.command }; delete command.rerun;
     const key = await sha256(JSON.stringify({ installation: snapshot.installationId, repository: snapshot.repositoryId, owner: snapshot.ownerId,
       actor: snapshot.actorId, pr: snapshot.pr, head: snapshot.head, base: snapshot.base, branch: snapshot.defaultBranch,
-      workflow: snapshot.workflowSha, trustedWorkflow, config: snapshot.config, command, rerun: snapshot.command.rerun ? snapshot.commandId ?? snapshot.id : null }));
+      workflow: snapshot.workflowSha, trustedWorkflow, config: snapshot.config, command, mergeIntent: snapshot.mergeIntent ?? null, automaticGrantId:snapshot.automaticGrantId ?? null, rerun: snapshot.command.rerun ? snapshot.commandId ?? snapshot.id : null }));
     const now = Date.now(), q = snapshot.config.quotas, day = now - 86_400_000, cooldown = now - q.cooldown_seconds * 1000;
     const insert = this.db.prepare(`INSERT OR IGNORE INTO requests(id,installation_id,repository_id,actor_id,snapshot,created_at,request_key,rerun)
       SELECT ?,?,?,?,?,?,?,? WHERE
@@ -126,7 +126,7 @@ export class Store {
     const newer = await this.db.prepare(`SELECT 1 FROM requests current JOIN requests newer ON newer.installation_id=current.installation_id AND newer.repository_id=current.repository_id
       AND json_extract(newer.snapshot,'$.pr')=json_extract(current.snapshot,'$.pr') AND newer.created_at>=current.created_at AND newer.id!=current.id WHERE current.id=? LIMIT 1`).bind(id).first();
     requireCondition(!newer, 'review_request_superseded', 409);
-    const result = await this.db.prepare(`UPDATE requests SET publish_until=? WHERE id=? AND publish_lease=? AND publish_until>? AND state='publishing'`)
+    const result = await this.db.prepare(`UPDATE requests SET publish_until=? WHERE id=? AND publish_lease=? AND publish_until>? AND state='publishing' AND (json_extract(snapshot,'$.triggerActor') IS NULL OR EXISTS(SELECT 1 FROM automatic_review_grants g WHERE g.installation_id=requests.installation_id AND g.repository_id=requests.repository_id AND g.actor_id=requests.actor_id AND g.id=json_extract(snapshot,'$.automaticGrantId')))`)
       .bind(Date.now() + RECOVERY_LEASE_MS, id, lease, Date.now()).run(); requireCondition(result.meta.changes === 1, 'publication_lease_lost', 409);
   }
   async published(id: string, reviewId: number, lease: string): Promise<void> {
@@ -191,10 +191,10 @@ export class Store {
       .bind(encoded, complete ? 1 : 0, id, runId).run(); requireCondition(result.meta.changes === 1, 'review_result_already_recorded', 409);
   }
   async removeInstallation(id: number): Promise<void> {
-    await this.db.batch([this.db.prepare('DELETE FROM review_rejections WHERE installation_id=?').bind(id), this.db.prepare('DELETE FROM sessions WHERE installation_id=?').bind(id), this.db.prepare('DELETE FROM requests WHERE installation_id=?').bind(id), this.db.prepare('DELETE FROM legacy_sessions WHERE installation_id=?').bind(id), this.db.prepare('DELETE FROM web_connections WHERE installation_id=?').bind(id), this.db.prepare('DELETE FROM web_operations WHERE installation_id=?').bind(id)]);
+    await this.db.batch([this.db.prepare('DELETE FROM automatic_review_grants WHERE installation_id=?').bind(id), this.db.prepare('DELETE FROM review_rejections WHERE installation_id=?').bind(id), this.db.prepare('DELETE FROM sessions WHERE installation_id=?').bind(id), this.db.prepare('DELETE FROM requests WHERE installation_id=?').bind(id), this.db.prepare('DELETE FROM legacy_sessions WHERE installation_id=?').bind(id), this.db.prepare('DELETE FROM web_connections WHERE installation_id=?').bind(id), this.db.prepare('DELETE FROM web_operations WHERE installation_id=?').bind(id)]);
   }
   async removeRepository(repositoryId: number, installationId: number): Promise<void> {
-    await this.db.batch([this.db.prepare('DELETE FROM review_rejections WHERE repository_id=? AND installation_id=?').bind(repositoryId, installationId), this.db.prepare('DELETE FROM sessions WHERE repository_id=? AND installation_id=?').bind(repositoryId, installationId),
+    await this.db.batch([this.db.prepare('DELETE FROM automatic_review_grants WHERE repository_id=? AND installation_id=?').bind(repositoryId, installationId), this.db.prepare('DELETE FROM review_rejections WHERE repository_id=? AND installation_id=?').bind(repositoryId, installationId), this.db.prepare('DELETE FROM sessions WHERE repository_id=? AND installation_id=?').bind(repositoryId, installationId),
       this.db.prepare('DELETE FROM requests WHERE repository_id=? AND installation_id=?').bind(repositoryId, installationId),
       this.db.prepare('DELETE FROM legacy_sessions WHERE repository_id=? AND installation_id=?').bind(repositoryId, installationId)]);
     await this.db.batch([this.db.prepare('DELETE FROM web_connections WHERE repository_id=? AND installation_id=?').bind(repositoryId, installationId), this.db.prepare('DELETE FROM web_operations WHERE repository_id=? AND installation_id=?').bind(repositoryId, installationId)]);
@@ -204,21 +204,45 @@ export class Store {
     return row ? { envelope: JSON.parse(row.envelope) as Envelope, version: row.version } : null;
   }
   async saveSession(repositoryId: number, actorId: number, envelope: Envelope, installationId: number): Promise<void> {
-    const result = await this.db.prepare(`INSERT INTO sessions(repository_id,actor_id,envelope,installation_id) SELECT ?,?,?,? WHERE NOT EXISTS(SELECT 1 FROM web_operations WHERE installation_id=? AND repository_id=? AND lease_until>?)
+    const value=JSON.stringify(envelope);
+    const insert=this.db.prepare(`INSERT INTO sessions(repository_id,actor_id,envelope,installation_id) SELECT ?,?,?,? WHERE NOT EXISTS(SELECT 1 FROM web_operations WHERE installation_id=? AND repository_id=? AND lease_until>?)
       ON CONFLICT(installation_id,repository_id,actor_id) DO UPDATE SET envelope=excluded.envelope,version=sessions.version+1 WHERE sessions.lease_until<?`)
-      .bind(repositoryId, actorId, JSON.stringify(envelope), installationId, installationId, repositoryId, Date.now(), Date.now()).run(); requireCondition(result.meta.changes === 1, 'session_busy', 409);
+      .bind(repositoryId,actorId,value,installationId,installationId,repositoryId,Date.now(),Date.now());
+    const [result]=await this.db.batch([insert,this.db.prepare(`DELETE FROM automatic_review_grants WHERE repository_id=? AND installation_id=? AND actor_id=?
+      AND EXISTS(SELECT 1 FROM sessions WHERE repository_id=? AND installation_id=? AND actor_id=? AND envelope=?)`).bind(repositoryId,installationId,actorId,repositoryId,installationId,actorId,value)]);
+    requireCondition(result!.meta.changes===1,'session_busy',409);
   }
+  async automaticGrant(repositoryId: number,installationId: number): Promise<{id:string;actor_id:number;actor:string;credential_mode:string}|null> {
+    return this.db.prepare('SELECT id,actor_id,actor,credential_mode FROM automatic_review_grants WHERE installation_id=? AND repository_id=?').bind(installationId,repositoryId).first();
+  }
+  async authorizeAutomatic(snapshot: RequestSnapshot): Promise<void> {
+    if (!snapshot.triggerActor) return;
+    const grant=await this.automaticGrant(snapshot.repositoryId,snapshot.installationId);
+    requireCondition(grant && grant.id===snapshot.automaticGrantId && grant.actor_id===snapshot.actorId && grant.actor.toLowerCase()===snapshot.actor.toLowerCase() &&
+      grant.credential_mode===snapshot.config.credentials.mode && snapshot.config.credentials.automatic_reviewer?.toLowerCase()===snapshot.actor.toLowerCase(),'automatic_review_authorization_revoked',403);
+  }
+  async automaticConsent(repositoryId:number,installationId:number,actorId:number,actor:string,mode:'chatgpt'|'api-key'|null): Promise<void> {
+    if (!mode) {await this.db.prepare('DELETE FROM automatic_review_grants WHERE installation_id=? AND repository_id=? AND actor_id=?').bind(installationId,repositoryId,actorId).run();return;}
+    const result=await this.db.prepare(`INSERT INTO automatic_review_grants(installation_id,repository_id,id,actor_id,actor,credential_mode,granted_at)
+      SELECT ?,?,?,?,?,?,? WHERE ?='api-key' OR EXISTS(SELECT 1 FROM sessions WHERE installation_id=? AND repository_id=? AND actor_id=?)
+      ON CONFLICT(installation_id,repository_id) DO UPDATE SET id=excluded.id,actor_id=excluded.actor_id,actor=excluded.actor,credential_mode=excluded.credential_mode,granted_at=excluded.granted_at`)
+      .bind(installationId,repositoryId,crypto.randomUUID(),actorId,actor,mode,Date.now(),mode,installationId,repositoryId,actorId).run();
+    requireCondition(result.meta.changes===1,'connect_own_credentials_before_automatic_consent',409);
+  }
+
   async acquire(snapshot: RequestSnapshot): Promise<void> {
-    const result = await this.db.prepare('UPDATE sessions SET lease_request=?,lease_until=? WHERE repository_id=? AND actor_id=? AND installation_id=? AND (lease_until<? OR lease_request=?) AND NOT EXISTS(SELECT 1 FROM web_operations WHERE installation_id=? AND repository_id=? AND lease_until>?)')
-      .bind(snapshot.id, Date.now() + REQUEST_LIFETIME_MS, snapshot.repositoryId, snapshot.actorId, snapshot.installationId, Date.now(), snapshot.id, snapshot.installationId, snapshot.repositoryId, Date.now()).run(); requireCondition(result.meta.changes === 1, 'session_missing_or_in_use', 409);
+    await this.authorizeAutomatic(snapshot);
+    const result = await this.db.prepare('UPDATE sessions SET lease_request=?,lease_until=? WHERE repository_id=? AND actor_id=? AND installation_id=? AND (lease_until<? OR lease_request=?) AND NOT EXISTS(SELECT 1 FROM web_operations WHERE installation_id=? AND repository_id=? AND lease_until>?) AND (?=0 OR EXISTS(SELECT 1 FROM automatic_review_grants WHERE installation_id=? AND repository_id=? AND actor_id=? AND actor=? AND credential_mode=? AND id=?))')
+      .bind(snapshot.id, Date.now() + REQUEST_LIFETIME_MS, snapshot.repositoryId, snapshot.actorId, snapshot.installationId, Date.now(), snapshot.id, snapshot.installationId, snapshot.repositoryId, Date.now(), snapshot.triggerActor ? 1 : 0, snapshot.installationId,snapshot.repositoryId,snapshot.actorId,snapshot.actor,snapshot.config.credentials.mode,snapshot.automaticGrantId ?? null).run(); requireCondition(result.meta.changes === 1, 'session_missing_or_in_use', 409);
   }
   async rotate(snapshot: RequestSnapshot, version: number, envelope: Envelope, operationLease: string | null = null): Promise<void> {
-    const result = await this.db.prepare('UPDATE sessions SET envelope=?,version=version+1 WHERE repository_id=? AND actor_id=? AND installation_id=? AND version=? AND lease_request=? AND lease_until>? AND (? IS NULL OR EXISTS(SELECT 1 FROM web_operations WHERE installation_id=? AND repository_id=? AND lease=? AND lease_until>?))')
-      .bind(JSON.stringify(envelope), snapshot.repositoryId, snapshot.actorId, snapshot.installationId, version, snapshot.id, Date.now(), operationLease, snapshot.installationId, snapshot.repositoryId, operationLease, Date.now()).run(); requireCondition(result.meta.changes === 1, 'session_rotation_conflict_reconnect_required', 409);
+    const result = await this.db.prepare('UPDATE sessions SET envelope=?,version=version+1 WHERE repository_id=? AND actor_id=? AND installation_id=? AND version=? AND lease_request=? AND lease_until>? AND (? IS NULL OR EXISTS(SELECT 1 FROM web_operations WHERE installation_id=? AND repository_id=? AND lease=? AND lease_until>?)) AND (?=0 OR EXISTS(SELECT 1 FROM automatic_review_grants WHERE installation_id=? AND repository_id=? AND actor_id=? AND id=?))')
+      .bind(JSON.stringify(envelope), snapshot.repositoryId, snapshot.actorId, snapshot.installationId, version, snapshot.id, Date.now(), operationLease, snapshot.installationId, snapshot.repositoryId, operationLease, Date.now(),snapshot.triggerActor?1:0,snapshot.installationId,snapshot.repositoryId,snapshot.actorId,snapshot.automaticGrantId??null).run(); requireCondition(result.meta.changes === 1, 'session_rotation_conflict_reconnect_required', 409);
   }
   async deleteSession(repositoryId: number, actorId: number, installationId: number): Promise<void> {
     const removed = await this.db.prepare('DELETE FROM sessions WHERE repository_id=? AND actor_id=? AND installation_id=? AND NOT EXISTS(SELECT 1 FROM web_operations WHERE installation_id=? AND repository_id=? AND lease_until>?)')
       .bind(repositoryId, actorId, installationId, installationId, repositoryId, Date.now()).run();
+    if (!await this.session(repositoryId,actorId,installationId)) await this.automaticConsent(repositoryId,installationId,actorId,'',null);
     requireCondition(removed.meta.changes || !await this.session(repositoryId, actorId, installationId), 'session_busy', 409);
   }
   async release(snapshot: RequestSnapshot): Promise<void> {

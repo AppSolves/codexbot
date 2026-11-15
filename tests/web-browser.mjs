@@ -62,10 +62,13 @@ try {
   assert.equal((await (await context.request.get(origin+'/__fixture/state')).json()).pulls,1);
   await page.goto(repository); await page.getByText('Review policy & configuration',{exact:true}).click();
   await page.locator('[name="review.model"]').selectOption('gpt-6.1-sol'); await page.locator('[name="review.effort"]').selectOption('high'); await page.locator('[name="review.auto_approve"]').uncheck();
+  await page.getByLabel('Merge mode',{exact:true}).selectOption('0'); await page.locator('[name="merge.auto_merge_on_approval"]').check();
+  await page.getByLabel('Merge mode',{exact:true}).selectOption('2');
   await page.getByRole('button',{name:'Propose configuration / workflow update'}).click(); await page.getByRole('heading',{name:'Changes proposed.'}).waitFor();
   assert.equal((await (await context.request.get(origin+'/__fixture/state')).json()).pulls,2);
   await page.goto(repository); await page.getByText('Review policy & configuration',{exact:true}).click();
   assert.equal(await page.locator('[name="review.auto_approve"]').isChecked(),true,'Policy cannot change before PR merge');
+  assert.equal(await page.locator('[name="merge.auto_merge_on_approval"]').isChecked(),false); assert.equal(await page.getByLabel('Merge mode',{exact:true}).inputValue(),'0');
   const csrfRejected = await context.request.post(origin+'/dashboard/setup',{headers:{origin:'https://evil.invalid'},form:{installation:'1',repository:'2',csrf:'forged'}}); assert.equal(csrfRejected.status(),403);
   const foreign = await page.goto(`${origin}/dashboard/repository?installation=9&repository=2`); assert.equal(foreign.status(),403);
   await page.goto(repository); await page.setViewportSize({width:390,height:844}); assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true); await page.setViewportSize({width:1440,height:1000});

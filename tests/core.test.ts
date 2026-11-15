@@ -1,3 +1,4 @@
+import { deploymentMergeEnabled } from '../src/core/review.js';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parseCommand, validateHandle, EFFORTS } from '../src/core/command.js';
@@ -113,4 +114,26 @@ await test('review text neutralizes remote-image markdown, HTML and mass mention
   const value = publicText('![leak](https://evil.invalid) <img src=x> @everyone');
   assert.ok(!value.includes('<img')); assert.ok(!value.includes('@everyone')); assert.ok(!value.includes('![leak]'));
   assert.ok(!publicText('sk-fixtureabcdefghijklmnop123').includes('fixtureabcdefghijklmnop123'));
+});
+
+await test('merge mode schema permits zero through six humans and never silently opts into automatic merging',()=>{
+  const defaults=parseConfig('');assert.equal(defaults.merge.minimum_human_approvals,0);assert.equal(defaults.merge.auto_merge_on_approval,false);assert.equal(defaults.merge.enabled,false);
+  for(let humans=0;humans<=6;humans++)assert.equal(parseConfig(`merge: {enabled: true, auto_merge_on_approval: true, minimum_human_approvals: ${humans}}`).merge.minimum_human_approvals,humans);
+  for(const value of [-1,0.5,7])assert.throws(()=>parseConfig(`merge: {minimum_human_approvals: ${value}}`));
+});
+
+await test('disposable merge acceptance never enables a foreign repository, installation or the global gate',()=>{
+  const env={MERGE_DEPLOYMENT_AUTHORIZED:'false',MERGE_ACCEPTANCE_REPOSITORY_ID:'2',MERGE_ACCEPTANCE_INSTALLATION_ID:'1'};
+  assert.equal(deploymentMergeEnabled(env,{repositoryId:2,installationId:1}),true);
+  assert.equal(deploymentMergeEnabled(env,{repositoryId:3,installationId:1}),false);assert.equal(deploymentMergeEnabled(env,{repositoryId:2,installationId:9}),false);
+  assert.equal(deploymentMergeEnabled({MERGE_DEPLOYMENT_AUTHORIZED:'false'},{repositoryId:2,installationId:1}),false);
+  assert.equal(deploymentMergeEnabled({...env,MERGE_ACCEPTANCE_REPOSITORY_ID:''},{repositoryId:2,installationId:1}),false);
+  assert.equal(env.MERGE_DEPLOYMENT_AUTHORIZED,'false');
+});
+
+await test('verified bot policy identities allow only the literal platform suffix without changing command handles', () => {
+  assert.equal(policyAllows('github-actions[bot]',{whitelist:'*',blacklist:'*'}),true);
+  assert.equal(policyAllows('github-actions[bot]',{whitelist:'*',blacklist:'re:github-actions\\[bot\\]'}),false);
+  for(const login of ['github-actions[other]','github-actions[bot]x','github-actions[bot]\n','github-actions[bot]@other']) assert.equal(policyAllows(login,{whitelist:'*',blacklist:'*'}),false);
+  assert.throws(()=>validateHandle('@github-actions[bot]'));
 });

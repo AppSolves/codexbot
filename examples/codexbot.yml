@@ -16,14 +16,16 @@ review:
   advisory_confidence: 0.7
 merge:
   enabled: false
+  auto_merge_on_approval: false # Explicit opt-in; otherwise --merge is required.
   method: squash
-  minimum_human_approvals: 1
+  minimum_human_approvals: 0 # Fully Autonomous. Use 1–6 for Human-in-the-Loop.
   guard_check: "CodexBot reviewed commit"
   authorization:
     whitelist: ""
     blacklist: "*"
 credentials:
   mode: chatgpt # Or api-key. No automatic paid fallback.
+  automatic_reviewer: null # Administrator login, after explicit --allow-automatic-reviews consent.
 quotas:
   user_per_day: 10
   repository_per_day: 40

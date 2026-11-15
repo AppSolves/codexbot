@@ -25,9 +25,9 @@ export async function installationClient(env: GitHubCredentials, installation: n
   const { data } = await app.rest.apps.createInstallationAccessToken({ installation_id: installation, repository_ids: [repositoryId], permissions });
   return { github: client(data.token), token: data.token };
 }
-export async function permission(github: Octokit, repository: string, login: string, expectedId?: number): Promise<RepositoryPermission> {
+export async function permission(github: Octokit, repository: string, login: string, expectedId?: number, expectedType: 'User' | 'Bot' = 'User'): Promise<RepositoryPermission> {
   const { data } = await github.rest.repos.getCollaboratorPermissionLevel({ ...splitRepo(repository), username: login });
-  if (expectedId !== undefined) requireCondition(data.user?.id === expectedId && data.user.type === 'User', 'permission_identity_changed', 403);
+  if (expectedId !== undefined) requireCondition(data.user?.id === expectedId && data.user.type === expectedType, 'permission_identity_changed', 403);
   return data.permission as RepositoryPermission;
 }
 export async function verifyActor(github: Octokit, login: string, id: number): Promise<void> {

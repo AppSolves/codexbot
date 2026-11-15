@@ -1,3 +1,4 @@
+import { configurationFields } from '../src/worker/onboarding.js';
 import { test, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPair, exportPKCS8 } from 'jose';
@@ -178,4 +179,12 @@ await test('browser encryption is bound to origin and ID; uninstall removes only
     await new Store(f.db).removeInstallation(1);
     assert.deepEqual(f.sqlite.prepare('SELECT installation_id FROM web_connections').all().map(row => row.installation_id), [9]);
   } finally { f.close(); }
+});
+
+await test('browser merge modes use canonical reviewed settings and retain explicit opt-in and human limits',()=>{
+  const html=configurationFields(DEFAULT_CONFIG);assert.ok(html.includes('Fully Autonomous'));assert.ok(html.includes('Human-in-the-Loop'));assert.ok(html.includes('GitHub repository protections still apply'));
+  const form=configForm();form.set('merge.enabled','true');form.set('merge.auto_merge_on_approval','true');form.set('merge.minimum_human_approvals','0');
+  const autonomous=configurationFromForm(form);assert.equal(autonomous.merge.minimum_human_approvals,0);assert.equal(autonomous.merge.auto_merge_on_approval,true);
+  form.set('merge.minimum_human_approvals','2');assert.equal(configurationFromForm(form).merge.minimum_human_approvals,2);
+  form.append('merge.minimum_human_approvals','0');assert.throws(()=>configurationFromForm(form),/duplicate_configuration_field/);
 });

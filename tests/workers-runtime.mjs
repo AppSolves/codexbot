@@ -33,7 +33,7 @@ try {
   assert.ok(ready, 'Local workerd did not start');
   const body = '{}', delivery = randomUUID();
   const post = signature => globalThis.fetch(`${origin}/webhook`, { method: 'POST', body, headers: { 'x-github-event': 'ping', 'x-github-delivery': delivery, 'x-hub-signature-256': signature } });
-  const page = await globalThis.fetch(`${origin}/`); assert.equal(page.status, 200); assert.ok((await page.text()).includes('Get started with GitHub'));
+  const page = await globalThis.fetch(`${origin}/`); assert.equal(page.status, 200); assert.ok((await page.text()).includes('CLI setup instructions'));
   const foreign = await globalThis.fetch(`${origin}/v1/session`, { headers: { Origin: 'https://retired.invalid' } });
   assert.equal(foreign.status, 403); assert.equal(foreign.headers.get('location'), null);
   assert.equal((await globalThis.fetch(`${origin}/v1/session`)).status, 401);
@@ -53,7 +53,8 @@ try {
   assert.deepEqual(leases, [{ installation_id: 1, lease_request: null }, { installation_id: 9, lease_request: 'other-installation' }]);
   const admission=await (await globalThis.fetch(`${origin}/__admission-contract`)).json();
   assert.deepEqual(admission,{accepted:1,rejected:true,outcomes:[{outcome:'duplicate_review',phase:'pending'}]});
-  process.stdout.write('Real workerd + D1: atomic admission/outbox, migrations, HMAC, receipts, cron, expired requests and cross-installation lease cleanup passed.\n');
+  const automatic=await(await globalThis.fetch(`${origin}/__automatic-contract`)).json();assert.deepEqual(automatic,{rotateDenied:true,publishDenied:true,otherInstallation:null});
+  process.stdout.write('Real workerd + D1: owner-consent generation fencing,  atomic admission/outbox, migrations, HMAC, receipts, cron, expired requests and cross-installation lease cleanup passed.\n');
 } finally {
   if (child?.pid) {
     if (process.platform === 'win32') execFileSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
