@@ -92,7 +92,7 @@ await test('renamed, deleted, added and executable files preserve required evide
   for (const options of [{ status: 'renamed' }, { status: 'removed' }, { status: 'added' }, { mode: '100755' }]) assert.equal((await fixture(options)).result.complete, true);
 });
 await test('missing or oversized diffs are explicitly incomplete even with complete source', async () => {
-  for (const patch of ['', '@@ -1 +1 @@\n-old\n+' + 'x'.repeat(3_000_000)]) {
+  for (const patch of ['', '@@ -1 +1 @@\n-old\n+' + 'x'.repeat(6_000_001)]) {
     const { result } = await fixture({ patch }); assert.equal(result.diffComplete, false); assert.equal(result.complete, false);
   }
   await assert.rejects(fixture({ missingFiles: true }), /diff_truncated/);

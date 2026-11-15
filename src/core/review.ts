@@ -6,9 +6,9 @@ import { scanSecrets } from './dlp.js';
 import { MAX_RAW_REVIEW_BYTES, MAX_REVIEW_BYTES } from './limits.js';
 const SOURCE_TOKEN = RE2JS.compile(String.raw`\b(?:sk-[a-zA-Z0-9_-]{16,}|gh[pousr]_[a-zA-Z0-9_]{20,}|github_pat_[a-zA-Z0-9_]{20,}|eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]{16,})\b`);
 
-export interface Finding { severity: 'critical' | 'high' | 'medium' | 'low'; confidence: number; path: string; line: number; side: 'LEFT' | 'RIGHT'; title: string; explanation: string; remediation: string }
+export interface Finding { severity: 'critical' | 'high' | 'medium' | 'low'; confidence: number; path: string; line: number | null; side: 'LEFT' | 'RIGHT'; title: string; explanation: string; remediation: string }
 export interface Review { head_sha: string; result: 'clean' | 'findings' | 'inconclusive'; complete: boolean; summary: string; findings: Finding[]; output_truncated?: boolean; quarantined?: boolean }
-export function reviewSummary(review: Review, event: 'APPROVE' | 'COMMENT' | 'REQUEST_CHANGES', contextComplete: boolean): string {
+export function reviewSummary(review: Review, event: 'APPROVE' | 'COMMENT' | 'REQUEST_CHANGES', contextComplete: boolean, binaryFiles = 0): string {
   const complete = review.complete && contextComplete && !review.quarantined && !review.output_truncated && review.result !== 'inconclusive';
   const counts = (['critical','high','medium','low'] as const).flatMap(severity => {
     const count = review.findings.filter(finding => finding.severity === severity).length;
@@ -17,11 +17,13 @@ export function reviewSummary(review: Review, event: 'APPROVE' | 'COMMENT' | 'RE
   const status = !complete ? 'Review incomplete. Required evidence or reliable analysis was unavailable.'
     : event === 'REQUEST_CHANGES' ? 'Changes requested.' : 'Review complete.';
   const findings = counts.length ? `Found ${counts.join(', ')} severity ${review.findings.length === 1 ? 'issue' : 'issues'}.` : complete ? 'No actionable issues found.' : 'No approval is authorized.';
-  return `**CodexBot Review**\n\n${status} ${findings}\n\n${publicText(review.summary)}${event === 'COMMENT' && complete ? '\n\nThis review is advisory. No changes were formally requested.' : ''}\n\nTests were not executed in the isolated review environment.`;
+  return `**CodexBot Review**\n\n${status} ${findings}\n\n${publicText(review.summary)}${binaryFiles ? `\n\n${binaryFiles} PNG image change(s): immutable Git evidence verified; base/head images supplied to vision-capable Codex. An incomplete visual analysis cannot authorize approval or merge.` : ''}${review.findings.filter(f=>f.line===null).map(f=>`\n\n**${f.severity.toUpperCase()} image finding: ${publicText(f.path)} (${f.side}) — ${publicText(f.title)}**\n\n${publicText(f.explanation)}\n\n${publicText(f.remediation)}\n\nConfidence: ${f.confidence}`).join('')}${event === 'COMMENT' && complete ? '\n\nThis review is advisory. No changes were formally requested.' : ''}\n\nTests were not executed in the isolated review environment.`;
 }
-export function failedReview(head: string): Review {
+export function failedReview(head: string, contextCode?: string): Review {
+  const reasons:Record<string,string>={context_api_budget:'The 768-call source-collection budget was exceeded.',context_collection_timeout:'Source collection exceeded 120 seconds.',context_diff_size_limit:'Serialized text changes exceeded 6 MB.',context_byte_budget:'Essential source exceeded the 16 MB budget.',context_file_size_limit:'An essential source file exceeds 512 KB.',context_binary_size_limit:'Binary evidence exceeds 2 MB per file or 8 MB total.',context_unsupported_binary:'A missing patch could not be verified as a supported PNG image; unsupported binaries require manual inspection.',context_text_patch_truncated:'A textual patch is missing or truncated.'};
+  const contextSummary=contextCode ? (reasons[contextCode] ?? 'Essential source, dependencies or Git evidence could not be verified.')+' No AI inference was started. Reduce or split the PR, or inspect unsupported evidence manually. No approval or merge is authorized.' : null;
   return { head_sha: head, result: 'inconclusive', complete: false,
-    summary: 'CodexBot could not complete a valid review. Check workflow configuration, authentication, selected model access and usage allowance. No approval or merge is authorized.', findings: [] };
+    summary: contextSummary ?? 'CodexBot could not complete a valid review. Check workflow configuration, authentication, selected model access and usage allowance. No approval or merge is authorized.', findings: [] };
 }
 export interface ChangedFile { filename: string; previous_filename?: string; status: string; patch?: string; additions?: number; deletions?: number }
 export const REVIEW_SCHEMA = {
@@ -32,7 +34,7 @@ export const REVIEW_SCHEMA = {
     findings: { type: 'array', maxItems: 40, items: { type: 'object', additionalProperties: false,
       required: ['severity', 'confidence', 'path', 'line', 'side', 'title', 'explanation', 'remediation'], properties: {
         severity: { enum: ['critical', 'high', 'medium', 'low'] }, confidence: { type: 'number', minimum: 0, maximum: 1 },
-        path: { type: 'string', minLength: 1, maxLength: 512 }, line: { type: 'integer', minimum: 1, maximum: 10_000_000 }, side: { enum: ['LEFT', 'RIGHT'] },
+        path: { type: 'string', minLength: 1, maxLength: 512 }, line: { type: ['integer','null'], minimum: 1, maximum: 10_000_000 }, side: { enum: ['LEFT', 'RIGHT'] },
         title: { type: 'string', minLength: 1, maxLength: 200 }, explanation: { type: 'string', minLength: 1, maxLength: 4000 }, remediation: { type: 'string', maxLength: 2000 }
       }
     } }
@@ -99,7 +101,7 @@ export function completePatch(file: ChangedFile): boolean {
   return hunks > 0 && actualLeft === expectedLeft && actualRight === expectedRight &&
     (file.additions === undefined || additions === file.additions) && (file.deletions === undefined || deletions === file.deletions);
 }
-export function validateReview(value: unknown, head: string, files: ChangedFile[]): Review {
+export function validateReview(value: unknown, head: string, files: ChangedFile[], binarySides:ReadonlySet<string> = new Set()): Review {
   requireCondition(validate(value), 'invalid_review_schema');
   requireCondition(value.head_sha === head, 'review_head_mismatch', 409);
   requireCondition(!(value.result === 'clean' && (value.findings.length > 0 || !value.complete)), 'contradictory_clean_review');
@@ -108,7 +110,7 @@ export function validateReview(value: unknown, head: string, files: ChangedFile[
   for (const finding of value.findings) {
     requireCondition(safePath(finding.path), 'invalid_finding_path');
     const file = files.find(x => x.filename === finding.path);
-    requireCondition(file && changedLines(file).has(`${finding.side}:${finding.line}`), 'finding_not_on_changed_line');
+    requireCondition(file && (finding.line===null?binarySides.has(`${finding.side}:${finding.path}`):changedLines(file).has(`${finding.side}:${finding.line}`)), 'finding_not_on_changed_line');
     const fingerprint = `${finding.path}:${finding.side}:${finding.line}:${finding.title}`;
     requireCondition(!seen.has(fingerprint), 'duplicate_finding'); seen.add(fingerprint);
   }

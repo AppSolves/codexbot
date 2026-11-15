@@ -25,7 +25,7 @@ export function configurationFields(config: Config): string {
       return `<label for="${id}">${label}<select id="${id}" name="${name}"><option value="">Codex default</option>${options.map(option => `<option value="${html(option)}"${value === option ? ' selected' : ''}>${html(option)}</option>`).join('')}</select></label>`;
     }
     if (typeof value === 'boolean') return `<label for="${id}"><input id="${id}" name="${name}" type="checkbox" value="true"${value ? ' checked' : ''}>${label}</label>`;
-    const input = typeof value === 'number' ? `type="number" step="any" value="${value}" required` : `type="text" maxlength="4096" value="${html(Array.isArray(value) ? value.join(', ') : value ?? '')}"`;
+    const input = typeof value === 'number' && !(name.startsWith('quotas.') && name.endsWith('_per_day')) ? `type="number" step="any" value="${value}" required` : `type="text" maxlength="4096" value="${html(Array.isArray(value) ? value.join(', ') : value ?? '')}"`;
     return `<label for="${id}">${label}<input id="${id}" name="${name}" ${input}></label>`;
   }).join('');
   return fields(config as unknown as Record<string,unknown>);

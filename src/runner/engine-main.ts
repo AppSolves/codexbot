@@ -1,3 +1,4 @@
+import { binaryLocations, type BinaryChange } from '../core/binary.js';
 import { runCodex } from './engine.js';
 import type { RequestSnapshot } from '../worker/store.js';
 import { readFile, mkdir } from 'node:fs/promises';
@@ -14,7 +15,7 @@ try {
   const manifest = await readFile('/workspace/manifest.json', 'utf8');
   requireCondition(record(JSON.parse(manifest) as unknown).complete === true, 'review_incomplete');
   const output = normalizeReview(await runCodex(snapshot, manifest), snapshot.head);
-  try { validateReview(output, snapshot.head, JSON.parse(await readFile('/workspace/diff.json', 'utf8')) as ChangedFile[]); }
+  try { validateReview(output, snapshot.head, JSON.parse(await readFile('/workspace/diff.json', 'utf8')) as ChangedFile[],binaryLocations((record(JSON.parse(manifest) as unknown).binaryFiles??[]) as BinaryChange[])); }
   catch { throw new AppError('review_output_invalid'); }
   requireCondition(output.complete && output.result !== 'inconclusive' && !output.quarantined && !output.output_truncated, 'review_incomplete');
   process.stdout.write(JSON.stringify(output));

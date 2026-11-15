@@ -102,3 +102,15 @@ The incoming PR-event actor still needs review authorization under `authorizatio
 The protected runner Environment, encryption AAD, session lease and all user quotas bind to the consenting owner, installation and repository. Contributions cannot spread usage across actor IDs or select another user's Environment. Owner credentials are never returned to contributors or placed in the model container. Manual commands always use the command author's own connection, even when unattended assignment is enabled.
 
 Revoking/disconnecting consent, replacing the connection, changing the configured owner/mode or losing administrator authority stops new delegated execution and privileged publication. Refresh and publication lease SQL fence the exact consent generation, so reauthorizing the same owner cannot revive an old merge intent. Already started inference may have consumed usage; revocation does not undo it. Configure `automatic_reviewer: null` through a reviewed PR to stop assignment; disconnect the owner connection to revoke its stored grant. No CLI process is needed after provisioning.
+
+## Unlimited review quotas
+
+Each rolling-day quota (`quotas.user_per_day`, `repository_per_day`, `installation_per_day`, `reruns_per_day`) accepts a positive integer or the exact string `unlimited`. Defaults remain capped. Only protected default-branch policy can opt in; configuring one repository does not alter another repository’s policy. Counts remain scoped as documented and are not reset; installation/user counts include all their repositories. Concurrency, cooldown, authorization, explicit rerun/idempotency, execution budgets and provider allowance still apply. An unlimited review quota is not unlimited ChatGPT usage and never enables paid API fallback.
+
+```yaml
+quotas:
+  user_per_day: unlimited
+  repository_per_day: unlimited
+  installation_per_day: unlimited
+  reruns_per_day: unlimited
+```

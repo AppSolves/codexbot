@@ -12,6 +12,8 @@ import { broker, backendUrl, checkWorkload } from './broker.js';
 import { collectContext } from './context.js';
 import { contextServer } from './context-server.js';
 import type { ContextLookup } from './context.js';
+import { binaryLocations } from '../core/binary.js';
+import { reviewImages } from './engine.js';
 import { isolatedReview } from './docker.js';
 import { failedReview, normalizeReview, validateReview, type ChangedFile } from '../core/review.js';
 
@@ -46,7 +48,7 @@ export async function reviewJob(): Promise<void> {
     let lookup: ContextLookup | undefined;
     const contextCancellation = new AbortController();
     const manifest = await collectContext(github, snapshot, directory, reader => { lookup = reader; }, contextCancellation.signal);
-    requireCondition(manifest.complete, 'review_context_incomplete');
+    requireCondition(manifest.complete, manifest.failureCodes[0] ?? 'review_context_incomplete');
     let credential: string;
     stage = 'credentials';
     if (snapshot.config.credentials.mode === 'api-key') {
@@ -82,9 +84,9 @@ export async function reviewJob(): Promise<void> {
     closeContext = await contextServer(process.platform === 'win32' ? `\\\\.\\pipe\\codexbot-${crypto.randomUUID()}` : join(sockets, 'context.sock'), lookup, () => contextCancellation.abort());
     stage = 'analyzing';
     await broker(backend, id, 'stage', { stage: 'analyzing' });
-    const output = normalizeReview(await isolatedReview(image, directory, credentialPath, sockets), snapshot.head);
+    const output = normalizeReview(await isolatedReview(image, directory, credentialPath, sockets,{minimumImages:reviewImages(JSON.stringify(manifest)).length}), snapshot.head);
     stage = 'result';
-    try { validateReview(output, snapshot.head, JSON.parse(await readFile(join(directory, 'diff.json'), 'utf8')) as ChangedFile[]); }
+    try { validateReview(output, snapshot.head, JSON.parse(await readFile(join(directory, 'diff.json'), 'utf8')) as ChangedFile[],binaryLocations(manifest.binaryFiles)); }
     catch { throw new AppError('review_output_invalid'); }
     submission = { output, context_complete: manifest.complete };
     requireCondition(manifest.complete && output.complete && output.result !== 'inconclusive' && !output.quarantined && !output.output_truncated, 'review_incomplete');
@@ -94,7 +96,7 @@ export async function reviewJob(): Promise<void> {
     // Always leave a deterministic non-approving result when preflight succeeded.
     const failure = { ...report, code: report.broker_code ?? (FAILURE_CODES.has(report.code) || BROKER_CODES.has(report.code) ? report.code : 'external_or_execution_failure') };
     try {
-      if (snapshot) await broker(backend, id, 'result', { output: submission?.output ?? failedReview(snapshot.head), context_complete: false, failure });
+      if (snapshot) await broker(backend, id, 'result', { output: submission?.output ?? failedReview(snapshot.head,stage==='context'?report.code:undefined), context_complete: false, failure });
       else await broker(backend, id, 'failure', failure);
     } catch (secondary) { console.error(JSON.stringify({ ...diagnostic(secondary, stage), event: 'failure_reporting_deferred' })); }
     // Recording a safe fallback permits publication; it never makes failed analysis a green check.

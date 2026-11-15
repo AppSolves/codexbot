@@ -98,7 +98,7 @@ await test('RPC rejects every server-side approval/tool/permission request and m
   }
 });
 await test('Codex model selection, RPC rejection and failed/interrupted turns keep distinct sanitized causes', async () => {
-  for (const scenario of ['model', 'rpc', 'failed', 'interrupted', 'invalid-json', 'no-inspection', 'declined']) {
+  for (const scenario of ['model', 'image-model', 'rpc', 'failed', 'interrupted', 'invalid-json', 'no-inspection', 'declined']) {
     const request = snapshot(); if (scenario === 'model') request.config.review.model = 'not-in-fixture';
     const spawn = mock.method(childProcess, 'spawn', () => {
       const process = child(line => {
@@ -118,9 +118,9 @@ await test('Codex model selection, RPC rejection and failed/interrupted turns ke
       }); return process;
     }); syncBuiltinESMExports();
     try {
-      await assert.rejects(runCodex(request, '{}'), error => {
+      await assert.rejects(runCodex(request, scenario==='image-model'?JSON.stringify({binaryFiles:[{format:'png',snapshots:[{side:'head',path:'image.png',sha:request.head}]}]}):'{}'), error => {
         assert.ok(error instanceof ExecutionError);
-        assert.equal(error.detail.code, ({ model: 'configured_model_not_in_codex_catalog', rpc: 'codex_rpc_rejected', failed: 'codex_turn_failed', interrupted: 'codex_turn_interrupted', 'invalid-json': 'codex_output_not_json', 'no-inspection': 'codex_inspection_not_performed', declined: 'codex_inspection_denied' } as Record<string, string>)[scenario]);
+        assert.equal(error.detail.code, ({ model: 'configured_model_not_in_codex_catalog', 'image-model':'configured_model_does_not_support_images', rpc: 'codex_rpc_rejected', failed: 'codex_turn_failed', interrupted: 'codex_turn_interrupted', 'invalid-json': 'codex_output_not_json', 'no-inspection': 'codex_inspection_not_performed', declined: 'codex_inspection_denied' } as Record<string, string>)[scenario]);
         assert.ok(!JSON.stringify(diagnostic(error, 'analyzing')).includes(sensitive)); return true;
       });
     } finally { spawn.mock.restore(); syncBuiltinESMExports(); }
@@ -193,9 +193,9 @@ await test('actual review job records incomplete fallback, releases acquired lea
     await assert.rejects(reviewJob(), /review_output_invalid/);
     assert.equal((submissions.at(-1)!.output as { result: string }).result, 'inconclusive');
     const previousRuns = runs; unavailableContext = true; containerOutput = clean();
-    await assert.rejects(reviewJob(), /review_context_incomplete/);
+    await assert.rejects(reviewJob(), /required_tree_unverifiable/);
     assert.equal(runs, previousRuns); assert.equal(submissions.at(-1)!.context_complete, false);
-    assert.equal((submissions.at(-1)!.failure as { code: string }).code, 'review_context_incomplete');
+    assert.equal((submissions.at(-1)!.failure as { code: string }).code, 'required_tree_unverifiable');
     assert.equal(operations.at(-1), 'release');
   } finally {
     fetcher.mock.restore(); logger.mock.restore(); spawn.mock.restore(); syncBuiltinESMExports();

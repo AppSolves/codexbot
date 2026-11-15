@@ -4,7 +4,7 @@ import { ExecutionError, executionFailure, type ExecutionFailure } from './execu
 export const REVIEW_STAGES = ['environment','prepare','context','credentials','analyzing','result','publish','release'] as const;
 export const FAILURE_CODES = new Set(['missing_environment_credentials','ambiguous_environment_credentials','credential_owner_mismatch','missing_read_token',
   'api_key_missing_or_ambiguous_credentials','vault_key_missing_or_ambiguous_credentials','invalid_envelope','invalid_vault_key','invalid_saved_session',
-  'review_incomplete','review_context_incomplete','review_output_invalid','read_token_cleanup_failed',
+  'context_api_budget','context_collection_timeout','context_diff_size_limit','context_text_patch_truncated','context_unsupported_binary','context_binary_unverifiable','context_binary_size_limit','context_non_text_source','context_missing_dependency','context_file_size_limit','context_byte_budget','context_required_evidence_unavailable','required_file_missing_or_special','blob_integrity_failure','required_tree_unverifiable','review_incomplete','review_context_incomplete','review_output_invalid','read_token_cleanup_failed',
   'oauth_refresh_too_early','oauth_refresh_window_unavailable',
   'session_too_short_reconnect_required','review_image_missing','isolated_review_failed','proxy_start_failed','docker_unavailable','docker_cleanup_failed_check_runner',
   'oauth_grant_invalid_reconnect_required','chatgpt_plan_usage_permission_missing','oauth_token_endpoint_failed','oauth_token_exchange_uncertain_reconnect_required',

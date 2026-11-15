@@ -1,5 +1,12 @@
 # Security and behavior changes
 
+## Unreleased — binary/large-PR context hotfix
+
+- Verify PNG evidence separately from textual patches and supply immutable base/head images through official Codex localImage inputs. Require image-capable models and actual image transport; independently verify publication evidence. Image findings appear in the summary without invented inline locations. Unsupported formats and incomplete visual coverage remain non-approving.
+- Raise bounded context capacity to 768 calls, 16 MB text, 512 KB per text file and 6 MB diff; retain immutable caches, safe Git types, deadlines and precise non-approving budget diagnostics.
+- Allow explicit `unlimited` rolling-day review quotas without disabling authorization, concurrency, cooldown or idempotency.
+- Temporarily close the deployment merge gate for the coordinated runner upgrade.
+
 ## 0.1.0-beta.2
 
 - Treat GitHub required reviews as qualifying App/user approvals rather than additional humans; retain explicit Human-in-the-Loop policy and native GitHub enforcement, including last-push/CODEOWNER rules.

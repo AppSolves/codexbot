@@ -9,6 +9,25 @@ import { AdmissionError, getRejection, recordRejection, rejectionId, QUOTA_WINDO
 import { publishRejection, rejectionBody } from '../src/worker/rejections.js';
 import { processDelivery } from '../src/worker/recovery.js';
 import type { BackendConfig } from '../src/worker/webhook.js';
+import {parseConfig} from '../src/core/config.js';
+
+await test('explicit unlimited daily quotas preserve concurrency, cooldown, deduplication and other repositories limits',async()=>{
+  const {db,sqlite}=database(),store=new Store(db),request=snapshot();
+  request.config.quotas=parseConfig('quotas:\n  user_per_day: unlimited\n  repository_per_day: unlimited\n  installation_per_day: unlimited\n  reruns_per_day: unlimited\n  cooldown_seconds: 0').quotas;
+  for(const field of ['concurrent_repository','concurrent_installation','cooldown_seconds'])assert.throws(()=>parseConfig(`quotas:\n  ${field}: unlimited`));
+  assert.throws(()=>parseConfig('quotas:\n  user_per_day: infinite'));
+  try{
+    for(let i=0;i<12;i++){const next={...request,id:crypto.randomUUID(),command:{...request.command,rerun:true}};await store.create(next);await store.transition(next.id,'created','failed');}
+    const one={...request,id:crypto.randomUUID()},two={...request,id:crypto.randomUUID(),command:{...request.command,instructions:'Different context'}};
+    const admissions=await Promise.allSettled([store.create(one),new Store(db).create(two)]);assert.equal(admissions.filter(x=>x.status==='fulfilled').length,1);
+    const admitted=admissions.find(x=>x.status==='fulfilled');assert(admitted?.status==='fulfilled');await store.transition(admitted.value.id,'created','failed');
+    const capped={...request,id:crypto.randomUUID(),repositoryId:999,config:structuredClone(request.config)};capped.config.quotas.user_per_day=1;
+    await assert.rejects(store.create(capped),/user_quota_exceeded/);
+    const cooled={...request,id:crypto.randomUUID(),config:structuredClone(request.config),command:{...request.command,instructions:'Cooldown still applies'}};cooled.config.quotas.cooldown_seconds=60;
+    await assert.rejects(store.create(cooled),/cooldown_active/);
+    const duplicate={...admitted.value,id:crypto.randomUUID()};await assert.rejects(store.create(duplicate),/duplicate_review/);
+  }finally{sqlite.close();}
+});
 
 await test('atomic admissions classify duplicate, every quota, cooldown and concurrency without weakening limits',async()=>{
   for(const [field,code] of [['user_per_day','user_quota_exceeded'],['repository_per_day','repository_quota_exceeded'],['installation_per_day','installation_quota_exceeded'],['concurrent_repository','repository_concurrency_exceeded'],['concurrent_installation','installation_concurrency_exceeded'],['cooldown_seconds','cooldown_active'],['reruns_per_day','rerun_limit_exceeded'],['duplicate','duplicate_review']] as const){
