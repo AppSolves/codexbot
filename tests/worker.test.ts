@@ -49,6 +49,7 @@ await test('retained aliases expose only public pages; privileged routes never r
     if (path === '/health') assert.deepEqual(await response.json(),{status:'ok',version:JSON.parse(await readFile('package.json','utf8')).version});
     if (path === '/') {
       const page = await response.text(); assert.ok(page.includes('CLI setup instructions'));
+      assert.ok(page.includes('<span>Copyright &copy; 2026 Kaan Gönüldinc</span>'));
       assert.ok(page.includes(`<link rel="canonical" href="${DEFAULT_BACKEND}/">`)); assert.ok(!page.includes('WORKER_URL'));
     }
   }

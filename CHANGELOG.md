@@ -1,5 +1,11 @@
 # Security and behavior changes
 
+## 0.1.0-beta.2
+
+- Treat GitHub required reviews as qualifying App/user approvals rather than additional humans; retain explicit Human-in-the-Loop policy and native GitHub enforcement, including last-push/CODEOWNER rules.
+- Preserve manual review and explicit-only merge settings. Add the website copyright footer.
+- Live approval-rule retesting was explicitly waived by the operator; unknown/unmet GitHub review evidence remains non-merging.
+
 ## 0.1.0-beta.1 — CLI onboarding release
 
 Native review decisions, automatic owner-consented reviews, autonomous and optional human-supervised merging. Browser ChatGPT onboarding remains explicitly deferred and disabled. Repository opt-in and all actual GitHub protections remain mandatory.
