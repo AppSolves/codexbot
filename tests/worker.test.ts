@@ -216,7 +216,9 @@ await test('invalid signature, replay, spoofed user, forged installation and una
   assert.equal((await worker.fetch(signed(valid, env.GITHUB_WEBHOOK_SECRET), env)).status, 200);
   const spoofed = payload(); spoofed.comment.user.id = 6; assert.equal((await worker.fetch(signed(spoofed, env.GITHUB_WEBHOOK_SECRET), env)).status, 403);
   const forged = payload(); forged.installation.id = 99; assert.equal((await worker.fetch(signed(forged, env.GITHUB_WEBHOOK_SECRET), env)).status, 403);
-  assert.equal((await worker.fetch(signed(payload('@codexbot review --merge'), env.GITHUB_WEBHOOK_SECRET), env)).status, 403);
+  assert.equal((await worker.fetch(signed(payload('@codexbot review --merge'), env.GITHUB_WEBHOOK_SECRET), env)).status, 200);
+  assert.equal((await env.DB.prepare("SELECT phase FROM review_rejections WHERE outcome='merge_not_authorized'").first<{phase:string}>())!.phase,'done');
+  assert.ok(String(f.state.comments.at(-1)!.body).includes('not permitted'));
   f.config.authorization.whitelist = ''; assert.equal((await worker.fetch(signed(payload('@codexbot review --effort low'), env.GITHUB_WEBHOOK_SECRET), env)).status, 403);
   assert.equal(f.calls.filter(x => x.path.endsWith('/dispatches')).length, 1);
 }));
@@ -226,7 +228,9 @@ await test('configured handle works at webhook boundary and hosted ChatGPT canno
   assert.equal(f.calls.filter(x => x.path.endsWith('/dispatches')).length, 0);
   assert.equal((await worker.fetch(signed(payload('@CODEXBOTREVIEWTEST review --effort high'), env.GITHUB_WEBHOOK_SECRET), env)).status, 202);
   f.config.credentials.mode = 'chatgpt';
-  assert.equal((await worker.fetch(signed(payload('@CodexBotReviewTest review'), env.GITHUB_WEBHOOK_SECRET), env)).status, 403);
+  assert.equal((await worker.fetch(signed(payload('@CodexBotReviewTest review'), env.GITHUB_WEBHOOK_SECRET), env)).status, 200);
+  assert.equal((await env.DB.prepare("SELECT phase FROM review_rejections WHERE outcome='chatgpt_deployment_not_authorized'").first<{phase:string}>())!.phase,'done');
+  assert.equal(f.calls.filter(x=>x.path.endsWith('/dispatches')).length,1);
 }));
 await test('ChatGPT handoff is encrypted, lease-protected and disconnected sessions cannot publish', async () => fixture(async (env, f) => {
   env.CHATGPT_DEPLOYMENT_AUTHORIZED = 'true'; f.config.credentials.mode = 'chatgpt';
@@ -318,4 +322,35 @@ await test('revoked ChatGPT hosting authorization denies an already-dispatched p
   assert.equal((await post('codexbot-5')).status, 403);
   const denied = await post('codexbot-1-5'); assert.equal(denied.status, 403); assert.equal((await denied.json() as { error: string }).error, 'chatgpt_deployment_authorization_revoked');
   assert.equal((await new Store(env.DB).get(id!)).row.state, 'dispatched');
+}));
+
+await test('exhausted reruns produce one terminal explanation and no workflow under redelivery and simultaneous processing', async () => fixture(async (env,f) => {
+  const store=new Store(env.DB); f.config.quotas.cooldown_seconds=0;
+  for(let n=0;n<2;n++) {
+    const request={...snapshot(),id:crypto.randomUUID(),config:f.config,command:{...snapshot().command,rerun:true}};
+    await store.create(request);await store.transition(request.id,'created','failed');
+  }
+  const input={...payload('@codexbot review --effort high --rerun'),comment:{...payload().comment,id:777,body:'@codexbot review --effort high --rerun'}};
+  const delivery=crypto.randomUUID();
+  const responses=await Promise.all([worker.fetch(signed(input,env.GITHUB_WEBHOOK_SECRET,delivery),env),worker.fetch(signed(input,env.GITHUB_WEBHOOK_SECRET,delivery),env)]);
+  assert.ok(responses.every(response=>response.status===200));
+  assert.equal((await worker.fetch(signed(input,env.GITHUB_WEBHOOK_SECRET),env)).status,200);
+  assert.equal(f.calls.filter(x=>x.path.endsWith('/dispatches')).length,0);
+  assert.equal(f.state.comments.length,1);
+  assert.match(String(f.state.comments[0]!.body),/rerun allowance.*2 requests.*rolling 24-hour.*UTC.*No AI inference/s);
+  const row=await env.DB.prepare('SELECT outcome,phase,comment_id FROM review_rejections').first<{outcome:string;phase:string;comment_id:number}>();
+  assert.equal(row!.outcome,'rerun_limit_exceeded');assert.equal(row!.phase,'done');assert.equal(row!.comment_id,1000);
+  const {results}=await env.DB.prepare('SELECT phase FROM deliveries').all<{phase:string}>();assert.ok(results.every(row=>row.phase==='done'));
+}));
+await test('fresh invalid commands get fixed feedback; unauthorized, other-bot, quoted and expired comments disclose nothing',async()=>fixture(async(env,f)=>{
+  for(const body of ['discussion','@otherbot review --bad','> @codexbot review','```\n@codexbot review --bad\n```','    @codexbot review --bad']) {
+    assert.equal((await worker.fetch(signed(payload(body),env.GITHUB_WEBHOOK_SECRET),env)).status,200);
+  }
+  const old=payload('@codexbot review --bad');old.comment.created_at=new Date(Date.now()-700_000).toISOString();
+  assert.equal((await worker.fetch(signed(old,env.GITHUB_WEBHOOK_SECRET),env)).status,403);
+  f.config.authorization.whitelist='';assert.equal((await worker.fetch(signed(payload('@codexbot review --bad'),env.GITHUB_WEBHOOK_SECRET),env)).status,403);
+  assert.equal(f.state.comments.length,0);
+  f.config.authorization.whitelist='alice';
+  assert.equal((await worker.fetch(signed(payload('@codexbot review --bad sensitive-fixture'),env.GITHUB_WEBHOOK_SECRET),env)).status,200);
+  assert.equal(f.state.comments.length,1);assert.ok(!String(f.state.comments[0]!.body).includes('sensitive-fixture'));assert.equal(f.state.reviews.length,0);
 }));

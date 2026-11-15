@@ -19,7 +19,7 @@ const env = { ...process.env, WRANGLER_SEND_METRICS: 'false' };
 const cli = args => execFileSync(process.execPath, [wrangler, ...args, '--config', config], { encoding: 'utf8', env, stdio: 'pipe', timeout: 60_000 });
 let child;
 try {
-  await writeFile(config, JSON.stringify({ name: 'codexbot-runtime-test', main: resolve('src/worker/index.ts'), compatibility_date: '2026-11-13', compatibility_flags: ['nodejs_compat'],
+  await writeFile(config, JSON.stringify({ name: 'codexbot-runtime-test', main: resolve('tests/admission-runtime-worker.ts'), compatibility_date: '2026-11-13', compatibility_flags: ['nodejs_compat'],
     vars: { PUBLIC_URL: `http://127.0.0.1:${port}`, GITHUB_WEBHOOK_SECRET: secret, GITHUB_PRIVATE_KEY: 'not-used', GITHUB_APP_ID: '42', GITHUB_APP_SLUG: 'codexbot', TRUSTED_WORKFLOW: '', CHATGPT_DEPLOYMENT_AUTHORIZED: 'false', MERGE_DEPLOYMENT_AUTHORIZED: 'false' },
     d1_databases: [{ binding: 'DB', database_name: 'codexbot-runtime-test', database_id: randomUUID(), migrations_dir: resolve('migrations') }] }));
   await writeFile(join(directory, 'empty.env'), '');
@@ -51,7 +51,9 @@ try {
   assert.deepEqual(terminal, [{ state: 'failed', failure_code: 'request_expired' }]);
   const leases = JSON.parse(cli(['d1', 'execute', 'DB', '--local', '--persist-to', state, '--json', '--command', 'SELECT installation_id,lease_request FROM sessions ORDER BY installation_id']))[0].results;
   assert.deepEqual(leases, [{ installation_id: 1, lease_request: null }, { installation_id: 9, lease_request: 'other-installation' }]);
-  process.stdout.write('Real workerd + D1: migrations, HMAC, receipts, cron, expired requests and cross-installation lease cleanup passed.\n');
+  const admission=await (await globalThis.fetch(`${origin}/__admission-contract`)).json();
+  assert.deepEqual(admission,{accepted:1,rejected:true,outcomes:[{outcome:'duplicate_review',phase:'pending'}]});
+  process.stdout.write('Real workerd + D1: atomic admission/outbox, migrations, HMAC, receipts, cron, expired requests and cross-installation lease cleanup passed.\n');
 } finally {
   if (child?.pid) {
     if (process.platform === 'win32') execFileSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore' });

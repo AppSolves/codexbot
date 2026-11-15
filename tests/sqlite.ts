@@ -21,6 +21,12 @@ export function database(): { db: D1Database; sqlite: DatabaseSync } {
       raw
     } as D1PreparedStatement;
   }
-  const db = { prepare: prepared, async batch(statements: D1PreparedStatement[]) { sqlite.exec('BEGIN'); try { const results = await Promise.all(statements.map(x => x.run())); sqlite.exec('COMMIT'); return results; } catch (error) { sqlite.exec('ROLLBACK'); throw error; } } } as D1Database;
+  let transaction: Promise<unknown> = Promise.resolve();
+  const db = { prepare: prepared, batch(statements: D1PreparedStatement[]) {
+    const operation = transaction.then(async () => { sqlite.exec('BEGIN'); try {
+      const results = []; for (const statement of statements) results.push(await statement.run()); sqlite.exec('COMMIT'); return results;
+    } catch (error) { sqlite.exec('ROLLBACK'); throw error; } });
+    transaction = operation.catch(() => {}); return operation;
+  } } as D1Database;
   return { db, sqlite };
 }

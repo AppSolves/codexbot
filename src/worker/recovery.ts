@@ -7,15 +7,19 @@ import { invalidateMerge } from './merge.js';
 import type { RequestSnapshot } from './store.js';
 import { MAX_RECOVERY_ATTEMPTS } from '../core/limits.js';
 import { recoverProgress } from './progress.js';
+import { getRejection, publishRejection } from './rejections.js';
+import { AdmissionError } from './admission.js';
 
 export async function processDelivery(id: string, env: Env): Promise<string> {
   const store = new Store(env.DB), delivery = await store.claimDelivery(id);
   if (!delivery) return 'recovering';
   try {
+    const rejection = await getRejection(env.DB,delivery.request_id);
+    if (rejection) { await publishRejection(env,rejection.id); await store.finishDelivery(delivery,true); return 'admission_rejected'; }
     const status = await ingest(delivery.event, JSON.parse(delivery.payload) as unknown, delivery.request_id, env);
     await store.finishDelivery(delivery, true); return status;
   } catch (error) {
-    const terminal = error instanceof AppError && error.status < 500 && error.status !== 429;
+    const terminal = error instanceof AdmissionError || (error instanceof AppError && error.status < 500 && error.status !== 429);
     if (terminal) delivery.attempts = MAX_RECOVERY_ATTEMPTS;
     await store.finishDelivery(delivery, false, error instanceof AppError ? error.code : 'external_or_storage_failure');
     throw error;

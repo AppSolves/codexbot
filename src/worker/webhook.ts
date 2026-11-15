@@ -8,6 +8,8 @@ import { Store } from './store.js';
 import type { RequestSnapshot } from './store.js';
 import { dispatchRequest } from './dispatch.js';
 import { updateProgress } from './progress.js';
+import { AdmissionError, recordRejection, type RejectionCode, type RejectionIdentity } from './admission.js';
+import { publishRejection } from './rejections.js';
 
 export interface BackendConfig extends GitHubCredentials { DB: D1Database; PUBLIC_URL: string; GITHUB_APP_SLUG: string; TRUSTED_WORKFLOW: string; CHATGPT_DEPLOYMENT_AUTHORIZED: string }
 /** Persist only fields needed for recovery; never copy issue/PR bodies or unrelated metadata. */
@@ -29,7 +31,7 @@ export function compactWebhook(event: string, payload: unknown): unknown {
   const comment = record(input.comment), issue = record(input.issue);
   requireCondition(typeof comment.body === 'string' && comment.body.length <= 16_384, 'comment_too_long');
   return { ...common, issue: { number: issue.number, ...(issue.pull_request ? { pull_request: {} } : {}) },
-    comment: { body: comment.body, created_at: comment.created_at, user: { id: record(comment.user).id } } };
+    comment: { id: comment.id, body: comment.body, created_at: comment.created_at, user: { id: record(comment.user).id } } };
 }
 async function verifiedInstallation(app: Octokit, repository: string, installationId: number): Promise<void> {
   const { data } = await app.rest.apps.getRepoInstallation(splitRepo(repository));
@@ -79,10 +81,16 @@ export async function ingest(event: string, payload: unknown, requestId: string,
   const { data: branch } = await github.rest.repos.getBranch({ ...repo, branch: liveRepo.default_branch });
   const config = await trustedConfig(github, fullName, branch.commit.sha);
   if (!config.review.enabled || (!manual && !config.review.auto_review)) return 'disabled';
-  const livePermission = await permission(github, fullName, sender.login);
+  const livePermission = await permission(github, fullName, sender.login, Number(sender.id));
   requireCondition(authorize(sender.login, livePermission, config.authorization), 'review_not_authorized', 403);
   let prNumber: number;
   let command;
+  const reject = async (code: RejectionCode): Promise<string> => {
+    if (!manual) return 'admission_rejected';
+    const comment = record(input.comment);
+    const identity: RejectionIdentity = {id:requestId,installationId:Number(installation.id),repositoryId:liveRepo.id,ownerId:liveRepo.owner.id,repository:liveRepo.full_name,pr:prNumber,actor:sender.login as string,actorId:Number(sender.id),...(Number.isSafeInteger(comment.id)?{commandId:Number(comment.id)}:{})};
+    const row = await recordRejection(env.DB,identity,code); await publishRejection(env,row.id); return 'command_rejected';
+  };
   if (manual) {
     const comment = record(input.comment), issue = record(input.issue);
     if (!issue.pull_request) return 'not_a_pull_request';
@@ -91,12 +99,13 @@ export async function ingest(event: string, payload: unknown, requestId: string,
     requireCondition(typeof comment.created_at === 'string' && Math.abs(Date.now() - Date.parse(comment.created_at)) < 600_000, 'old_comment_replay', 403);
     requireCondition(typeof comment.body === 'string', 'invalid_comment');
     prNumber = Number(issue.number);
-    try { command = [config.bot.trigger, ...config.bot.aliases].map(handle => parseCommand(comment.body as string, handle)).find(Boolean) ?? null; }
-    catch (error) {
-      const code = error instanceof Error && /^[a-z0-9_]+$/.test(error.message) ? error.message : 'invalid_command';
-      await github.rest.pulls.createReview({ ...repo, pull_number: prNumber, event: 'COMMENT', body: `CodexBot command rejected: \`${code}\`. Use \`${config.bot.trigger} review [--effort LEVEL] [--merge]\`.` });
-      return 'command_rejected';
-    }
+    requireCondition(Number.isSafeInteger(prNumber) && prNumber > 0, 'invalid_pr_number');
+    // Only parse an exact configured first token; malformed commands for another bot stay silent.
+    const first = comment.body.trimStart().split(/\s+/,1)[0]?.toLowerCase();
+    const handle = [config.bot.trigger,...config.bot.aliases].find(value=>value.toLowerCase()===first);
+    if (!handle) return 'no_command';
+    try { command = parseCommand(comment.body,handle); }
+    catch { return reject('invalid_command'); }
     if (!command) return 'no_command';
   } else {
     const pull = record(input.pull_request);
@@ -104,19 +113,25 @@ export async function ingest(event: string, payload: unknown, requestId: string,
     prNumber = Number(input.number); command = { merge: false, effort: null, instructions: '' };
   }
   requireCondition(Number.isSafeInteger(prNumber) && prNumber > 0, 'invalid_pr_number');
-  requireCondition(!command.merge || (config.merge.enabled && authorize(sender.login, livePermission, config.merge.authorization, true)), 'merge_not_authorized', 403);
-  requireCondition(!command.rerun || ['write', 'maintain', 'admin'].includes(livePermission), 'rerun_requires_write_permission', 403);
-  requireCondition(config.credentials.mode !== 'chatgpt' || env.CHATGPT_DEPLOYMENT_AUTHORIZED === 'true', 'chatgpt_deployment_not_authorized', 403);
+  if (command.merge && !(config.merge.enabled && authorize(sender.login, livePermission, config.merge.authorization, true))) return reject('merge_not_authorized');
+  if (command.rerun && !['write','maintain','admin'].includes(livePermission)) return reject('rerun_requires_write_permission');
+  if (config.credentials.mode === 'chatgpt' && env.CHATGPT_DEPLOYMENT_AUTHORIZED !== 'true') return reject('chatgpt_deployment_not_authorized');
   const { data: pr } = await github.rest.pulls.get({ ...repo, pull_number: prNumber });
   if (automatic) requireCondition(record(record(input.pull_request).head).sha === pr.head.sha, 'stale_pr_event_head', 409);
-  requireCondition(pr.state === 'open' && !pr.draft && pr.base.repo.id === liveRepo.id && pr.changed_files <= 200, 'pr_not_reviewable');
+  requireCondition(pr.base.repo.id === liveRepo.id,'pr_repository_mismatch',403);
+  if (pr.state !== 'open' || pr.draft || pr.changed_files > 200) return reject('pr_not_reviewable');
   requireCondition(Number.isSafeInteger(pr.commits) && pr.commits > 0 && Number.isSafeInteger(pr.changed_files) && pr.changed_files >= 0, 'invalid_pr_counts');
   let snapshot: RequestSnapshot = {
     id: requestId, installationId: Number(installation.id), repositoryId: liveRepo.id, ownerId: liveRepo.owner.id,
     repository: liveRepo.full_name, defaultBranch: liveRepo.default_branch, workflowSha: branch.commit.sha,
-    head: pr.head.sha, base: pr.base.sha, pr: prNumber, actor: sender.login, actorId: Number(sender.id), command, config, createdAt: Date.now(), commits: pr.commits, changedFiles: pr.changed_files
+    head: pr.head.sha, base: pr.base.sha, pr: prNumber, actor: sender.login, actorId: Number(sender.id), command, config, createdAt: Date.now(), ...(manual && Number.isSafeInteger(record(input.comment).id) ? {commandId:Number(record(input.comment).id)} : {}), commits: pr.commits, changedFiles: pr.changed_files
   };
-  snapshot = await store.create(snapshot, env.TRUSTED_WORKFLOW);
+  try { snapshot = await store.create(snapshot, env.TRUSTED_WORKFLOW, manual); }
+  catch (error) {
+    if (!(error instanceof AdmissionError)) throw error;
+    if (manual) await publishRejection(env,error.rejection.id);
+    return 'admission_rejected';
+  }
   requireCondition(snapshot.head === pr.head.sha && snapshot.base === pr.base.sha && snapshot.workflowSha === branch.commit.sha, 'request_context_changed', 409);
   try { await updateProgress(github, store, snapshot, env.GITHUB_APP_SLUG, Number(env.GITHUB_APP_ID)); }
   catch { console.error(JSON.stringify({ event: 'progress_update_deferred', request_id: snapshot.id })); }

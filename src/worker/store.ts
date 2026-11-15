@@ -2,6 +2,7 @@ import type { Config } from '../core/config.js';
 import type { ReviewCommand } from '../core/command.js';
 import type { Envelope } from '../core/crypto.js';
 import { sha256 } from '../core/crypto.js';
+import { AdmissionError, admissionRejection, getRejection, rejectionId } from './admission.js';
 import { requireCondition } from '../core/errors.js';
 import { normalizeReview } from '../core/review.js';
 import { MAX_REVIEW_BYTES, MAX_RECOVERY_ATTEMPTS, RECOVERY_LEASE_MS, REQUEST_LIFETIME_MS } from '../core/limits.js';
@@ -9,7 +10,7 @@ import { MAX_REVIEW_BYTES, MAX_RECOVERY_ATTEMPTS, RECOVERY_LEASE_MS, REQUEST_LIF
 export interface RequestSnapshot {
   id: string; installationId: number; repositoryId: number; ownerId: number; repository: string; defaultBranch: string;
   workflowSha: string; head: string; base: string; pr: number; actor: string; actorId: number; command: ReviewCommand; config: Config; createdAt: number;
-  commits?: number; changedFiles?: number;
+  commits?: number; changedFiles?: number; commandId?: number;
 }
 export interface RequestRow {
   id: string; snapshot: string; state: string; run_id: string | null; review_id: number | null; result: string | null; context_complete: number;
@@ -47,15 +48,17 @@ export class Store {
       .bind(Date.now(), Date.now(), MAX_RECOVERY_ATTEMPTS).all<{ id: string }>();
     return results.map(x => x.id);
   }
-  async create(snapshot: RequestSnapshot, trustedWorkflow = ''): Promise<RequestSnapshot> {
-    const existing = await this.db.prepare('SELECT snapshot FROM requests WHERE id=?').bind(snapshot.id).first<{ snapshot: string }>();
+  async create(snapshot: RequestSnapshot, trustedWorkflow = '', feedback = false): Promise<RequestSnapshot> {
+    const existingRequest = () => this.db.prepare(`SELECT snapshot FROM requests WHERE id=? OR (installation_id=? AND repository_id=? AND actor_id=? AND json_extract(snapshot,'$.commandId')=?)`).bind(snapshot.id,snapshot.installationId,snapshot.repositoryId,snapshot.actorId,snapshot.commandId ?? null).first<{ snapshot: string }>();
+    const existing = await existingRequest();
     if (existing) return JSON.parse(existing.snapshot) as RequestSnapshot;
+    const prior = await getRejection(this.db, await rejectionId(snapshot)); if (prior) throw new AdmissionError(prior);
     const command = { ...snapshot.command }; delete command.rerun;
     const key = await sha256(JSON.stringify({ installation: snapshot.installationId, repository: snapshot.repositoryId, owner: snapshot.ownerId,
       actor: snapshot.actorId, pr: snapshot.pr, head: snapshot.head, base: snapshot.base, branch: snapshot.defaultBranch,
-      workflow: snapshot.workflowSha, trustedWorkflow, config: snapshot.config, command, rerun: snapshot.command.rerun ? snapshot.id : null }));
-    const q = snapshot.config.quotas, day = Date.now() - 86_400_000, cooldown = Date.now() - q.cooldown_seconds * 1000;
-    const result = await this.db.prepare(`INSERT OR IGNORE INTO requests(id,installation_id,repository_id,actor_id,snapshot,created_at,request_key,rerun)
+      workflow: snapshot.workflowSha, trustedWorkflow, config: snapshot.config, command, rerun: snapshot.command.rerun ? snapshot.commandId ?? snapshot.id : null }));
+    const now = Date.now(), q = snapshot.config.quotas, day = now - 86_400_000, cooldown = now - q.cooldown_seconds * 1000;
+    const insert = this.db.prepare(`INSERT OR IGNORE INTO requests(id,installation_id,repository_id,actor_id,snapshot,created_at,request_key,rerun)
       SELECT ?,?,?,?,?,?,?,? WHERE
       (SELECT count(*) FROM requests WHERE installation_id=? AND actor_id=? AND created_at>?)<? AND
       (SELECT count(*) FROM requests WHERE installation_id=? AND repository_id=? AND created_at>?)<? AND
@@ -66,10 +69,18 @@ export class Store {
       (SELECT count(*) FROM requests WHERE installation_id=? AND actor_id=? AND rerun=1 AND created_at>?)<?`)
       .bind(snapshot.id, snapshot.installationId, snapshot.repositoryId, snapshot.actorId, JSON.stringify(snapshot), snapshot.createdAt, key, snapshot.command.rerun ? 1 : 0,
         snapshot.installationId, snapshot.actorId, day, q.user_per_day, snapshot.installationId, snapshot.repositoryId, day, q.repository_per_day,
-        snapshot.installationId, day, q.installation_per_day, snapshot.installationId, snapshot.repositoryId, Date.now() - REQUEST_LIFETIME_MS, q.concurrent_repository,
-        snapshot.installationId, Date.now() - REQUEST_LIFETIME_MS, q.concurrent_installation, snapshot.installationId, snapshot.repositoryId, snapshot.actorId, cooldown,
-        snapshot.installationId, snapshot.actorId, day, snapshot.command.rerun ? q.reruns_per_day : 1001).run();
-    requireCondition(result.meta.changes === 1, 'duplicate_review_or_quota_exceeded', 429);
+        snapshot.installationId, day, q.installation_per_day, snapshot.installationId, snapshot.repositoryId, now - REQUEST_LIFETIME_MS, q.concurrent_repository,
+        snapshot.installationId, now - REQUEST_LIFETIME_MS, q.concurrent_installation, snapshot.installationId, snapshot.repositoryId, snapshot.actorId, cooldown,
+        snapshot.installationId, snapshot.actorId, day, snapshot.command.rerun ? q.reruns_per_day : 1001);
+    const [result] = await this.db.batch([insert, await admissionRejection(this.db, snapshot, key, now, feedback)]);
+    if (result!.meta.changes !== 1) {
+      const rejected = await getRejection(this.db, await rejectionId(snapshot));
+      if (!rejected) {
+        const admitted = await existingRequest();
+        if (admitted) return JSON.parse(admitted.snapshot) as RequestSnapshot;
+      }
+      requireCondition(rejected, 'admission_outcome_missing', 503); throw new AdmissionError(rejected);
+    }
     return snapshot;
   }
   async get(id: string): Promise<{ row: RequestRow; snapshot: RequestSnapshot }> {
@@ -180,10 +191,10 @@ export class Store {
       .bind(encoded, complete ? 1 : 0, id, runId).run(); requireCondition(result.meta.changes === 1, 'review_result_already_recorded', 409);
   }
   async removeInstallation(id: number): Promise<void> {
-    await this.db.batch([this.db.prepare('DELETE FROM sessions WHERE installation_id=?').bind(id), this.db.prepare('DELETE FROM requests WHERE installation_id=?').bind(id), this.db.prepare('DELETE FROM legacy_sessions WHERE installation_id=?').bind(id), this.db.prepare('DELETE FROM web_connections WHERE installation_id=?').bind(id), this.db.prepare('DELETE FROM web_operations WHERE installation_id=?').bind(id)]);
+    await this.db.batch([this.db.prepare('DELETE FROM review_rejections WHERE installation_id=?').bind(id), this.db.prepare('DELETE FROM sessions WHERE installation_id=?').bind(id), this.db.prepare('DELETE FROM requests WHERE installation_id=?').bind(id), this.db.prepare('DELETE FROM legacy_sessions WHERE installation_id=?').bind(id), this.db.prepare('DELETE FROM web_connections WHERE installation_id=?').bind(id), this.db.prepare('DELETE FROM web_operations WHERE installation_id=?').bind(id)]);
   }
   async removeRepository(repositoryId: number, installationId: number): Promise<void> {
-    await this.db.batch([this.db.prepare('DELETE FROM sessions WHERE repository_id=? AND installation_id=?').bind(repositoryId, installationId),
+    await this.db.batch([this.db.prepare('DELETE FROM review_rejections WHERE repository_id=? AND installation_id=?').bind(repositoryId, installationId), this.db.prepare('DELETE FROM sessions WHERE repository_id=? AND installation_id=?').bind(repositoryId, installationId),
       this.db.prepare('DELETE FROM requests WHERE repository_id=? AND installation_id=?').bind(repositoryId, installationId),
       this.db.prepare('DELETE FROM legacy_sessions WHERE repository_id=? AND installation_id=?').bind(repositoryId, installationId)]);
     await this.db.batch([this.db.prepare('DELETE FROM web_connections WHERE repository_id=? AND installation_id=?').bind(repositoryId, installationId), this.db.prepare('DELETE FROM web_operations WHERE repository_id=? AND installation_id=?').bind(repositoryId, installationId)]);
@@ -267,6 +278,8 @@ export class Store {
   }
   async cleanup(): Promise<void> {
     await this.db.batch([
+      this.db.prepare('DELETE FROM review_rejections WHERE created_at<?').bind(Date.now() - 7 * 86_400_000),
+      this.db.prepare("UPDATE review_rejections SET phase='failed',lease_until=0 WHERE attempts>=? AND lease_until<? AND phase IN ('pending','creating')").bind(MAX_RECOVERY_ATTEMPTS, Date.now()),
       this.db.prepare('DELETE FROM web_transactions WHERE expires_at<?').bind(Date.now()),
       this.db.prepare('DELETE FROM web_sessions WHERE expires_at<?').bind(Date.now()),
       this.db.prepare('DELETE FROM web_rate_limits WHERE expires_at<?').bind(Date.now()),

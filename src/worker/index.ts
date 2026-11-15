@@ -13,6 +13,7 @@ import { setupPullRequest } from '../setup.js';
 import { processDelivery, recover } from './recovery.js';
 import { MAX_RESULT_BODY_BYTES } from '../core/limits.js';
 import { repositoryCapabilities } from '../capabilities.js';
+import { recoverRejection } from './rejections.js';
 import { compactWebhook } from './webhook.js';
 import { credentialEnvironment, publishingEnvironment } from '../core/identity.js';
 import { updateProgress, recoverProgress } from './progress.js';
@@ -310,7 +311,7 @@ export default {
     if (event.cron === '*/2 * * * *') {
       // A separate bounded invocation prevents busy dispatch/publication queues
       // from starving terminal comment updates or sharing their subrequest budget.
-      const store = new Store(env.DB); await store.cleanup(); await recoverProgress(env, store);
+      const store = new Store(env.DB); await store.cleanup(); await recoverRejection(env); await recoverProgress(env, store);
     } else await recover(env);
   }
 } satisfies ExportedHandler<Env>;
