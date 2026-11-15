@@ -1,5 +1,9 @@
 # Validation record and release gates
 
+## Bounded orchestration (synthetic acceptance)
+
+Deterministic tests cover host-owned immutable grouping, evidence tampering, exact unit/turn scope, global continuation limits, unresolved mandatory/visual evidence, valid partial output, lost execution after partial findings, duplicate findings and independent host coverage validation. Publication tests require COMMENT with preserved summary and inline findings for incomplete analysis, and failed-job tests retain nonzero review-job outcome. The actual pinned native Codex/Docker harness uses scripted Responses for small clean/findings/incomplete reviews, a 93-file / four-PNG case, changed callers across groups, targeted continuation, incomplete synthesis, changed evidence and a shared proxy budget exhausted between turns. Every scenario retains the existing write/network/credential denial checks. This is protocol, coverage and isolation evidence, not a claim of real-model semantic quality or measured production cost improvement. No live inference or production rollout belongs to this validation pass.
+
 ## Browser onboarding and context revision: local validation, 2026-11-15
 
 The final feature checkout passed `npm run check` (170 tests, zero skipped; typecheck, lint and build), `npm run test:clean` (independent `npm ci --ignore-scripts` and regenerated Env), `npm run test:workers`, `npm run test:web`, `npm run catalog:check`, Actionlint, `npm audit --audit-level=moderate` (zero findings), Docker build, `npm run test:sandbox`, Wrangler deployment dry-run and `git diff --check`. The final image also passed the strict Trivy High/Critical gate with no exemptions. Local reports, screenshots and images are ignored, not release artifacts.

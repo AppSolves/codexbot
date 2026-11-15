@@ -8,6 +8,7 @@ import { setTimeout, clearTimeout } from 'node:timers';
 import { DEFAULT_CONFIG } from '../dist/src/core/config.js';
 import { cleanupReviewContainers } from '../dist/src/runner/docker.js';
 import { ExecutionDiagnostics } from '../dist/src/core/execution.js';
+import {buildReviewPlan} from '../dist/src/runner/orchestration.js';
 
 // Runs real pinned Codex and real container isolation with synthetic Responses SSE, no credentials/quota.
 const id = randomUUID(), volume = `codexbot-test-${id}`, proxy = `codexbot-test-proxy-${id}`, review = `codexbot-test-review-${id}`;
@@ -21,6 +22,7 @@ await mkdir(directory, { recursive: true });
 for (const [path, value] of [['request.json', snapshot], ['manifest.json', { complete: true }], ['diff.json', []], ['trusted-instructions.json', []]]) await writeFile(join(directory, path), JSON.stringify(value));
 await mkdir(join(directory, 'source'));
 await writeFile(join(directory, 'source', 'fixture.txt'), 'sandbox-read-only-fixture\n');
+await buildReviewPlan(directory,head,snapshot.base,[]);
 const output = JSON.stringify(result);
 const item = { id: 'msg_fixture', type: 'message', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: output, annotations: [] }] };
 const events = [

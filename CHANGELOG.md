@@ -1,5 +1,11 @@
 # Security and behavior changes
 
+## Unreleased — bounded review orchestration
+
+- Preserve valid incomplete model summaries/findings through the private result channel. The trusted runner still fails incomplete analysis; publication remains COMMENT without approval or merge.
+- Build immutable host-owned evidence groups, run bounded same-thread continuation and mandatory cross-group synthesis, and independently validate coverage before accepting completeness. All groups share the existing proxy, request/time limits and context lookup budget.
+- Preserve primary analysis failures when the workflow reports failure. Add deterministic and real pinned Codex/Docker coverage for large PRs, images, continuation, synthesis, evidence integrity and global budget exhaustion.
+
 ## Unreleased — final context completion
 
 - Add metadata-only optional existence probes without weakening mandatory file evidence, immutable verification or existing request/API budgets. Verified absent candidates no longer invalidate otherwise complete context; infrastructure/verification errors stay distinct.

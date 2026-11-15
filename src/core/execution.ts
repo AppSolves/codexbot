@@ -10,7 +10,7 @@ proxy_model_or_effort_change_denied proxy_request_limit proxy_concurrent_request
 proxy_pipeline_failed proxy_client_disconnected proxy_deadline_exceeded proxy_stream_cleanup_failed provider_stream_read_failed provider_http_failed provider_stream_failed provider_stream_content_type_invalid provider_stream_truncated provider_stream_limit
 provider_frame_limit invalid_provider_event provider_event_type_missing provider_credential_echo provider_stream_incomplete
 codex_process_failed codex_process_exited codex_rpc_message_too_large codex_rpc_rejected invalid_codex_protocol
-image_context_invalid image_context_limit configured_model_does_not_support_images proxy_unsupported_media_input proxy_image_source_denied proxy_image_inputs_missing configured_model_not_in_codex_catalog effort_not_supported_by_selected_model codex_invalid_model_catalog codex_invalid_model_cursor
+review_plan_unverifiable review_plan_budget review_coverage_invalid image_context_invalid image_context_limit configured_model_does_not_support_images proxy_unsupported_media_input proxy_image_source_denied proxy_image_inputs_missing configured_model_not_in_codex_catalog effort_not_supported_by_selected_model codex_invalid_model_catalog codex_invalid_model_cursor
 codex_thread_id_missing codex_turn_failed codex_turn_interrupted codex_turn_timeout codex_output_not_json codex_inspection_denied codex_inspection_not_performed review_incomplete review_output_invalid engine_failed`.split(/\s+/));
 const PROVIDER_CODES = new Set(`subscription_sharing_user_not_eligible subscription_sharing_usage_limit_exceeded
 subscription_sharing_usage_unavailable subscription_sharing_unsupported_capability subscription_sharing_route_not_supported
@@ -27,6 +27,7 @@ const ORIGINS = new Set(['validation','transport','upstream_event','upstream_rea
 const TRANSPORT_CODES = new Set(['ECONNRESET','ECONNREFUSED','ENOTFOUND','EPIPE','ETIMEDOUT','UND_ERR_SOCKET','UND_ERR_BODY_TIMEOUT','UND_ERR_HEADERS_TIMEOUT','ABORT_ERR','TIMEOUT_ERR','ERR_STREAM_PREMATURE_CLOSE','ERR_STREAM_DESTROYED','ERR_STREAM_WRITE_AFTER_END']);
 const REJECTION_REASONS = ['context_incomplete','schema_invalid','head_mismatch','quarantined','output_truncated','model_incomplete','model_inconclusive','output_invalid'] as const;
 export type EngineRejectionReason = typeof REJECTION_REASONS[number];
+export const UNFINISHED_REASONS = ['model_incomplete','unreviewed_changes','missing_required_context','unresolved_analysis','visual_evidence_unavailable','continuation_limit','execution_failed','synthesis_incomplete','output_truncated'] as const;
 const REJECTIONS = new Set<string>(REJECTION_REASONS);
 interface RequestMetadata {
   request_index?: number; elapsed_ms?: number; stream_bytes?: number; stream_frames?: number; terminal_event?: TerminalEvent;

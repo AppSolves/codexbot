@@ -14,6 +14,8 @@ Configure a trigger plus up to five aliases matching `@[A-Za-z0-9]{1,39}`. Match
 
 Use `--model MODEL_ID` (or `--model=MODEL_ID`) to override the repository's model for one review; replace MODEL_ID with an available Codex catalog identifier. An unsupported model or effort fails without substitution or billing fallback. Missing inspection, incomplete context or an inconclusive result fails the review job while the separate publisher may still publish a safe COMMENT.
 
+Reviews use bounded groups of immutable changed-file evidence and a final cross-group synthesis in the same isolated Codex session. Unfinished analysis retains validated findings and its explanation as a non-approving COMMENT; it still fails the review check. Grouping does not reset usage budgets or authorize merging.
+
 Set `bot.trigger: "@CBReview"` to use the example above. The legacy default `@codexbot` remains supported; new setup chooses `@CBReview<repository_id>`. Use a name without “codex” when another Codex integration is installed. CodexBot cannot control that independent connector; see [trigger isolation and rollout](docs/review-rollout.md).
 
 ## Status

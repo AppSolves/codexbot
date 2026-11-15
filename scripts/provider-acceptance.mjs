@@ -9,6 +9,7 @@ import { OAuth, validateSession } from '../dist/src/auth/oauth.js';
 import { isolatedReview, docker } from '../dist/src/runner/docker.js';
 import { DEFAULT_CONFIG } from '../dist/src/core/config.js';
 import { normalizeReview, validateReview } from '../dist/src/core/review.js';
+import {buildReviewPlan,validateExecution} from '../dist/src/runner/orchestration.js';
 import { evaluationFixture, evaluationResult, REVIEW_CASES } from '../tests/review-evaluation-fixtures.mjs';
 const { values } = parseArgs({ options: { mode: { type: 'string' }, 'credential-file': { type: 'string' }, model: { type: 'string' }, effort: { type: 'string' }, image: { type: 'string', default: 'codexbot-review:local' }, 'allow-live-oauth': { type: 'boolean' }, 'allow-paid-api': { type: 'boolean' }, 'max-requests': { type: 'string' }, case: { type: 'string', default: 'security' }, label: { type: 'string', default: 'revised' }, 'report-file': { type: 'string' } } });
 let directory;
@@ -18,7 +19,7 @@ try {
   const oauth = values.mode === 'oauth';
   assert.ok(oauth ? values['allow-live-oauth'] && !values['allow-paid-api'] && process.env.CHATGPT_DEPLOYMENT_AUTHORIZED === 'true' : values['allow-paid-api'] && !values['allow-live-oauth']);
   assert.ok(REVIEW_CASES.includes(values.case) && ['baseline','revised'].includes(values.label));
-  const maxRequests = Number(values['max-requests']); assert.ok(Number.isInteger(maxRequests) && maxRequests >= 1 && maxRequests <= 3);
+  const maxRequests = Number(values['max-requests']); assert.ok(Number.isInteger(maxRequests) && maxRequests >= 1 && maxRequests <= 8);
   assert.ok(values['credential-file'] && values.model && /^[A-Za-z0-9._-]+$/.test(values.model));
   // Input is a private JSON file: {api_key: ...} or a validated official SIWC OAuthSession.
   let credential;
@@ -38,7 +39,9 @@ try {
     const request = { head, base: 'b'.repeat(40), config, command: { model: values.model, effort: values.effort ?? null, merge: false, instructions: 'Acceptance review of this synthetic repository only. Inspect the provided diff, both source versions and trusted instructions. Do not execute project code or claim tests passed.' } };
     const fixture = await evaluationFixture(context, request, values.case);
     const image = (await docker(['image','inspect','--format','{{.Id}}',values.image])).trim(); assert.match(image,/^sha256:[a-f0-9]{64}$/);
-    const output = validateReview(normalizeReview(await isolatedReview(image, context, key, sockets, { maxRequests, maxInputBytes: 50_000, ...(!oauth ? { maxOutputTokens: 2048 } : {}) }), head), head, fixture.files);
+    const plan=await buildReviewPlan(context,head,request.base,[]);
+    const execution=validateExecution(await isolatedReview(image, context, key, sockets, { maxRequests, maxInputBytes: 50_000, ...(!oauth ? { maxOutputTokens: 2048 } : {}) }),plan);
+    const output = validateReview(normalizeReview(execution.review, head), head, fixture.files);
     const score = evaluationResult(output, fixture);
     if (values['report-file']) await atomicPrivateFile(values['report-file'], { ...score, label: values.label, model: values.model, effort: values.effort ?? null, image });
     assert.ok(score.passed);

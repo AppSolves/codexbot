@@ -48,36 +48,42 @@ export async function cleanupReviewContainers(id: string): Promise<void> {
   const cleanup = await Promise.allSettled(containers.map(container => docker(['rm', '-f', container])));
   requireCondition(cleanup.every(result => result.status === 'fulfilled'), 'docker_cleanup_failed_check_runner');
 }
-export async function isolatedReview(image: string, directory: string, credentialFile: string, socketDirectory: string, limits: InferenceLimits = {}): Promise<unknown> {
+export async function isolatedReview(image: string, directory: string, credentialFile: string, socketDirectory: string, limits: InferenceLimits = {}, onPartialFailure: (failure: ExecutionError)=>void = failure=>{throw failure;}): Promise<unknown> {
   requireCondition(/^[a-zA-Z0-9._:/@-]+$/.test(image), 'invalid_review_image');
   const id = crypto.randomUUID(), proxy = `codexbot-proxy-${id}`, review = `codexbot-review-${id}`;
   const uid = process.getuid?.(), gid = process.getgid?.();
   requireCondition(uid !== undefined && uid !== 0 && gid !== undefined, 'review_requires_nonroot_linux_runner');
   const common = ['--label', `codexbot.run=${id}`, '--read-only', '--cap-drop=ALL', '--security-opt=no-new-privileges', '--pids-limit=128', '--memory=2g', '--cpus=2', `--user=${uid}:${gid}`, `--tmpfs=/tmp:rw,noexec,nosuid,size=128m,uid=${uid}`, `--tmpfs=/home/codex:rw,nosuid,size=128m,uid=${uid}`];
-  let primary: unknown, result: unknown;
+  let primary: unknown, result: unknown, partial:ExecutionError|undefined;
+  const observe=async(failure:ExecutionError)=>{
+    // Only this run's separate credential proxy can attest to provider HTTP or cleanup.
+    const observed = new ExecutionDiagnostics();
+    try { observed.write(await docker(['logs', '--tail', '32', proxy], 64_000, observed)); } catch { /* Keep the real primary failure if diagnostics are unavailable. */ }
+    for(const request of observed.history)console.error(proxyRequestEnvelope(request));
+    if(observed.request&&!observed.history.some(x=>x.request_index===observed.request!.request_index))console.error(proxyRequestEnvelope(observed.request));
+    if(observed.request){failure.proxyRequest=observed.request;if(observed.request.primary)failure.proxyFailure=observed.request.primary;if(observed.request.cleanup)failure.proxyCleanup=observed.request.cleanup;}else if(observed.last)failure.proxyFailure=observed.last;
+  };
   try {
     await docker(['create', '--name', proxy, '--network=bridge', ...common, '--env', `CODEXBOT_ACCEPTANCE_LIMITS=${JSON.stringify(limits)}`, '--mount', `type=bind,src=${credentialFile},dst=/run/credential,readonly`, '--mount', `type=bind,src=${socketDirectory},dst=/run/proxy`, image, 'node', 'dist/src/runner/proxy-main.js']);
     await docker(['start', proxy]);
     await proxyReady(proxy);
     const output = await docker(['run', '--name', review, '--network=none', ...common, '--mount', `type=bind,src=${directory},dst=/workspace,readonly`, '--mount', `type=bind,src=${socketDirectory},dst=/run/proxy,readonly`, image, 'node', 'dist/src/runner/engine-main.js']);
     try { result = JSON.parse(output) as unknown; } catch { throw new ExecutionError({ component: 'engine', code: 'codex_output_not_json' }); }
+    if(result&&typeof result==='object'&&'failure' in result&&result.failure!==null){const detail=executionFailure(result.failure);requireCondition(detail&&['engine','turn','model','codex_rpc','codex_process'].includes(detail.component),'review_coverage_invalid');partial=new ExecutionError(detail);await observe(partial);}
+    else if(result&&typeof result==='object'&&'review' in result&&result.review&&typeof result.review==='object'&&'complete' in result.review&&result.review.complete===false)await observe(new ExecutionError({component:'engine',code:'review_incomplete',rejection_reason:'model_incomplete'}));
   } catch (error) {
     const failure = executionError(error, 'docker', 'container_exit_failed');
-    // Only this run's credential proxy can report an actual upstream HTTP status.
-    const observed = new ExecutionDiagnostics();
-    try { observed.write(await docker(['logs', '--tail', '32', proxy], 64_000, observed)); } catch { /* The primary failure remains authoritative when logs are unavailable. */ }
-    for(const request of observed.history)console.error(proxyRequestEnvelope(request));
-    if(observed.request&&!observed.history.some(x=>x.request_index===observed.request!.request_index))console.error(proxyRequestEnvelope(observed.request));
-    if (observed.request) { failure.proxyRequest=observed.request;if(observed.request.primary)failure.proxyFailure=observed.request.primary;if(observed.request.cleanup)failure.proxyCleanup=observed.request.cleanup; }
-    else if (observed.last) failure.proxyFailure = observed.last;
+    await observe(failure);
     primary = failure;
   } finally {
     try { await cleanupReviewContainers(id); }
     catch (error) {
-      if (!primary) primary = error;
-      else console.error(JSON.stringify({ event: 'container_cleanup_failed', code: 'docker_cleanup_failed_check_runner' }));
+      if(primary||partial)console.error(JSON.stringify({ event: 'container_cleanup_failed', code: 'docker_cleanup_failed_check_runner' }));
+      else if(result!==undefined)partial=executionError(error,'docker','container_exit_failed');
+      else primary=error;
     }
   }
   if (primary) throw primary;
+  if(partial)onPartialFailure(partial);
   return result;
 }
