@@ -60,7 +60,7 @@ The installed minute cron handles bounded dispatch/publication recovery and clea
 
 CHATGPT_DEPLOYMENT_AUTHORIZED=false is mandatory until OpenAI confirms eligibility for the actual local/hosted/ephemeral Actions topology. Public source or a successful token exchange does not grant hosted ChatGPT-plan rights. API-key mode works independently with each actor's own key and separate billing.
 
-MERGE_DEPLOYMENT_AUTHORIZED=false remains until the disposable advisory/verdict/protection acceptance matrix passes. Then explicitly enable repository merge policy and independent whitelist. Never add the App to branch/ruleset bypass lists. Require current human approvals and CI. For pending CI, require check "CodexBot reviewed commit" with integration/app_id equal to this App's numeric ID; allowing any source is insufficient. No automated merge-queue implementation is claimed.
+MERGE_DEPLOYMENT_AUTHORIZED=false remains until the disposable advisory/verdict/protection acceptance matrix passes. Then explicitly enable repository merge policy and independent whitelist. Never add the App to branch/ruleset bypass lists. Require GitHub-qualified approvals, any explicitly configured additional human approvals, and CI. For pending CI, require check "CodexBot reviewed commit" with integration/app_id equal to this App's numeric ID; allowing any source is insufficient. No automated merge-queue implementation is claimed.
 
 ## Capacity and hosting
 

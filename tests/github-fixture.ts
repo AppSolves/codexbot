@@ -4,8 +4,8 @@ import { snapshot, HEAD, BASE, WORKFLOW, files } from './fixtures.js';
 export function githubFixture() {
   const config = snapshot().config;
   const state = { privateRepository:false, head: HEAD, base: BASE, permission: 'write', permissionAfterReview: null as string | null, userId: 5, author: 'alice', mergeState: 'CLEAN',
-    reviewDecision: 'APPROVED', autoMergeAllowed: true, reviews: [] as Record<string, unknown>[], installationId: 1, suspended: false, merged: false,
-    ci: 'SUCCESS', guarded: false, requiredHumans: 1, rules: [] as Record<string, unknown>[], autoMergeOwner: null as string | null,
+    reviewDecision: 'APPROVED' as string | null, autoMergeAllowed: true, reviews: [] as Record<string, unknown>[], installationId: 1, suspended: false, merged: false,
+    ci: 'SUCCESS', guarded: false, requiredApprovals: 1, rules: [] as Record<string, unknown>[], autoMergeOwner: null as string | null,
     humans: [{ id: 80, state: 'APPROVED', commit_id: HEAD, user: { id: 6, login: 'bob', type: 'User' } }] as Record<string, unknown>[],
     checks: [] as Record<string, unknown>[], contextTruncated: false, comments: [] as Record<string, unknown>[], runStatus: 'in_progress', runConclusion: null as string | null,
     permissionsByLogin: {} as Record<string,string>,
@@ -23,7 +23,7 @@ export function githubFixture() {
     if (path === '/repos/owner/repo') return ok(repo);
     if (path === '/repos/owner/repo/branches/main') return ok({ commit: { sha: WORKFLOW }, protected: true });
     if (path === '/repos/owner/repo/rules/branches/main') return ok(state.rules);
-    if (path === '/repos/owner/repo/branches/main/protection') return ok({ required_status_checks: { checks: [{ context: 'ci', app_id: null }, ...(state.guarded ? [{ context: config.merge.guard_check, app_id: 42 }] : [])] }, required_pull_request_reviews: { required_approving_review_count: state.requiredHumans } });
+    if (path === '/repos/owner/repo/branches/main/protection') return ok({ required_status_checks: { checks: [{ context: 'ci', app_id: null }, ...(state.guarded ? [{ context: config.merge.guard_check, app_id: 42 }] : [])] }, required_pull_request_reviews: { required_approving_review_count: state.requiredApprovals } });
     if (path === '/repos/owner/repo/contents/.codexbot.yml') return ok({ type: 'file', size: 1000, content: Buffer.from(stringify(config)).toString('base64') });
     if (path.includes('/collaborators/') && path.endsWith('/permission')) { const login = decodeURIComponent(path.split('/').at(-2)!); return ok({ permission: state.permissionsByLogin[login] ?? state.permission, user: { id: login === 'github-actions[bot]' ? 41898282 : login === 'alice' ? state.userId : 6, login, type: login === 'github-actions[bot]' ? 'Bot' : 'User' } }); }
     if(path==='/users/bob')return ok({id:6,login:'bob',type:'User'});

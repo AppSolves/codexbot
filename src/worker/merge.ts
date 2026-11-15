@@ -56,10 +56,11 @@ export async function controlMerge(github: Octokit, snapshot: RequestSnapshot, c
   let protection: Awaited<ReturnType<typeof github.rest.repos.getBranchProtection>>['data'] | undefined;
   try { protection = (await github.rest.repos.getBranchProtection({ ...repo, branch: pr.baseRefName })).data; }
   catch (error) { requireCondition(error && typeof error === 'object' && 'status' in error && error.status === 404 && rules.length > 0, 'branch_protection_not_verifiable', 403); }
-  const specialHumanRules = protection?.required_pull_request_reviews?.require_code_owner_reviews || protection?.required_pull_request_reviews?.require_last_push_approval ||
-    rules.some(rule => rule.type === 'pull_request' && (rule.parameters?.require_code_owner_review || rule.parameters?.require_last_push_approval));
-  const humanMinimum = Math.max(config.merge.minimum_human_approvals, specialHumanRules ? 1 : 0, protection?.required_pull_request_reviews?.required_approving_review_count ?? 0,
-    ...rules.filter(x => x.type === 'pull_request').map(x => x.parameters?.required_approving_review_count ?? 0));
+  const githubApprovalRequired = Boolean(protection?.required_pull_request_reviews && (
+    (protection.required_pull_request_reviews.required_approving_review_count ?? 0) > 0 || protection.required_pull_request_reviews.require_code_owner_reviews || protection.required_pull_request_reviews.require_last_push_approval)) ||
+    rules.some(rule => rule.type === 'pull_request' && ((rule.parameters?.required_approving_review_count ?? 0) > 0 || rule.parameters?.require_code_owner_review || rule.parameters?.require_last_push_approval));
+  // GitHub qualifies App/CODEOWNER/last-push reviews; only repository policy adds humans.
+  const humanMinimum = config.merge.minimum_human_approvals;
   const reviews = await github.paginate(github.rest.pulls.listReviews, { ...repo, pull_number: snapshot.pr, per_page: 100 }, response => {
     requireCondition(response.data.length < 100, 'human_review_history_requires_manual_review'); return response.data;
   });
@@ -70,10 +71,10 @@ export async function controlMerge(github: Octokit, snapshot: RequestSnapshot, c
   let humans = 0;
   let permissionChecks = 0;
   for (const [userId, review] of [...latest].reverse()) {
+    if (humans >= humanMinimum) break;
     if (review.state !== 'APPROVED' || review.commit_id !== snapshot.head) continue;
     if (++permissionChecks > 8) return stop('human_permission_budget_requires_manual_review');
     if (['write','maintain','admin'].includes(await permission(github, snapshot.repository, review.user!.login, userId))) humans++;
-    if (humans >= humanMinimum) break;
   }
   if (pr.reviewDecision==='CHANGES_REQUESTED') return stop('human_changes_requested');
   const contexts = pr.commits.nodes[0]?.commit.statusCheckRollup?.contexts;
@@ -85,9 +86,13 @@ export async function controlMerge(github: Octokit, snapshot: RequestSnapshot, c
     ...rules.filter(x => x.type === 'required_status_checks').flatMap(x => x.parameters?.required_status_checks ?? []).map(x => ({ name: x.context, app: x.integration_id }))];
   const guarded = required.some(x => x.name === config.merge.guard_check && x.app === options.appId);
   const missing = required.filter(x => x.name !== config.merge.guard_check).some(required => !checks.some(x => (x.name ?? x.context) === required.name && (!required.app || required.app === -1 || x.checkSuite?.app?.databaseId === required.app)));
-  if (humans < humanMinimum || pr.reviewDecision==='REVIEW_REQUIRED') {
+  if (humans < humanMinimum) {
     await stop('independent_human_approvals_required');
     // Keep only the durable worker intent. Native auto-merge stays disabled until real humans qualify.
+    return 'queued';
+  }
+  if (pr.reviewDecision==='REVIEW_REQUIRED' || (githubApprovalRequired && pr.reviewDecision!=='APPROVED')) {
+    await stop('github_approval_requirements_not_satisfied');
     return 'queued';
   }
   const disposition = mergeDisposition({ head: pr.headRefOid, expectedHead: snapshot.head, open: pr.state === 'OPEN', draft: pr.isDraft,
