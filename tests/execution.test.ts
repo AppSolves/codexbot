@@ -10,7 +10,7 @@ import { ExecutionDiagnostics, ExecutionError, executionEnvelope, executionFailu
 import { docker } from '../src/runner/docker.js';
 import { runCodex } from '../src/runner/engine.js';
 import { Rpc } from '../src/runner/rpc.js';
-import { reviewJob } from '../src/runner/main.js';
+import { reviewJob, waitForRefresh } from '../src/runner/main.js';
 import { snapshot, clean } from './fixtures.js';
 
 const sensitive = 'Bearer fixture-private-credential OAuth-code private-source prompt-provider-message';
@@ -203,4 +203,15 @@ await test('actual review job records incomplete fallback, releases acquired lea
     if (gid) Object.defineProperty(process, 'getgid', gid); else Reflect.deleteProperty(process, 'getgid');
     for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key]; Object.assign(process.env, saved);
   }
+});
+
+await test('runner waits for the provider refresh window without consuming a token early and bounds future waits',async t=>{
+  const now=1700000000000;t.mock.timers.enable({apis:['Date','setTimeout'],now});
+  try{
+    let allowed=false;const waiting=waitForRefresh(now+5*60000).then(()=>{allowed=true;});
+    t.mock.timers.tick(5*60000-1);await Promise.resolve();assert.equal(allowed,false);
+    t.mock.timers.tick(1);await waiting;assert.equal(allowed,true);assert.equal(Date.now(),now+5*60000);
+    await waitForRefresh(now-1);
+    for(const earliest of [NaN,Infinity,-1,Date.now()+25*60000+1])await assert.rejects(waitForRefresh(earliest),{code:'oauth_refresh_window_unavailable'});
+  }finally{t.mock.timers.reset();}
 });
