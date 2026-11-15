@@ -40,6 +40,7 @@ export async function webRoute(request: Request, env: WebConfig): Promise<Respon
   if (request.method === 'GET' && path === '/assets/app.css') return new Response(APP_CSS, { headers: { 'Content-Type': 'text/css; charset=utf-8' } });
   if (request.method === 'GET' && path === '/assets/app.js') return new Response(APP_JS, { headers: { 'Content-Type': 'application/javascript; charset=utf-8' } });
   if (!path.startsWith('/auth/') && !path.startsWith('/dashboard')) return null;
+  if (env.WEB_ENABLED!=='true' && request.method==='GET' && path==='/dashboard') return redirect('/');
   try {
     webKey(env);
     if (request.method === 'GET' && path === '/auth/error') return page('Connection needs attention', '<section class="page-title"><h1>Connection needs attention.</h1><p role="alert">Sign-in or credential provisioning could not finish. No approval or inference was authorized. Return to the repository to resume pending provisioning, or start sign-in again.</p><a class="button primary" href="/dashboard">Return to dashboard</a></section>');
