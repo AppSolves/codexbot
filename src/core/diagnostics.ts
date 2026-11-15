@@ -1,5 +1,5 @@
 import { AppError } from './errors.js';
-import { ExecutionError, executionFailure, type ExecutionFailure } from './execution.js';
+import { ExecutionError, executionFailure, proxyRequestDiagnostic, type ProxyRequestDiagnostic, type ExecutionFailure } from './execution.js';
 
 export const REVIEW_STAGES = ['environment','prepare','context','credentials','analyzing','result','publish','release'] as const;
 export const FAILURE_CODES = new Set(['missing_environment_credentials','ambiguous_environment_credentials','credential_owner_mismatch','missing_read_token',
@@ -30,15 +30,16 @@ github_actions_oidc_unavailable invalid_oidc_endpoint github_oidc_request_failed
 export class BrokerError extends AppError {
   constructor(public readonly operation: string, status: number, public readonly remoteCode: string | null) { super(`broker_${operation}_failed`, status); }
 }
-export function diagnostic(error: unknown, stage: string): { event: string; stage: string; code: string; status?: number; broker_code?: string; execution?: ExecutionFailure; proxy_failure?: ExecutionFailure } {
+export function diagnostic(error: unknown, stage: string): { event: string; stage: string; code: string; status?: number; broker_code?: string; execution?: ExecutionFailure; proxy_failure?: ExecutionFailure; proxy_cleanup?: ExecutionFailure; proxy_request?: Omit<ProxyRequestDiagnostic,'primary'|'cleanup'> } {
   const result: ReturnType<typeof diagnostic> = {
     event: 'review_failed', stage: REVIEW_STAGES.includes(stage as typeof REVIEW_STAGES[number]) ? stage : 'environment', code: 'external_or_execution_failure'
   };
   if (error instanceof ExecutionError) {
     result.code = error.code;
     result.execution = executionFailure(error.detail)!;
-    const proxy = executionFailure(error.proxyFailure);
-    if (proxy) result.proxy_failure = proxy;
+    const request=proxyRequestDiagnostic(error.proxyRequest);
+    if(request){const {primary,cleanup,...state}=request;result.proxy_request=state;if(primary)result.proxy_failure=primary;if(cleanup)result.proxy_cleanup=cleanup;}
+    else {const proxy=executionFailure(error.proxyFailure),cleanup=executionFailure(error.proxyCleanup);if(proxy)result.proxy_failure=proxy;if(cleanup)result.proxy_cleanup=cleanup;}
     return result;
   }
   if (error instanceof BrokerError && OPERATIONS.has(error.operation)) {

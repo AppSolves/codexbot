@@ -4,6 +4,10 @@ import { createServer } from 'node:http';
 import { once } from 'node:events';
 import { inferenceProxy, createInferenceServer } from '../src/runner/proxy.js';
 import type { ExecutionFailure } from '../src/core/execution.js';
+function rejectionMetadata(value: ExecutionFailure) {
+  assert(Number.isInteger(value.elapsed_ms)&&value.elapsed_ms!>=0&&value.elapsed_ms!<=1_320_000);
+  return {request_index:1,elapsed_ms:value.elapsed_ms,stream_bytes:0,stream_frames:0,terminal_event:'none',abort_origin:'none'};
+}
 await test('API-key and ChatGPT adapters inject only their own bearer at the isolated inference boundary', async () => {
   for (const credential of ['fixture-personal-api-key', 'fixture-personal-oauth-token']) {
     const requests: { url: string; auth: string; body: string }[] = [];
@@ -51,9 +55,9 @@ await test('proxy diagnostics retain only proven HTTP status and exact provider 
       const result = await post(body); assert.equal(result.status, status); assert.ok(!(await result.text()).includes(secret));
       assert.deepEqual(diagnostics[0], { component: 'provider', code: 'provider_http_failed', upstream_status: status,
         content_type_category: 'other', body_present: true,
-        ...(!['oversized', secret].includes(code) ? { provider_code: code } : {}), ...(param && param !== secret ? { provider_param: param } : {}) });
+        origin:'transport',...rejectionMetadata(diagnostics[0]!),...(!['oversized', secret].includes(code) ? { provider_code: code } : {}), ...(param && param !== secret ? { provider_param: param } : {}) });
       const denied = await post({ ...body, [secret]: secret }); assert.equal(denied.status, 403); await denied.text();
-      assert.deepEqual(diagnostics[1], { component: 'proxy', code: 'proxy_unsupported_request_field' });
+      assert.deepEqual(diagnostics[1], { component: 'proxy', code: 'proxy_unsupported_request_field',origin:'validation',...rejectionMetadata(diagnostics[1]!) });
       assert.equal(calls, 1); assert.ok(!JSON.stringify(diagnostics).includes(secret));
     } finally { server.closeAllConnections(); server.close(); }
   }
@@ -96,7 +100,7 @@ await test('upstream 2xx requires a real SSE body; only classified response meta
       assert.equal(result.status, valid ? input.status : 403);
       if (valid) { assert.match(output, /response.completed/); assert.deepEqual(diagnostics, []); }
       else assert.deepEqual(diagnostics, [{ component: 'provider', code: 'provider_stream_content_type_invalid', upstream_status: input.status,
-        content_type_category: input.category, body_present: input.body !== null, ...(input.approvedCode ? { provider_code: 'model_not_found', provider_param: 'model' } : {}) }]);
+        content_type_category: input.category, body_present: input.body !== null, origin:'transport',...rejectionMetadata(diagnostics[0]!),...(input.approvedCode ? { provider_code: 'model_not_found', provider_param: 'model' } : {}) }]);
       assert.ok(!output.includes(secret)); assert.ok(!JSON.stringify(diagnostics).includes(secret));
       assert.equal(result.headers.get('x-private-header'), null);
     } finally { server.closeAllConnections(); server.close(); }
@@ -111,7 +115,7 @@ await test('unreadable/cancellation-failed upstream bodies preserve only observe
   try {
     const result = await fetch(`http://127.0.0.1:${address.port}/v1/responses`, { method: 'POST', body: JSON.stringify({ model: 'fixture', store: false, stream: true, input: [] }) });
     assert.equal(result.status, 403); assert.ok(!(await result.text()).includes(secret));
-    assert.deepEqual(diagnostics, [{ component: 'provider', code: 'provider_stream_content_type_invalid', upstream_status: 200, content_type_category: 'json', body_present: true }]);
+    assert.deepEqual(diagnostics, [{ component: 'provider', code: 'provider_stream_content_type_invalid', upstream_status: 200, content_type_category: 'json', body_present: true,origin:'transport',...rejectionMetadata(diagnostics[0]!) }]);
   } finally { server.closeAllConnections(); server.close(); }
 });
 await test('inference locks model/effort and denies stored prompts and additional hosted tools', async () => {

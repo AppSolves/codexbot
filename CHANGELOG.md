@@ -1,5 +1,11 @@
 # Security and behavior changes
 
+## Unreleased — inference diagnostics
+
+- Preserve correlated per-request primary and cleanup errors, bounded HTTP/SSE metadata and allowlisted transport causes. A consumer closing after a completed SSE response is no longer mislabeled as a provider failure; successful retries clear stale failures.
+- Distinguish fixed engine rejection reasons for incomplete/inconclusive results, invalid schema/head, quarantine and truncation. Incomplete reviews still fail CI and publish only a non-approving fallback.
+- Add native pinned-Codex Docker regressions for completed-but-open HTTP streams and malformed structured output. No prompts, inference timeouts, context budgets, authorization or review/merge policy change.
+
 ## 0.1.0 — verified PNG input and large-PR context
 
 - Verify PNG evidence separately from textual patches and supply immutable base/head images through official Codex localImage inputs. Require image-capable models and actual image transport; independently verify publication evidence. Image findings appear in the summary without invented inline locations. Unsupported formats and incomplete visual coverage remain non-approving.

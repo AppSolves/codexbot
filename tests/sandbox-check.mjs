@@ -34,7 +34,7 @@ const events = [
   { type: 'response.completed', response: { id: 'resp_fixture', status: 'completed', output: [item], usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } }
 ].map((event, sequence_number) => `event: ${event.type}\ndata: ${JSON.stringify({ ...event, sequence_number })}\n\n`).join('');
 const proxyScript = `import {createInferenceServer} from '/app/dist/src/runner/proxy.js';
-import {executionEnvelope} from '/app/dist/src/core/execution.js';
+import {executionEnvelope,proxyRequestEnvelope} from '/app/dist/src/core/execution.js';
 let calls=0;
 globalThis.fetch = async (url, init) => {
   if(url !== 'https://api.openai.com/v1/responses' || init.headers.Authorization !== 'Bearer fixture-only') throw new Error('Invalid inference boundary');
@@ -43,7 +43,7 @@ globalThis.fetch = async (url, init) => {
   if(++calls > 1) return Response.json({error:{code:calls===2?'subscription_sharing_unsupported_capability':'model_not_found',param:calls===2?'tools':'model',message:'private-fixture-provider-body'}},{status:calls===2?400:200});
   return new Response(${JSON.stringify(events)}, {headers:{'content-type':'text/event-stream'}});
 };
-createInferenceServer('fixture-only',{},detail=>process.stderr.write(executionEnvelope(detail)+'\\n')).listen('/run/proxy/inference.sock',()=>process.stdout.write('ready\\n'));`;
+createInferenceServer('fixture-only',{},detail=>process.stderr.write(executionEnvelope(detail)+'\\n'),value=>process.stderr.write(proxyRequestEnvelope(value)+'\\n')).listen('/run/proxy/inference.sock',()=>process.stdout.write('ready\\n'));`;
 const common = ['--label', `codexbot.run=${id}`, '--network=none', '--read-only', '--cap-drop=ALL', '--security-opt=no-new-privileges', '--pids-limit=128', '--memory=2g', '--user=1000:1000', '--tmpfs=/tmp:rw,noexec,nosuid,size=128m,uid=1000', '--tmpfs=/home/codex:rw,nosuid,size=128m,uid=1000'];
 const partial = randomUUID();
 try {
@@ -101,8 +101,9 @@ try {
       logs.stderr.setEncoding('utf8'); logs.stderr.on('data', chunk => observed.write(chunk));
       logs.on('error', reject); logs.on('close', code => code === 0 ? resolveLogs() : reject(new Error('Synthetic proxy observation failed')));
     });
+    assert(observed.request.request_index>=2&&observed.request.request_index<=101);assert(Number.isInteger(observed.last.elapsed_ms)&&observed.last.elapsed_ms>=0&&observed.last.elapsed_ms<=1_320_000);
     assert.deepEqual(observed.last, { component: 'provider', code: status === 400 ? 'provider_http_failed' : 'provider_stream_content_type_invalid',
-      upstream_status: status, content_type_category: 'json', body_present: true,
+      upstream_status: status, content_type_category: 'json', body_present: true,origin:'transport',request_index:observed.request.request_index,elapsed_ms:observed.last.elapsed_ms,stream_bytes:0,stream_frames:0,terminal_event:'none',abort_origin:'none',
       provider_code: status === 400 ? 'subscription_sharing_unsupported_capability' : 'model_not_found', provider_param: status === 400 ? 'tools' : 'model' });
   }
   process.stdout.write('Pinned Codex failed turns for HTTP 400 and HTTP 200 JSON preserve safe proxy metadata, exit 1 and no review output.\n');

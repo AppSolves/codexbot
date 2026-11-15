@@ -46,14 +46,17 @@ const validate = new Ajv().compile<Review>({ ...REVIEW_SCHEMA, properties: { ...
   output_truncated: { type: 'boolean' }, quarantined: { type: 'boolean' } } });
 
 /** Applied before transport, persistence and publication. No suspicious source text escapes. */
-export function normalizeReview(value: unknown, head: string): Review {
+export type ReviewRejectionReason = 'schema_invalid' | 'head_mismatch' | 'quarantined' | 'output_truncated';
+export function normalizeReview(value: unknown, head: string, onReject: (reason: ReviewRejectionReason) => void = () => {}): Review {
   const fallback = failedReview(head);
-  if (scanSecrets(value).length) return { ...fallback, quarantined: true };
-  if (!validate(value) || value.head_sha !== head) return fallback;
+  if (scanSecrets(value).length) {onReject('quarantined');return { ...fallback, quarantined: true };}
+  if (!validate(value)) {onReject('schema_invalid');return fallback;}
+  if (value.head_sha !== head) {onReject('head_mismatch');return fallback;}
   const review = structuredClone(value);
   const size = () => Buffer.byteLength(JSON.stringify(review));
-  if (size() > MAX_RAW_REVIEW_BYTES) return { ...fallback, output_truncated: true };
+  if (size() > MAX_RAW_REVIEW_BYTES) {onReject('output_truncated');return { ...fallback, output_truncated: true };}
   if (size() > MAX_REVIEW_BYTES) {
+    onReject('output_truncated');
     // Retain severity, confidence and locations. Any information loss disables approval.
     review.complete = false; review.output_truncated = true;
     const shorten = (text: string, bytes: number) => {
@@ -65,7 +68,8 @@ export function normalizeReview(value: unknown, head: string): Review {
     }
     if (review.result === 'clean') review.result = 'inconclusive';
   }
-  return size() <= MAX_REVIEW_BYTES ? review : { ...fallback, output_truncated: true };
+  if(size()<=MAX_REVIEW_BYTES)return review;
+  onReject('output_truncated');return { ...fallback, output_truncated: true };
 }
 
 export function safePath(path: string): boolean {
