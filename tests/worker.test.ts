@@ -1,3 +1,4 @@
+import { readFile } from 'node:fs/promises';
 import { test, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
@@ -45,6 +46,7 @@ await test('retained aliases expose only public pages; privileged routes never r
   assert.equal(f.calls.length, 0);
   for (const path of ['/', '/health']) {
     const response = await worker.fetch(new Request(`https://retired.invalid${path}`), env); assert.equal(response.status, 200);
+    if (path === '/health') assert.deepEqual(await response.json(),{status:'ok',version:JSON.parse(await readFile('package.json','utf8')).version});
     if (path === '/') {
       const page = await response.text(); assert.ok(page.includes('CLI setup instructions'));
       assert.ok(page.includes(`<link rel="canonical" href="${DEFAULT_BACKEND}/">`)); assert.ok(!page.includes('WORKER_URL'));

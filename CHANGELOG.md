@@ -1,5 +1,10 @@
 # Security and behavior changes
 
+## 0.1.0-beta.1 — CLI onboarding release
+
+Native review decisions, automatic owner-consented reviews, autonomous and optional human-supervised merging. Browser ChatGPT onboarding remains explicitly deferred and disabled. Repository opt-in and all actual GitHub protections remain mandatory.
+
+
 - Allow an explicit, bounded operator request budget only for the exact disposable acceptance tenant. Preserve all counters, other quotas, authorization, protected policy and native review requirements; disabled by default.
 
 - Parse real JS/TS import syntax with the existing pinned TypeScript compiler when selecting essential context. Generated-code strings/comments no longer cause false missing-dependency failures; actual missing imports/exports/require calls remain fail-closed.
