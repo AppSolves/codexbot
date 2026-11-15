@@ -1,5 +1,7 @@
 # Security and behavior changes
 
+- Admission feedback: precise atomic quota/duplicate/cooldown/concurrency outcomes, calculated UTC retry times and durable App-owned rejection comments; deterministic denials no longer churn webhook retries. Additive migration 0005 and bounded ambiguity-safe publication recovery.
+
 ## Unreleased — security remediation pass
 
 - Add bounded immutable file-index/context-socket exploration, simple Python/Rust dependencies, unchanged-caller fixtures and concise evidence-driven review guidance. Keep the reviewer read-only, network-disabled and credential-free; drain/cancel lookups and revoke the read token during cleanup. Improve native review summaries without changing verdict policy or publication fingerprints.

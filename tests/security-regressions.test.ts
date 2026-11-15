@@ -28,7 +28,7 @@ await test('per-review model is persisted and included in same-head idempotency 
     await store.create(other);
     assert.equal((await store.get(other.id)).snapshot.command.model, 'codex-other');
     await store.transition(first.id, 'created', 'failed');
-    await assert.rejects(store.create({ ...first, id: crypto.randomUUID() }), /duplicate_review_or_quota_exceeded/);
+    await assert.rejects(store.create({ ...first, id: crypto.randomUUID() }), /duplicate_review/);
     assert.equal(sqlite.prepare('SELECT count(*) AS n FROM requests').get()!.n, 2);
   } finally { sqlite.close(); }
 });
@@ -88,11 +88,11 @@ await test('atomic quotas, same-head idempotency, bounded rerun and tenant isola
     const attempts = await Promise.allSettled([store.create(request), store.create({ ...request, id: crypto.randomUUID() })]); assert.equal(attempts.filter(x => x.status === 'fulfilled').length, 1);
     const admitted = attempts.find(x => x.status === 'fulfilled'); assert.ok(admitted);
     assert.equal(await store.transition(admitted.value.id, 'created', 'failed'), true);
-    await assert.rejects(store.create({ ...request, id: crypto.randomUUID() }), /duplicate_review_or_quota_exceeded/);
+    await assert.rejects(store.create({ ...request, id: crypto.randomUUID() }), /duplicate_review/);
     const rerun = { ...request, id: crypto.randomUUID(), command: { ...request.command, rerun: true } };
     await store.create(rerun); await store.transition(rerun.id, 'created', 'failed');
     const twice = { ...rerun, id: crypto.randomUUID() }; await store.create(twice); await store.transition(twice.id, 'created', 'failed');
-    await assert.rejects(store.create({ ...rerun, id: crypto.randomUUID() }), /quota/);
+    await assert.rejects(store.create({ ...rerun, id: crypto.randomUUID() }), /rerun_limit_exceeded/);
     await store.create({ ...request, id: crypto.randomUUID(), installationId: 2 });
     const other = { ...request, id: crypto.randomUUID(), command: { ...request.command, instructions: 'Different task context' } };
     await store.create(other);
