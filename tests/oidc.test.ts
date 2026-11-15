@@ -21,3 +21,16 @@ await test('OIDC cryptographically rejects forged signatures, expiry, issuer and
   const wrongIssuer = await new SignJWT(claims).setProtectedHeader({ alg: 'RS256' }).setIssuer('https://attacker.invalid').setAudience('https://broker.invalid').setIssuedAt().setNotBefore('0s').setExpirationTime('5m').sign(keys.privateKey);
   await assert.rejects(verifyWorkload(wrongIssuer, 'https://broker.invalid', expected, () => keys.publicKey));
 });
+
+await test('immutable default subjects bind both numeric identities and the exact review/publishing Environment',async()=>{
+  const keys=await generateKeyPair('RS256');
+  for(const environment of ['codexbot-1-5','codexbot-publish-1','production:restricted']){
+    const subject=`repo:owner@3/repo@2:environment:${environment.replace(/:/g,'%3A')}`;
+    const input={...claims,environment,sub:subject},identity={...expected,environment};
+    const jwt=await new SignJWT(input).setProtectedHeader({alg:'RS256'}).setIssuer('https://token.actions.githubusercontent.com').setAudience('https://broker.invalid').setIssuedAt().setNotBefore('0s').setExpirationTime('5m').sign(keys.privateKey);
+    assert.equal((await verifyWorkload(jwt,'https://broker.invalid',identity,()=>keys.publicKey)).runId,'123');
+    for(const invalid of [subject.replace('owner@3','owner@99'),subject.replace('repo@2','repo@22'),subject.replace('owner@3','other@3'),subject.replace('repo@2','other@2'),subject+':extra',subject.replace(':environment:',':ref:'),subject.replace('@3','@03')])assert.throws(()=>checkClaims({...input,sub:invalid},identity),{code:'oidc_subject_mismatch'});
+    assert.throws(()=>checkClaims(input,{...identity,environment:'other'}),{code:'oidc_environment_mismatch'});
+    assert.throws(()=>checkClaims({...input,job_workflow_sha:WORKFLOW},identity),{code:'oidc_reusable_workflow_mismatch'});
+  }
+});
