@@ -18,7 +18,7 @@ Set `bot.trigger: "@CBReview"` to use the example above. The legacy default `@co
 
 ## Status
 
-**CLI-based beta.** CodexBot supports complete native COMMENT, APPROVE and REQUEST_CHANGES reviews, automatic reviews, owner-consented unattended credentials, Fully Autonomous merging and optional Human-in-the-Loop. Release evidence and remaining beta limitations are recorded in the GitHub release notes.
+**CLI-based release.** CodexBot supports complete native COMMENT, APPROVE and REQUEST_CHANGES reviews, automatic reviews, owner-consented unattended credentials, Fully Autonomous merging and optional Human-in-the-Loop. Release evidence and supported feature limitations are recorded in the GitHub release notes.
 
 Browser ChatGPT onboarding is intentionally deferred and is **not a release blocker**. Keep `WEB_ENABLED=false` and `OPENAI_HOSTED_INFERENCE_AUTHORIZED=false`. Installation redirects lead to the CLI instructions; no website OAuth client is needed for the approved existing CLI connection. Reviews and merges then run without an ongoing CLI process. See [configuration](docs/configuration.md) for explicit repository-owner credential assignment and the two merge modes.
 
