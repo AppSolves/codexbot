@@ -1,5 +1,7 @@
 # Security and behavior changes
 
+- Accept GitHub's documented immutable default OIDC subjects for new/renamed repositories, exactly binding owner ID, repository ID and Environment while retaining the legacy subject and all signed identity/workflow checks.
+
 - Add primary Fully Autonomous merging (0 humans), optional Human-in-the-Loop (1–6), owner-opted-in merge-on-approval and a repository/installation-scoped live acceptance gate. Preserve GitHub protections, native approval and exact-head checks.
 - Add explicit CLI consent and protected repository assignment for unattended reviews of authorized contributors without provider accounts. Migration 0006 scopes grants by installation/repository/owner and fences each consent generation through leases, refresh and privileged publication. Manual commands never borrow an assigned connection.
 - Make CLI provisioning the current public onboarding path; browser OAuth remains deferred and disabled until its separate client is provisioned.

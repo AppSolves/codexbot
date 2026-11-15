@@ -33,7 +33,11 @@ export function checkClaims(claims: JWTPayload, expected: WorkflowIdentity): Wor
   requireCondition(claims.workflow_ref === workflowRef && claims.workflow_sha === expected.workflowSha, 'oidc_caller_workflow_mismatch', 403);
   requireCondition(/@[a-f0-9]{40}$/.test(expected.trustedWorkflow) && claims.job_workflow_ref === expected.trustedWorkflow && claims.job_workflow_sha === expected.trustedWorkflow.split('@')[1], 'oidc_reusable_workflow_mismatch', 403);
   requireCondition(claims.runner_environment === 'github-hosted' && claims.environment === expected.environment, 'oidc_environment_mismatch', 403);
-  requireCondition(claims.sub === `repo:${expected.repository}:environment:${expected.environment.replace(/:/g, '%3A')}`, 'oidc_subject_mismatch', 403);
+  const [owner, repository] = expected.repository.split('/');
+  const suffix = `:environment:${expected.environment.replace(/:/g, '%3A')}`;
+  // GitHub's default for new/renamed repositories includes immutable owner and repository IDs.
+  const immutable = `repo:${owner}@${expected.ownerId}/${repository}@${expected.repositoryId}${suffix}`;
+  requireCondition(claims.sub === `repo:${expected.repository}${suffix}` || claims.sub === immutable, 'oidc_subject_mismatch', 403);
   requireCondition(typeof claims.run_id === 'string' && /^\d+$/.test(claims.run_id) && typeof claims.run_attempt === 'string' && /^\d+$/.test(claims.run_attempt) && typeof claims.jti === 'string', 'oidc_run_missing', 403);
   requireCondition(Number.isSafeInteger(Number(claims.run_id)) && Number(claims.run_id) > 0 && Number.isSafeInteger(Number(claims.run_attempt)) && Number(claims.run_attempt) > 0 && claims.jti.length > 0 && claims.jti.length <= 200, 'oidc_invalid_run_identity', 403);
   return { runId: claims.run_id, attempt: claims.run_attempt, jti: claims.jti };
