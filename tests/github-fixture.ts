@@ -3,7 +3,7 @@ import { stringify } from 'yaml';
 import { snapshot, HEAD, BASE, WORKFLOW, files } from './fixtures.js';
 export function githubFixture() {
   const config = snapshot().config;
-  const state = { head: HEAD, base: BASE, permission: 'write', permissionAfterReview: null as string | null, userId: 5, author: 'alice', mergeState: 'CLEAN',
+  const state = { privateRepository:false, head: HEAD, base: BASE, permission: 'write', permissionAfterReview: null as string | null, userId: 5, author: 'alice', mergeState: 'CLEAN',
     reviewDecision: 'APPROVED', autoMergeAllowed: true, reviews: [] as Record<string, unknown>[], installationId: 1, suspended: false, merged: false,
     ci: 'SUCCESS', guarded: false, requiredHumans: 1, rules: [] as Record<string, unknown>[], autoMergeOwner: null as string | null,
     humans: [{ id: 80, state: 'APPROVED', commit_id: HEAD, user: { id: 6, login: 'bob', type: 'User' } }] as Record<string, unknown>[],
@@ -17,7 +17,7 @@ export function githubFixture() {
     const body = typeof init?.body === 'string' ? JSON.parse(init.body) as Record<string, unknown> : {};
     calls.push({ method, path, body });
     const ok = (value: unknown, status = 200) => Response.json(value, { status, headers: { 'Content-Type': 'application/json' } });
-    const repo = { id: 2, full_name: 'owner/repo', owner: { id: 3, login: 'owner' }, name: 'repo', default_branch: 'main', permissions: { admin: true } };
+    const repo = { private:state.privateRepository, id: 2, full_name: 'owner/repo', owner: { id: 3, login: 'owner' }, name: 'repo', default_branch: 'main', permissions: { admin: true } };
     if (path === '/repos/owner/repo/installation') return ok({ id: state.installationId, suspended_at: state.suspended ? 'now' : null, permissions: { workflows: 'write' } });
     if (path === '/app/installations/1/access_tokens') return ok({ token: 'fixture-installation-token', expires_at: new Date(Date.now() + 3600_000).toISOString() }, 201);
     if (path === '/repos/owner/repo') return ok(repo);

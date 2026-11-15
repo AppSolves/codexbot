@@ -402,12 +402,14 @@ await test('unconnected authorized contributor uses only an explicitly consentin
 }));
 
 await test('unconnected automation contributor requires explicit owner assignment and cannot use it for manual commands', async () => fixture(async (env,f) => {
-  f.config.credentials={mode:'api-key',automatic_reviewer:'alice'};f.config.authorization.whitelist='*';f.config.review.auto_review=true;f.state.permissionsByLogin={alice:'admin','github-actions[bot]':'read'};
+  f.config.credentials={mode:'api-key',automatic_reviewer:'alice'};f.config.authorization.whitelist='*';f.config.review.auto_review=true;f.state.permissionsByLogin={alice:'admin','github-actions[bot]':'none'};
   const store=new Store(env.DB);
   const event={action:'opened',installation:{id:1},repository:{id:2,full_name:'owner/repo'},sender:{id:41898282,login:'github-actions[bot]',type:'Bot'},number:4,pull_request:{updated_at:new Date().toISOString(),head:{sha:HEAD}}};
   const send=async()=>{const request=signed(event,env.GITHUB_WEBHOOK_SECRET);request.headers.set('x-github-event','pull_request');return worker.fetch(request,env);};
+  f.state.privateRepository=true;assert.equal((await send()).status,403);
+  f.state.privateRepository=false;event.action='reopened';
   assert.equal((await send()).status,200);assert.equal(f.calls.filter(call=>call.path.endsWith('/dispatches')).length,0);
-  await store.automaticConsent(2,1,5,'alice','api-key');event.action='reopened';
+  await store.automaticConsent(2,1,5,'alice','api-key');event.action='ready_for_review';
   assert.equal((await send()).status,202);
   const row=await env.DB.prepare('SELECT snapshot FROM requests').first<{snapshot:string}>();const request=JSON.parse(row!.snapshot);
   assert.equal(request.actorId,5);assert.deepEqual(request.triggerActor,{login:'github-actions[bot]',id:41898282,type:'Bot'});

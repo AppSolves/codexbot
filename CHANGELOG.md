@@ -1,5 +1,7 @@
 # Security and behavior changes
 
+- Honor public read access for authorized non-collaborator PR events only when explicitly assigned to a consenting repository admin. Private repositories, manual commands, tenant identity checks and separate merge authorization are unchanged.
+
 - Respect the provider's earliest refresh timestamp before runtime token renewal. Bound the credential wait and workflow lifetime, preserve exclusive leases/CAS and persist rotation before inference; classify premature/unavailable refresh windows without raw credential diagnostics.
 
 - Accept GitHub's documented immutable default OIDC subjects for new/renamed repositories, exactly binding owner ID, repository ID and Environment while retaining the legacy subject and all signed identity/workflow checks.

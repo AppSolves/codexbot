@@ -83,6 +83,8 @@ export async function ingest(event: string, payload: unknown, requestId: string,
   if (!config.review.enabled || (!manual && !config.review.auto_review)) return 'disabled';
   requireCondition(sender.type === 'User' || Boolean(config.credentials.automatic_reviewer), 'human_sender_required', 403);
   let livePermission = await permission(github, fullName, sender.login, Number(sender.id), sender.type as 'User' | 'Bot');
+  // Public non-collaborators can read the repository even when the collaborator API returns none.
+  if (livePermission==='none' && automatic && config.credentials.automatic_reviewer && liveRepo.private===false) livePermission='read';
   requireCondition(authorize(sender.login, livePermission, config.authorization), 'review_not_authorized', 403);
   let actor=sender.login,actorId=Number(sender.id),automaticGrantId:string|undefined;
   if (automatic && config.credentials.automatic_reviewer) {
