@@ -26,7 +26,7 @@ function events(items) {
   ].map((value, sequence_number) => `data: ${JSON.stringify({ ...value, sequence_number })}\n\n`).join('');
 }
 // Scripted Responses only; real app-server policy, shell execution, mounts and output validation.
-for (const scenario of ['untrusted', 'findings', 'clean', 'incomplete','vision','vision-invalid']) {
+for (const scenario of ['untrusted', 'findings', 'clean', 'incomplete','vision','vision-invalid','schema-invalid','json-invalid']) {
   const id = randomUUID(), proxy = `codexbot-inspection-proxy-${id}`, review = `codexbot-inspection-review-${id}`, volume = `codexbot-inspection-${id}`;
   const root = await mkdtemp(resolve('.local/inspection-')), directory = join(root, 'context'), head = 'a'.repeat(40);
   const config = globalThis.structuredClone(DEFAULT_CONFIG), request = { id, head, base: 'b'.repeat(40), config, command: { merge: false, effort: null, instructions: '' } };
@@ -42,6 +42,7 @@ for (const scenario of ['untrusted', 'findings', 'clean', 'incomplete','vision',
     summary: 'Scripted protocol fixture after verified file inspection; not a live AI review.', findings: scenario === 'clean' || scenario === 'incomplete' ? [] : [{
       severity: 'high', confidence: 0.99, path: 'src/access.js', line: 3, side: 'RIGHT', title: 'Reject unauthorized roles',
       explanation: 'The nonempty owner string makes the authorization result truthy for every other role.', remediation: 'Compare role against owner explicitly.' }] };
+  const encodedResult=scenario==='json-invalid'?'not-json':JSON.stringify(scenario==='schema-invalid'?{unexpected:true}:result);
   const probe = `import assert from 'node:assert/strict';import fs from 'node:fs';import net from 'node:net';import http from 'node:http';import {createHash} from 'node:crypto';
     const lookup=body=>new Promise((resolve,reject)=>{const r=http.request({socketPath:'/run/proxy/context.sock',path:'/file',method:'POST'},s=>{let text='';s.on('data',b=>text+=b);s.on('end',()=>resolve(JSON.parse(text)))});r.on('error',reject);r.end(JSON.stringify(body))});
     assert.deepEqual(await lookup({snapshot:'head',path:'src/caller.js'}),{available:true});
@@ -58,7 +59,7 @@ for (const scenario of ['untrusted', 'findings', 'clean', 'incomplete','vision',
   const preload = `import cp from 'node:child_process';import {syncBuiltinESMExports} from 'node:module';
     const spawn=cp.spawn;cp.spawn=(...args)=>{const child=spawn(...args);const write=child.stdin.write.bind(child.stdin);child.stdin.write=(chunk,...rest)=>{const msg=JSON.parse(String(chunk));if(msg.method==='thread/start')msg.params.approvalPolicy='untrusted';return write(JSON.stringify(msg)+'\\n',...rest)};return child};syncBuiltinESMExports();`;
   await writeFile(join(directory, 'untrusted-control.mjs'), preload);
-  const proxyScript = `import {createInferenceServer} from '/app/dist/src/runner/proxy.js';import {contextServer} from '/app/dist/src/runner/context-server.js';import {executionEnvelope} from '/app/dist/src/core/execution.js';import {readFile} from 'node:fs/promises';
+  const proxyScript = `import {createInferenceServer} from '/app/dist/src/runner/proxy.js';import {contextServer} from '/app/dist/src/runner/context-server.js';import {executionEnvelope,proxyRequestEnvelope} from '/app/dist/src/core/execution.js';import {readFile} from 'node:fs/promises';
     await contextServer('/run/proxy/context.sock',async(snapshot,path)=>snapshot==='head'&&path==='src/caller.js');
     const token=(await readFile('/run/credential','utf8')).trim();
     const evidence=${JSON.stringify(evidence)};let calls=0;
@@ -71,8 +72,8 @@ for (const scenario of ['untrusted', 'findings', 'clean', 'incomplete','vision',
       const output=JSON.stringify(body.input.filter(item=>['function_call_output','custom_tool_call_output'].includes(item.type)));
       if(calls!==2||!Object.entries(evidence).every(([key,value])=>output.includes('fixture_read_'+key+'='+value))||!output.includes('fixture_isolation_verified'))throw new Error('Fixture inspection or isolation failed');
       console.log('fixture_inspection_verified');
-      return new Response(events([{id:'msg_fixture',type:'message',role:'assistant',status:'completed',content:[{type:'output_text',text:${JSON.stringify(JSON.stringify(result))},annotations:[]}]}]),{headers:{'content-type':'text/event-stream'}});
-    };createInferenceServer(token,{minimumImages:${scenario.startsWith('vision')?1:0}},detail=>process.stderr.write(executionEnvelope(detail)+'\\n')).listen('/run/proxy/inference.sock',()=>console.log('ready'));`;
+      return new Response(events([{id:'msg_fixture',type:'message',role:'assistant',status:'completed',content:[{type:'output_text',text:${JSON.stringify(encodedResult)},annotations:[]}]}]),{headers:{'content-type':'text/event-stream'}});
+    };const finite=globalThis.fetch;globalThis.fetch=async(url,init)=>{const value=await finite(url,init);if(calls!==2||!${JSON.stringify(['clean','incomplete'])}.includes(${JSON.stringify(scenario)}))return value;const bytes=new Uint8Array(await value.arrayBuffer());return new Response(new ReadableStream({start(controller){controller.enqueue(bytes);init.signal.addEventListener('abort',()=>controller.error(init.signal.reason),{once:true});}}),{status:value.status,headers:value.headers});};createInferenceServer(token,{minimumImages:${scenario.startsWith('vision')?1:0}},detail=>process.stderr.write(executionEnvelope(detail)+'\\n'),value=>process.stderr.write(proxyRequestEnvelope(value)+'\\n')).listen('/run/proxy/inference.sock',()=>console.log('ready'));`;
   const common = ['--label', `codexbot.run=${id}`, '--network=none', '--read-only', '--cap-drop=ALL', '--security-opt=no-new-privileges', '--pids-limit=128', '--memory=2g', '--cpus=2', `--user=${uid}:${gid}`, `--tmpfs=/tmp:rw,noexec,nosuid,size=128m,uid=${uid}`, `--tmpfs=/home/codex:rw,nosuid,size=128m,uid=${uid}`];
   try {
     docker(['volume', 'create', volume]);
@@ -92,17 +93,19 @@ for (const scenario of ['untrusted', 'findings', 'clean', 'incomplete','vision',
     const logs = spawnSync('docker', ['--config', dockerConfig, 'logs', proxy], { encoding: 'utf8', stdio: 'pipe', timeout: 10_000 });
     const inspected = (logs.stdout ?? '').includes('fixture_inspection_verified');
     const proxyFailure = new ExecutionDiagnostics(); proxyFailure.write(logs.stderr ?? '');
-    if (run.status !== (['untrusted','incomplete','vision-invalid'].includes(scenario) ? 1 : 0) || (scenario === 'untrusted' && observed.last?.code !== 'codex_inspection_denied')) console.error(JSON.stringify({ scenario, failure: observed.last, proxy: proxyFailure.last, selected: (logs.stdout ?? '').includes('fixture_tool_selected'), inspected }));
-    if (scenario === 'untrusted' || scenario === 'incomplete' || scenario === 'vision-invalid') {
+    if (run.status !== (['untrusted','incomplete','vision-invalid','schema-invalid','json-invalid'].includes(scenario) ? 1 : 0) || (scenario === 'untrusted' && observed.last?.code !== 'codex_inspection_denied')) console.error(JSON.stringify({ scenario, failure: observed.last, proxy: proxyFailure.last, selected: (logs.stdout ?? '').includes('fixture_tool_selected'), inspected }));
+    if (['untrusted','incomplete','vision-invalid','schema-invalid','json-invalid'].includes(scenario)) {
       assert.equal(run.status, 1); assert.equal(run.stdout.trim(), '');
-      if(scenario!=='vision-invalid')assert.equal(observed.last?.code, scenario === 'untrusted' ? 'codex_inspection_denied' : 'review_incomplete');
+      if(scenario!=='vision-invalid')assert.equal(observed.last?.code, scenario === 'untrusted' ? 'codex_inspection_denied' : scenario==='json-invalid'?'codex_output_not_json':'review_incomplete');
       else assert.equal((logs.stdout??'').includes('fixture_tool_selected'),false,'Invalid images must not reach upstream inference');
-      assert.equal(inspected, scenario === 'incomplete');
+      assert.equal(inspected, ['incomplete','schema-invalid','json-invalid'].includes(scenario));
+      if(scenario==='incomplete'||scenario==='schema-invalid')assert.equal(observed.last?.rejection_reason,scenario==='incomplete'?'model_incomplete':'schema_invalid');
     } else {
       assert.equal(run.status, 0, 'Actual Codex inspection failed; raw logs withheld'); assert.equal(inspected, true);
       const output = validateReview(JSON.parse(run.stdout), head, fixture.files); assert.deepEqual(output, result);
       assert.equal(decision(output, config, true), scenario === 'clean' ? 'APPROVE' : 'REQUEST_CHANGES');
     }
+    if(['clean','incomplete'].includes(scenario)){assert.equal(proxyFailure.request?.request_index,2);assert.equal(proxyFailure.request.primary,null);assert.equal(proxyFailure.request.cleanup,null);assert.equal(proxyFailure.request.terminal_event,'completed');assert.equal(proxyFailure.last,null);}
     console.log(`Actual pinned Codex inspection/isolation scenario passed: ${scenario} (scripted Responses, no live AI inference).`);
   } finally { await cleanupReviewContainers(id); docker(['volume','rm',volume]); assert.equal(dirname(root), resolve('.local')); await rm(root, { recursive:true, force:true }); }
 }

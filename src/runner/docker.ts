@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { requireCondition } from '../core/errors.js';
 import type { InferenceLimits } from './proxy.js';
-import { ExecutionDiagnostics, ExecutionError, executionError, executionFailure } from '../core/execution.js';
+import { ExecutionDiagnostics, ExecutionError, executionError, executionFailure, proxyRequestEnvelope } from '../core/execution.js';
 
 export async function docker(args: string[], maxBytes = 100_000, diagnostics = new ExecutionDiagnostics()): Promise<string> {
   const child = spawn('docker', args, { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -66,7 +66,10 @@ export async function isolatedReview(image: string, directory: string, credentia
     // Only this run's credential proxy can report an actual upstream HTTP status.
     const observed = new ExecutionDiagnostics();
     try { observed.write(await docker(['logs', '--tail', '32', proxy], 64_000, observed)); } catch { /* The primary failure remains authoritative when logs are unavailable. */ }
-    if (observed.last) failure.proxyFailure = observed.last;
+    for(const request of observed.history)console.error(proxyRequestEnvelope(request));
+    if(observed.request&&!observed.history.some(x=>x.request_index===observed.request!.request_index))console.error(proxyRequestEnvelope(observed.request));
+    if (observed.request) { failure.proxyRequest=observed.request;if(observed.request.primary)failure.proxyFailure=observed.request.primary;if(observed.request.cleanup)failure.proxyCleanup=observed.request.cleanup; }
+    else if (observed.last) failure.proxyFailure = observed.last;
     primary = failure;
   } finally {
     try { await cleanupReviewContainers(id); }

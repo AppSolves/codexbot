@@ -2,9 +2,9 @@ import { createServer } from 'node:http';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { safeEvents } from './stream.js';
+import { safeEvents, type StreamProgress } from './stream.js';
 import { record, requireCondition } from '../core/errors.js';
-import { executionError, providerFailure, type ExecutionFailure } from '../core/execution.js';
+import { executionError, providerFailure, transportCode, type ExecutionFailure, type ProxyRequestDiagnostic } from '../core/execution.js';
 // client_metadata is emitted by pinned Codex's Responses transport (core/src/responses_metadata.rs).
 const RESPONSE_FIELDS = new Set(['model', 'instructions', 'input', 'tools', 'tool_choice', 'parallel_tool_calls', 'reasoning', 'store', 'stream', 'include', 'service_tier', 'prompt_cache_key', 'text', 'context_management', 'stream_options', 'client_metadata']);
 function checkTools(tools: unknown, depth = 0): void {
@@ -74,11 +74,24 @@ export function inspectMedia(value:unknown,depth=0):number {
   return Object.values(item).reduce<number>((count,item)=>count+inspectMedia(item,depth+1),0);
 }
 
-export async function inferenceProxy(request: IncomingMessage, response: ServerResponse, token: string, fetcher: typeof fetch = fetch, enforceSelection: (body: Record<string, unknown>) => void = () => {}, report: (failure: ExecutionFailure) => void = () => {}): Promise<void> {
-  const disconnected = new AbortController();
-  let stage: 'validation' | 'transport' | 'stream' = 'validation';
-  response.once('close', () => disconnected.abort());
+export async function inferenceProxy(request: IncomingMessage, response: ServerResponse, token: string, fetcher: typeof fetch = fetch, enforceSelection: (body: Record<string, unknown>) => void = () => {}, report: (failure: ExecutionFailure) => void = () => {}, onRequest?: (value: ProxyRequestDiagnostic) => void, requestIndex = 1): Promise<void> {
+  const disconnected = new AbortController(), started = Date.now();
+  const progress: StreamProgress = { bytes: 0, frames: 0, terminal: 'none' };
+  let stage: 'validation' | 'transport' | 'stream' = 'validation', deadline: AbortSignal | undefined;
+  let primary: ExecutionFailure | null = null, cleanup: ExecutionFailure | null = null, localPipeline = false;
+  let metadata: Pick<ExecutionFailure,'upstream_status'|'content_type_category'|'body_present'> = {};
+  const recordFailure = (detail: ExecutionFailure) => {
+    if(detail.origin==='cleanup'){cleanup??=detail;return;}
+    if(detail.origin==='upstream_read'&&(deadline?.aborted||disconnected.signal.aborted)) {
+      const origin=deadline?.aborted?'deadline':localPipeline?'pipeline':'downstream';
+      const local=transportCode(response.errored);
+      primary??=localPipeline&&!deadline?.aborted?{component:'proxy',code:'proxy_pipeline_failed',origin,...(local?{transport_code:local}:{})}:{...detail,component:'proxy',code:origin==='deadline'?'proxy_deadline_exceeded':'proxy_client_disconnected',origin};
+    } else primary??=detail;
+  };
+  const consumerCompleted = () => disconnected.signal.aborted && !localPipeline && !deadline?.aborted && progress.terminal==='completed' && primary===null;
+  response.once('close', () => { if(!response.writableFinished){localPipeline=response.errored!==null&&response.errored!==undefined&&!['ECONNRESET','EPIPE','ERR_STREAM_PREMATURE_CLOSE'].includes(transportCode(response.errored)??'');disconnected.abort();} });
   try {
+    onRequest?.({request_index:requestIndex,phase:'started',primary:null,cleanup:null});
     requireCondition(request.method === 'POST' && request.url === '/v1/responses', 'proxy_route_denied', 403);
     const chunks: Buffer[] = []; let bytes = 0;
     for await (const chunk of request) {
@@ -87,7 +100,7 @@ export async function inferenceProxy(request: IncomingMessage, response: ServerR
     }
     let decoded: unknown;
     try { decoded = JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown; }
-    catch { report({ component: 'proxy', code: 'proxy_invalid_json' }); response.writeHead(403); response.end(); return; }
+    catch { recordFailure({ component: 'proxy', code: 'proxy_invalid_json' }); response.writeHead(403); response.end(); return; }
     const body = record(decoded);
     requireCondition(Object.keys(body).every(key => RESPONSE_FIELDS.has(key)), 'proxy_unsupported_request_field');
     requireCondition(body.store === false && body.stream === true && typeof body.model === 'string', 'proxy_requires_private_streaming_request');
@@ -107,34 +120,43 @@ export async function inferenceProxy(request: IncomingMessage, response: ServerR
     inspectMedia(body.input);
     enforceSelection(body);
     stage = 'transport';
+    deadline = AbortSignal.timeout(20 * 60_000);
     const upstream = await fetcher('https://api.openai.com/v1/responses', {
-      method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', 'User-Agent': 'CodexBot/0.1.0',
+      method: 'POST', headers: { Authorization: 'Bearer '+token, 'Content-Type': 'application/json', 'User-Agent': 'CodexBot/0.1.0',
         ...(typeof request.headers['originator'] === 'string' && request.headers['originator'] === 'CodexBot' ? { originator: 'CodexBot' } : {}) },
-      body: JSON.stringify(body), redirect: 'error', signal: AbortSignal.any([AbortSignal.timeout(20 * 60_000), disconnected.signal])
+      body: JSON.stringify(body), redirect: 'error', signal: AbortSignal.any([deadline, disconnected.signal])
     });
-    const metadata = { upstream_status: upstream.status, content_type_category: contentTypeCategory(upstream.headers.get('content-type')), body_present: upstream.body !== null };
-    // A documented Codex SSE success can omit Content-Type. In that one case,
-// require an SSE-looking prefix before handing the unmodified stream to
-// safeEvents, which enforces bounded frames and terminal response.completed.
-// Never accept JSON/HTML/other explicit media types as streaming responses.
-    const headerlessSse = upstream.ok && upstream.body && metadata.content_type_category === 'missing'
-      ? await hasEventStreamPrefix(upstream) : false;
+    metadata = { upstream_status: upstream.status, content_type_category: contentTypeCategory(upstream.headers.get('content-type')), body_present: upstream.body !== null };
+    // Headerless success still requires SSE framing and a terminal response.completed event.
+    const headerlessSse = upstream.ok && upstream.body && metadata.content_type_category === 'missing' ? await hasEventStreamPrefix(upstream) : false;
     if (!upstream.ok || !upstream.body || (metadata.content_type_category !== 'event-stream' && !headerlessSse)) {
-      report({ ...await responseFailure(upstream), ...metadata, code: upstream.ok ? 'provider_stream_content_type_invalid' : 'provider_http_failed' });
+      recordFailure({ ...await responseFailure(upstream), code: upstream.ok ? 'provider_stream_content_type_invalid' : 'provider_http_failed', origin: 'transport' });
       response.writeHead(upstream.ok ? 403 : upstream.status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
       response.end(upstream.ok ? '{"error":"inference_proxy_denied_or_unavailable"}' : '{"error":{"message":"OpenAI inference unavailable; check authentication, entitlement or usage allowance.","type":"codexbot_inference_error"}}');
       return;
     }
     stage = 'stream';
     response.writeHead(upstream.status, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store' });
-    await pipeline(Readable.from(safeEvents(upstream.body, token, failure => report({ ...failure, ...metadata }))), response);
+    await pipeline(Readable.from(safeEvents(upstream.body, token, recordFailure, progress, consumerCompleted)), response);
   } catch (error) {
-    report(executionError(error, stage === 'stream' ? 'provider' : 'proxy', stage === 'transport' ? 'proxy_transport_failed' : stage === 'stream' ? 'provider_stream_failed' : 'proxy_invalid_json').detail);
-    if (!response.headersSent) response.writeHead(403, { 'Content-Type': 'application/json' }); response.end('{"error":"inference_proxy_denied_or_unavailable"}');
+    if(!consumerCompleted()) {
+      const abort = deadline?.aborted ? 'deadline' : localPipeline ? 'pipeline' : disconnected.signal.aborted ? 'downstream' : null;
+      const detail = abort ? {component:'proxy',code:abort==='deadline'?'proxy_deadline_exceeded':abort==='pipeline'?'proxy_pipeline_failed':'proxy_client_disconnected'}
+        : executionError(error, 'proxy', stage==='stream'?'proxy_pipeline_failed':stage==='transport'?'proxy_transport_failed':'proxy_invalid_json').detail;
+      const transport=transportCode(error);
+      const observed: ExecutionFailure = { ...detail, origin: abort ?? (stage==='stream'?'pipeline':stage), ...(transport?{transport_code:transport}:{}) };
+      // A downstream/pipeline consequence never replaces an already diagnosed upstream failure.
+      if(primary)cleanup??=observed;else primary=observed;
+    }
+    if(!response.destroyed&&!response.writableEnded){if(!response.headersSent)response.writeHead(403, { 'Content-Type': 'application/json' });response.end('{"error":"inference_proxy_denied_or_unavailable"}');}
+  } finally {
+    const fields = { ...metadata, request_index: requestIndex, elapsed_ms: Math.min(1_320_000,Math.max(0,Date.now()-started)), stream_bytes: progress.bytes, stream_frames: progress.frames, terminal_event: progress.terminal, abort_origin: deadline?.aborted ? 'deadline' as const : localPipeline ? 'pipeline' as const : disconnected.signal.aborted ? 'downstream' as const : 'none' as const };
+    const value: ProxyRequestDiagnostic = { ...fields, phase:'finished', primary: primary ? { ...primary, ...fields } : null, cleanup: cleanup ? { ...cleanup, ...fields } : null };
+    if(onRequest)onRequest(value);else {if(value.primary)report(value.primary);if(value.cleanup)report(value.cleanup);}
   }
 }
 export interface InferenceLimits { maxRequests?: number; maxOutputTokens?: number; maxInputBytes?: number; minimumImages?:number }
-export function createInferenceServer(token: string, limits: InferenceLimits = {}, report: (failure: ExecutionFailure) => void = () => {}) {
+export function createInferenceServer(token: string, limits: InferenceLimits = {}, report: (failure: ExecutionFailure) => void = () => {}, onRequest?: (value: ProxyRequestDiagnostic) => void) {
   requireCondition(Number.isInteger(limits.maxRequests ?? 100) && (limits.maxRequests ?? 100) >= 1 && (limits.maxRequests ?? 100) <= 100, 'invalid_proxy_request_limit');
   if (limits.maxOutputTokens !== undefined) requireCondition(Number.isInteger(limits.maxOutputTokens) && limits.maxOutputTokens >= 1 && limits.maxOutputTokens <= 2048, 'invalid_acceptance_token_limit');
   requireCondition(Number.isInteger(limits.minimumImages??0)&&(limits.minimumImages??0)>=0&&(limits.minimumImages??0)<=16,'invalid_proxy_image_limit');
@@ -152,9 +174,11 @@ export function createInferenceServer(token: string, limits: InferenceLimits = {
     requireCondition(selection === next, 'proxy_model_or_effort_change_denied');
   };
   return createServer((request, response) => {
-    if (++requests > (limits.maxRequests ?? 100)) { report({ component: 'proxy', code: 'proxy_request_limit' }); response.writeHead(429); response.end(); return; }
-    if (active) { report({ component: 'proxy', code: 'proxy_concurrent_request_denied' }); response.writeHead(429); response.end(); return; }
+    const index=Math.min(++requests,101);
+    const denied=(code:string)=>{const primary:ExecutionFailure={component:'proxy',code,origin:'validation',request_index:index};if(onRequest)onRequest({request_index:index,phase:'finished',primary,cleanup:null});else report(primary);response.writeHead(429);response.end();};
+    if (requests > (limits.maxRequests ?? 100)) { denied('proxy_request_limit'); return; }
+    if (active) { denied('proxy_concurrent_request_denied'); return; }
     active = true;
-    void inferenceProxy(request, response, token, fetch, enforceSelection, report).then(() => { active = false; }, () => { active = false; response.destroy(); });
+    void inferenceProxy(request, response, token, fetch, enforceSelection, report, onRequest, index).then(() => { active = false; }, () => { active = false; response.destroy(); });
   });
 }
