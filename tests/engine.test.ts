@@ -1,8 +1,18 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { selectReviewModel } from '../src/runner/engine.js';
+import { selectReviewModel,reviewImages } from '../src/runner/engine.js';
+import {inspectMedia} from '../src/runner/proxy.js';
 import { snapshot } from './fixtures.js';
 const models = [{ model: 'codex-fixture', isDefault: true, supportedReasoningEfforts: [{ reasoningEffort: 'low' }, { reasoningEffort: 'high' }] }, { model: 'codex-deep', isDefault: false, supportedReasoningEfforts: [{ reasoningEffort: 'xhigh' }] }];
+await test('vision attachments are bounded local immutable snapshots; remote media, audio and file uploads are denied',()=>{
+  const sha='a'.repeat(40),asset={filename:'image.png',format:'png',snapshots:[{side:'base',path:'old.png',sha},{side:'head',path:'image.png',sha}]};
+  const images=reviewImages(JSON.stringify({binaryFiles:[asset]}));assert.equal(images.length,1);assert.equal(images[0]!.path,'/workspace/media/base/old.png');assert.match(images[0]!.label,/head/);
+  assert.throws(()=>reviewImages(JSON.stringify({binaryFiles:[{...asset,snapshots:[{side:'head',path:'../credential',sha}]}]})),/image_context_invalid/);
+  assert.throws(()=>reviewImages(JSON.stringify({binaryFiles:Array.from({length:17},(_,i)=>({...asset,snapshots:[{side:'head',path:`image-${i}.png`,sha:i.toString(16).padStart(40,'0')}]}))})),/image_context_limit/);
+  assert.equal(inspectMedia([{role:'user',content:[{type:'input_image',image_url:'data:image/png;base64,AAAA'}]}]),1);
+  for(const image_url of ['https://evil.invalid/image.png','file:///run/credential','data:text/html;base64,AAAA'])assert.throws(()=>inspectMedia([{type:'input_image',image_url}]),/proxy_image_source_denied/);
+  for(const type of ['input_audio','input_video','input_file'])assert.throws(()=>inspectMedia([{type}]),/proxy_unsupported_media_input/);
+});
 await test('OAuth and API-key reviews preserve omitted effort and validate explicit model-specific support identically', () => {
   for (const mode of ['chatgpt', 'api-key'] as const) {
     const request = snapshot(); request.config.credentials.mode = mode;

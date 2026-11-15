@@ -1,3 +1,5 @@
+import { gitSource } from '../core/git-source.js';
+import { binaryChange, binaryLocations, type BinaryChange } from '../core/binary.js';
 import type { Octokit } from '@octokit/rest';
 import { authorize } from '../core/policy.js';
 import { decision, publicText, validateReview, failedReview, completePatch, normalizeReview, findingDisposition, reviewSummary, mergeRequested } from '../core/review.js';
@@ -35,10 +37,16 @@ export async function publish(github: Octokit, snapshot: RequestSnapshot, output
   requireCondition(config.review.enabled && authorize(snapshot.actor, livePermission, config.authorization), 'review_authorization_revoked', 403);
   const files = await github.paginate(github.rest.pulls.listFiles, { ...repo, pull_number: snapshot.pr, per_page: 100 });
   requireCondition(files.length === current.changed_files && files.length <= 200, 'diff_incomplete');
+  const binaries=files.filter(file=>!file.patch),verified:BinaryChange[]=[];let binaryVerified=true;
+  if(binaries.length){
+    let calls=0;const source=gitSource(github,repo,()=>requireCondition(++calls<=32,'binary_publication_budget'));const budget={bytes:0,shas:new Set<string>()};
+    try {for(const file of binaries)verified.push(await binaryChange(file,snapshot.base,snapshot.head,source,budget));}catch{binaryVerified=false;}
+  }
   let review;
-  try { review = validateReview(normalizeReview(output, snapshot.head), snapshot.head, files); }
+  try { review = validateReview(normalizeReview(output, snapshot.head), snapshot.head, files, binaryLocations(verified)); }
   catch (error) { if (!(error instanceof AppError)) throw error; review = failedReview(snapshot.head); }
-  contextComplete = contextComplete && files.every(completePatch);
+  if(!binaryVerified)review={...failedReview(snapshot.head),summary:'Changes without complete textual patches could not be independently verified as supported PNG images. No approval or merge is authorized.'};
+  contextComplete = contextComplete && binaryVerified && files.every(file=>!file.patch||completePatch(file));
   const computedEvent = decision(review, config, contextComplete);
   const event = current.user?.login === `${appSlug}[bot]` ? 'COMMENT' : computedEvent;
   const marker = `<!-- codexbot:${snapshot.id}:${snapshot.head} -->`;
@@ -75,8 +83,8 @@ export async function publish(github: Octokit, snapshot: RequestSnapshot, output
     await assertPublicationAllowed();
     await options.beforeWrite?.();
     const { data } = await github.rest.pulls.createReview({ ...repo, pull_number: snapshot.pr, commit_id: snapshot.head,
-      body: `${marker}\n${fingerprint}\n${reviewSummary(review, event, contextComplete)}${mergeRequested(snapshot) ? `\n\nConditional merge ${snapshot.command.merge ? 'explicitly requested' : 'enabled by repository policy for authorized requester'} ${publicText(snapshot.actor)}.` : ''}`,
-      comments: review.findings.map(f => ({ path: f.path, line: f.line, side: f.side, body: `**${f.severity.toUpperCase()}: ${publicText(f.title)}**\n\n${publicText(f.explanation)}\n\n${publicText(f.remediation)}\n\nConfidence: ${f.confidence}; policy: ${findingDisposition(f, config)}.` }))
+      body: `${marker}\n${fingerprint}\n${reviewSummary(review, event, contextComplete, binaryVerified?binaries.length:0)}${mergeRequested(snapshot) ? `\n\nConditional merge ${snapshot.command.merge ? 'explicitly requested' : 'enabled by repository policy for authorized requester'} ${publicText(snapshot.actor)}.` : ''}`,
+      comments: review.findings.flatMap(f => f.line===null ? [] : [{ path: f.path, line: f.line, side: f.side, body: `**${f.severity.toUpperCase()}: ${publicText(f.title)}**\n\n${publicText(f.explanation)}\n\n${publicText(f.remediation)}\n\nConfidence: ${f.confidence}; policy: ${findingDisposition(f, config)}.` }])
     });
     reviewId = data.id;
   }

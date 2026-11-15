@@ -127,7 +127,7 @@ export function configurationFromForm(form: URLSearchParams): Config {
         requireCondition(form.getAll(name).length <= 1, 'duplicate_configuration_field');
         const raw = form.get(name);
         if (typeof value === 'boolean') { requireCondition(raw === null || raw === 'true', 'invalid_boolean_configuration'); object[key] = raw === 'true'; }
-        else { requireCondition(raw !== null && (typeof value !== 'number' || raw.trim().length > 0), 'missing_configuration_field'); object[key] = typeof value === 'number' ? Number(raw) : Array.isArray(value) ? raw.split(',').map(part => part.trim()).filter(Boolean) : raw === '' && value === null ? null : raw; }
+        else { requireCondition(raw !== null && (typeof value !== 'number' || raw.trim().length > 0), 'missing_configuration_field'); object[key] = prefix === 'quotas.' && key.endsWith('_per_day') && raw === 'unlimited' ? 'unlimited' : typeof value === 'number' ? Number(raw) : Array.isArray(value) ? raw.split(',').map(part => part.trim()).filter(Boolean) : raw === '' && value === null ? null : raw; }
       }
     }
   };

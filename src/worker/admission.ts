@@ -27,7 +27,7 @@ export function rejectionIdentity(value: RejectionIdentity): RejectionIdentity {
 /** Run immediately after the guarded INSERT in the SAME D1 batch/transaction. */
 export async function admissionRejection(db: D1Database, snapshot: RequestSnapshot, key: string, now: number, feedback: boolean): Promise<D1PreparedStatement> {
   const q = snapshot.config.quotas, day = now - QUOTA_WINDOW_MS;
-  const candidates: { code: RejectionCode; where: string; args: number[]; limit: number; window: number | null }[] = [
+  const candidates: { code: RejectionCode; where: string; args: number[]; limit: number | 'unlimited'; window: number | null }[] = [
     ...(snapshot.command.rerun ? [{ code: 'rerun_limit_exceeded' as const, where: 'installation_id=? AND actor_id=? AND rerun=1 AND created_at>?', args: [snapshot.installationId,snapshot.actorId,day], limit: q.reruns_per_day, window: QUOTA_WINDOW_MS }] : []),
     { code: 'user_quota_exceeded', where: 'installation_id=? AND actor_id=? AND created_at>?', args: [snapshot.installationId,snapshot.actorId,day], limit: q.user_per_day, window: QUOTA_WINDOW_MS },
     { code: 'repository_quota_exceeded', where: 'installation_id=? AND repository_id=? AND created_at>?', args: [snapshot.installationId,snapshot.repositoryId,day], limit: q.repository_per_day, window: QUOTA_WINDOW_MS },
@@ -37,11 +37,13 @@ export async function admissionRejection(db: D1Database, snapshot: RequestSnapsh
     { code: 'cooldown_active', where: 'installation_id=? AND repository_id=? AND actor_id=? AND created_at>?', args: [snapshot.installationId,snapshot.repositoryId,snapshot.actorId,now-q.cooldown_seconds*1000], limit: 1, window: q.cooldown_seconds*1000 }
   ];
   // VALUES avoids D1's small compound-SELECT limit; all policy predicates stay in the admission transaction.
-  const args: (string | number | null)[] = [], choices = candidates.map((candidate,index) => {
+  const args: (string | number | null)[] = [], choices = candidates.flatMap((candidate,index) => {
+    if(candidate.limit==='unlimited')return [];
+
     const retry = candidate.window === null ? 'NULL' : `(SELECT created_at+? FROM requests WHERE ${candidate.where} ORDER BY created_at DESC LIMIT 1 OFFSET ?)`;
     if (candidate.window !== null) args.push(candidate.window,...candidate.args,candidate.limit-1);
     args.push(...candidate.args,candidate.limit);
-    return `(${index+1},'${candidate.code}',${candidate.limit},${candidate.window ?? 'NULL'},${retry},(SELECT count(*) FROM requests WHERE ${candidate.where})>=?)`;
+    return [`(${index+1},'${candidate.code}',${candidate.limit},${candidate.window ?? 'NULL'},${retry},(SELECT count(*) FROM requests WHERE ${candidate.where})>=?)`];
   });
   // Duplicate identity wins even if other limits also apply; no time-based promise can unblock it.
   choices.unshift("(0,'duplicate_review',NULL,NULL,NULL,EXISTS(SELECT 1 FROM requests WHERE request_key=?))");

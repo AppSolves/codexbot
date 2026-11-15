@@ -65,6 +65,15 @@ async function hasEventStreamPrefix(upstream: Response): Promise<boolean> {
   finally { void reader.cancel().catch(() => {}); }
 }
 
+export function inspectMedia(value:unknown,depth=0):number {
+  requireCondition(depth<=32,'proxy_unsupported_media_input');if(value===null||typeof value!=='object')return 0;
+  if(Array.isArray(value))return value.reduce((count,item)=>count+inspectMedia(item,depth+1),0);
+  const item=value as Record<string,unknown>;
+  requireCondition(!['input_audio','input_video','input_file'].includes(String(item.type)),'proxy_unsupported_media_input');
+  if(item.type==='input_image'){requireCondition(typeof item.image_url==='string'&&/^data:image\/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/]+={0,2}$/.test(item.image_url),'proxy_image_source_denied');return 1;}
+  return Object.values(item).reduce<number>((count,item)=>count+inspectMedia(item,depth+1),0);
+}
+
 export async function inferenceProxy(request: IncomingMessage, response: ServerResponse, token: string, fetcher: typeof fetch = fetch, enforceSelection: (body: Record<string, unknown>) => void = () => {}, report: (failure: ExecutionFailure) => void = () => {}): Promise<void> {
   const disconnected = new AbortController();
   let stage: 'validation' | 'transport' | 'stream' = 'validation';
@@ -74,7 +83,7 @@ export async function inferenceProxy(request: IncomingMessage, response: ServerR
     const chunks: Buffer[] = []; let bytes = 0;
     for await (const chunk of request) {
       const buffer = Buffer.from(chunk as Uint8Array); bytes += buffer.length;
-      requireCondition(bytes <= 8_000_000, 'proxy_body_too_large', 413); chunks.push(buffer);
+      requireCondition(bytes <= 24_000_000, 'proxy_body_too_large', 413); chunks.push(buffer);
     }
     let decoded: unknown;
     try { decoded = JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown; }
@@ -95,6 +104,7 @@ export async function inferenceProxy(request: IncomingMessage, response: ServerR
       if (choice.type === 'allowed_tools') checkTools(choice.tools);
       else requireCondition(['function', 'custom'].includes(String(choice.type)), 'proxy_hosted_tool_choice_denied');
     } else if (body.tool_choice !== undefined) requireCondition(['auto', 'none', 'required'].includes(String(body.tool_choice)), 'proxy_invalid_tool_choice');
+    inspectMedia(body.input);
     enforceSelection(body);
     stage = 'transport';
     const upstream = await fetcher('https://api.openai.com/v1/responses', {
@@ -123,15 +133,17 @@ export async function inferenceProxy(request: IncomingMessage, response: ServerR
     if (!response.headersSent) response.writeHead(403, { 'Content-Type': 'application/json' }); response.end('{"error":"inference_proxy_denied_or_unavailable"}');
   }
 }
-export interface InferenceLimits { maxRequests?: number; maxOutputTokens?: number; maxInputBytes?: number }
+export interface InferenceLimits { maxRequests?: number; maxOutputTokens?: number; maxInputBytes?: number; minimumImages?:number }
 export function createInferenceServer(token: string, limits: InferenceLimits = {}, report: (failure: ExecutionFailure) => void = () => {}) {
   requireCondition(Number.isInteger(limits.maxRequests ?? 100) && (limits.maxRequests ?? 100) >= 1 && (limits.maxRequests ?? 100) <= 100, 'invalid_proxy_request_limit');
   if (limits.maxOutputTokens !== undefined) requireCondition(Number.isInteger(limits.maxOutputTokens) && limits.maxOutputTokens >= 1 && limits.maxOutputTokens <= 2048, 'invalid_acceptance_token_limit');
+  requireCondition(Number.isInteger(limits.minimumImages??0)&&(limits.minimumImages??0)>=0&&(limits.minimumImages??0)<=16,'invalid_proxy_image_limit');
   let requests = 0;
   let active = false;
   let selection: string | null = null;
   const enforceSelection = (body: Record<string, unknown>) => {
-    requireCondition(Buffer.byteLength(JSON.stringify(body)) <= (limits.maxInputBytes ?? 8_000_000), 'proxy_acceptance_input_budget');
+    requireCondition(inspectMedia(body.input)>=(limits.minimumImages??0),'proxy_image_inputs_missing');
+    requireCondition(Buffer.byteLength(JSON.stringify(body)) <= (limits.maxInputBytes ?? 24_000_000), 'proxy_acceptance_input_budget');
     // Only the trusted API-key acceptance harness sets this. OAuth never adds unsupported fields.
     if (limits.maxOutputTokens !== undefined) body.max_output_tokens = limits.maxOutputTokens;
     const next = JSON.stringify({ model: body.model, reasoning: body.reasoning ?? null, serviceTier: body.service_tier ?? null });

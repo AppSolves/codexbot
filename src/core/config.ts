@@ -5,6 +5,7 @@ import type { Effort } from './command.js';
 import { requireCondition } from './errors.js';
 import { validatePolicy } from './policy.js';
 
+export type ReviewQuota = number | 'unlimited';
 export interface Policy { whitelist: string; blacklist: string }
 export interface Config {
   version: 1;
@@ -13,7 +14,7 @@ export interface Config {
   review: { enabled: boolean; auto_review: boolean; auto_approve: boolean; request_changes: boolean; model: string | null; effort: Effort | null; blocking_confidence: number; advisory_confidence: number };
   merge: { enabled: boolean; auto_merge_on_approval: boolean; method: 'squash' | 'merge' | 'rebase'; authorization: Policy; minimum_human_approvals: number; guard_check: string };
   credentials: { mode: 'chatgpt' | 'api-key'; automatic_reviewer: string | null };
-  quotas: { user_per_day: number; repository_per_day: number; installation_per_day: number; concurrent_repository: number; concurrent_installation: number; cooldown_seconds: number; reruns_per_day: number };
+  quotas: { user_per_day: ReviewQuota; repository_per_day: ReviewQuota; installation_per_day: ReviewQuota; concurrent_repository: number; concurrent_installation: number; cooldown_seconds: number; reruns_per_day: ReviewQuota };
 }
 export const DEFAULT_CONFIG: Config = {
   version: 1, bot: { trigger: '@codexbot', aliases: [] }, authorization: { whitelist: '', blacklist: '*' },
@@ -38,7 +39,7 @@ const schema = { type: 'object', additionalProperties: false, properties: {
     minimum_human_approvals: { type: 'integer', minimum: 0, maximum: 6 }, guard_check: { type: 'string', minLength: 1, maxLength: 80, pattern: '^[A-Za-z0-9 _.-]+$' }
   } },
   credentials: { type: 'object', additionalProperties: false, properties: { mode: { enum: ['chatgpt', 'api-key'] }, automatic_reviewer: {type:['string','null'],pattern:'^[A-Za-z0-9][A-Za-z0-9-]{0,38}$',maxLength:39} } },
-  quotas: { type: 'object', additionalProperties: false, properties: Object.fromEntries(Object.keys(DEFAULT_CONFIG.quotas).map(key => [key, { type: 'integer', minimum: key === 'cooldown_seconds' ? 0 : 1, maximum: key === 'cooldown_seconds' ? 86400 : key.startsWith('concurrent') ? 10 : 1000 }])) }
+  quotas: { type: 'object', additionalProperties: false, properties: Object.fromEntries(Object.keys(DEFAULT_CONFIG.quotas).map(key => [key, key.endsWith('_per_day') ? {anyOf:[{type:'integer',minimum:1,maximum:1000},{const:'unlimited'}]} : { type: 'integer', minimum: key === 'cooldown_seconds' ? 0 : 1, maximum: key === 'cooldown_seconds' ? 86400 : key.startsWith('concurrent') ? 10 : 1000 }])) }
 } };
 const validate = new Ajv({ strict: true, allowUnionTypes: true }).compile<Partial<Config>>(schema);
 

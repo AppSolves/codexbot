@@ -59,21 +59,22 @@ export class Store {
       workflow: snapshot.workflowSha, trustedWorkflow, config: snapshot.config, command, mergeIntent: snapshot.mergeIntent ?? null, automaticGrantId:snapshot.automaticGrantId ?? null, rerun: snapshot.command.rerun ? snapshot.commandId ?? snapshot.id : null }));
     requireCondition(operatorUserQuota===undefined || (Number.isSafeInteger(operatorUserQuota) && operatorUserQuota>=1 && operatorUserQuota<=1000),'invalid_operator_request_quota',503);
     const q=operatorUserQuota===undefined?snapshot.config.quotas:{...snapshot.config.quotas,user_per_day:operatorUserQuota};
+    const limit=(value:number|'unlimited')=>value==='unlimited'?null:value;
     const now = Date.now(), day = now - 86_400_000, cooldown = now - q.cooldown_seconds * 1000;
     const insert = this.db.prepare(`INSERT OR IGNORE INTO requests(id,installation_id,repository_id,actor_id,snapshot,created_at,request_key,rerun)
       SELECT ?,?,?,?,?,?,?,? WHERE
-      (SELECT count(*) FROM requests WHERE installation_id=? AND actor_id=? AND created_at>?)<? AND
-      (SELECT count(*) FROM requests WHERE installation_id=? AND repository_id=? AND created_at>?)<? AND
-      (SELECT count(*) FROM requests WHERE installation_id=? AND created_at>?)<? AND
+      ((SELECT count(*) FROM requests WHERE installation_id=? AND actor_id=? AND created_at>?)<? OR ? IS NULL) AND
+      ((SELECT count(*) FROM requests WHERE installation_id=? AND repository_id=? AND created_at>?)<? OR ? IS NULL) AND
+      ((SELECT count(*) FROM requests WHERE installation_id=? AND created_at>?)<? OR ? IS NULL) AND
       (SELECT count(*) FROM requests WHERE installation_id=? AND repository_id=? AND state NOT IN ('published','failed') AND created_at>?)<? AND
       (SELECT count(*) FROM requests WHERE installation_id=? AND state NOT IN ('published','failed') AND created_at>?)<? AND
       NOT EXISTS(SELECT 1 FROM requests WHERE installation_id=? AND repository_id=? AND actor_id=? AND created_at>?) AND
-      (SELECT count(*) FROM requests WHERE installation_id=? AND actor_id=? AND rerun=1 AND created_at>?)<?`)
+      ((SELECT count(*) FROM requests WHERE installation_id=? AND actor_id=? AND rerun=1 AND created_at>?)<? OR ? IS NULL)`)
       .bind(snapshot.id, snapshot.installationId, snapshot.repositoryId, snapshot.actorId, JSON.stringify(snapshot), snapshot.createdAt, key, snapshot.command.rerun ? 1 : 0,
-        snapshot.installationId, snapshot.actorId, day, q.user_per_day, snapshot.installationId, snapshot.repositoryId, day, q.repository_per_day,
-        snapshot.installationId, day, q.installation_per_day, snapshot.installationId, snapshot.repositoryId, now - REQUEST_LIFETIME_MS, q.concurrent_repository,
+        snapshot.installationId, snapshot.actorId, day, limit(q.user_per_day), limit(q.user_per_day), snapshot.installationId, snapshot.repositoryId, day, limit(q.repository_per_day), limit(q.repository_per_day),
+        snapshot.installationId, day, limit(q.installation_per_day), limit(q.installation_per_day), snapshot.installationId, snapshot.repositoryId, now - REQUEST_LIFETIME_MS, q.concurrent_repository,
         snapshot.installationId, now - REQUEST_LIFETIME_MS, q.concurrent_installation, snapshot.installationId, snapshot.repositoryId, snapshot.actorId, cooldown,
-        snapshot.installationId, snapshot.actorId, day, snapshot.command.rerun ? q.reruns_per_day : 1001);
+        snapshot.installationId, snapshot.actorId, day, limit(snapshot.command.rerun ? q.reruns_per_day : 'unlimited'), limit(snapshot.command.rerun ? q.reruns_per_day : 'unlimited'));
     const [result] = await this.db.batch([insert, await admissionRejection(this.db, {...snapshot,config:{...snapshot.config,quotas:q}}, key, now, feedback)]);
     if (result!.meta.changes !== 1) {
       const rejected = await getRejection(this.db, await rejectionId(snapshot));

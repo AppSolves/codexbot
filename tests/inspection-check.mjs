@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
 import process from 'node:process';
+import {Buffer} from 'node:buffer';
 import console from 'node:console';
 import { setTimeout, clearTimeout } from 'node:timers';
 import { execFileSync, spawnSync, spawn } from 'node:child_process';
+import { crc32,deflateSync } from 'node:zlib';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { join, resolve, dirname } from 'node:path';
 import { DEFAULT_CONFIG } from '../dist/src/core/config.js';
 import { validateReview, decision } from '../dist/src/core/review.js';
@@ -24,11 +26,17 @@ function events(items) {
   ].map((value, sequence_number) => `data: ${JSON.stringify({ ...value, sequence_number })}\n\n`).join('');
 }
 // Scripted Responses only; real app-server policy, shell execution, mounts and output validation.
-for (const scenario of ['untrusted', 'findings', 'clean', 'incomplete']) {
+for (const scenario of ['untrusted', 'findings', 'clean', 'incomplete','vision','vision-invalid']) {
   const id = randomUUID(), proxy = `codexbot-inspection-proxy-${id}`, review = `codexbot-inspection-review-${id}`, volume = `codexbot-inspection-${id}`;
   const root = await mkdtemp(resolve('.local/inspection-')), directory = join(root, 'context'), head = 'a'.repeat(40);
   const config = globalThis.structuredClone(DEFAULT_CONFIG), request = { id, head, base: 'b'.repeat(40), config, command: { merge: false, effort: null, instructions: '' } };
   const fixture = await writeInspectionFixture(directory, request, scenario !== 'clean');
+  if(scenario.startsWith('vision')){
+    const chunk=(type,data)=>{const body=Buffer.concat([Buffer.from(type),data]),out=Buffer.alloc(data.length+12);out.writeUInt32BE(data.length);body.copy(out,4);out.writeUInt32BE(crc32(body),out.length-4);return out;};
+    const png=scenario==='vision-invalid'?Buffer.from('invalid image'):Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]),chunk('IHDR',Buffer.from([0,0,0,1,0,0,0,1,8,6,0,0,0])),chunk('IDAT',deflateSync(Buffer.from([0,0,0,0,255]))),chunk('IEND',Buffer.alloc(0))]);
+    await mkdir(join(directory,'media/head'),{recursive:true});await writeFile(join(directory,'media/head/image.png'),png);
+    await writeFile(join(directory,'manifest.json'),JSON.stringify({complete:true,binaryFiles:[{filename:'image.png',format:'png',snapshots:[{side:'head',path:'image.png',sha:'f'.repeat(40)}]}]}));
+  }
   const evidence = { diff: hash(JSON.stringify(fixture.files)), source: hash(fixture.source), base: hash(fixture.base), instructions: hash(JSON.stringify(fixture.instructions)), caller: hash(fixture.caller), hostile: hash(fixture.injection) };
   const result = { head_sha: head, complete: scenario !== 'incomplete', result: scenario === 'clean' ? 'clean' : scenario === 'incomplete' ? 'inconclusive' : 'findings',
     summary: 'Scripted protocol fixture after verified file inspection; not a live AI review.', findings: scenario === 'clean' || scenario === 'incomplete' ? [] : [{
@@ -57,14 +65,14 @@ for (const scenario of ['untrusted', 'findings', 'clean', 'incomplete']) {
     const events=${events.toString()};
     globalThis.fetch=async(url,init)=>{
       if(url!=='https://api.openai.com/v1/responses'||init.headers.Authorization!=='Bearer fixture-only')throw new Error('Fixture boundary failed');
-      const body=JSON.parse(init.body);if(++calls===1){const tools=[...(body.tools??[]),...body.input.filter(item=>item.type==='additional_tools').flatMap(item=>item.tools??[])];
+      const body=JSON.parse(init.body);if(${JSON.stringify(scenario.startsWith('vision'))}&&!JSON.stringify(body.input).includes('data:image/'))throw new Error('Native Codex did not supply image data');if(++calls===1){const tools=[...(body.tools??[]),...body.input.filter(item=>item.type==='additional_tools').flatMap(item=>item.tools??[])];
         if(!tools.find(t=>t.type==='namespace'&&t.name==='functions')?.tools.some(t=>t.type==='custom'&&t.name==='exec'))throw new Error('Pinned code-mode tool missing');console.log('fixture_tool_selected');
         return new Response(events([{id:'fc_fixture',call_id:'call_fixture',namespace:'functions',name:'exec',type:'custom_tool_call',input:'const r=await tools.exec_command({cmd:"node /workspace/inspect.mjs",yield_time_ms:10000,max_output_tokens:2000});text(r);'}]),{headers:{'content-type':'text/event-stream'}})}
       const output=JSON.stringify(body.input.filter(item=>['function_call_output','custom_tool_call_output'].includes(item.type)));
       if(calls!==2||!Object.entries(evidence).every(([key,value])=>output.includes('fixture_read_'+key+'='+value))||!output.includes('fixture_isolation_verified'))throw new Error('Fixture inspection or isolation failed');
       console.log('fixture_inspection_verified');
       return new Response(events([{id:'msg_fixture',type:'message',role:'assistant',status:'completed',content:[{type:'output_text',text:${JSON.stringify(JSON.stringify(result))},annotations:[]}]}]),{headers:{'content-type':'text/event-stream'}});
-    };createInferenceServer(token,{},detail=>process.stderr.write(executionEnvelope(detail)+'\\n')).listen('/run/proxy/inference.sock',()=>console.log('ready'));`;
+    };createInferenceServer(token,{minimumImages:${scenario.startsWith('vision')?1:0}},detail=>process.stderr.write(executionEnvelope(detail)+'\\n')).listen('/run/proxy/inference.sock',()=>console.log('ready'));`;
   const common = ['--label', `codexbot.run=${id}`, '--network=none', '--read-only', '--cap-drop=ALL', '--security-opt=no-new-privileges', '--pids-limit=128', '--memory=2g', '--cpus=2', `--user=${uid}:${gid}`, `--tmpfs=/tmp:rw,noexec,nosuid,size=128m,uid=${uid}`, `--tmpfs=/home/codex:rw,nosuid,size=128m,uid=${uid}`];
   try {
     docker(['volume', 'create', volume]);
@@ -84,10 +92,11 @@ for (const scenario of ['untrusted', 'findings', 'clean', 'incomplete']) {
     const logs = spawnSync('docker', ['--config', dockerConfig, 'logs', proxy], { encoding: 'utf8', stdio: 'pipe', timeout: 10_000 });
     const inspected = (logs.stdout ?? '').includes('fixture_inspection_verified');
     const proxyFailure = new ExecutionDiagnostics(); proxyFailure.write(logs.stderr ?? '');
-    if (run.status !== (['untrusted','incomplete'].includes(scenario) ? 1 : 0) || (scenario === 'untrusted' && observed.last?.code !== 'codex_inspection_denied')) console.error(JSON.stringify({ scenario, failure: observed.last, proxy: proxyFailure.last, selected: (logs.stdout ?? '').includes('fixture_tool_selected'), inspected }));
-    if (scenario === 'untrusted' || scenario === 'incomplete') {
+    if (run.status !== (['untrusted','incomplete','vision-invalid'].includes(scenario) ? 1 : 0) || (scenario === 'untrusted' && observed.last?.code !== 'codex_inspection_denied')) console.error(JSON.stringify({ scenario, failure: observed.last, proxy: proxyFailure.last, selected: (logs.stdout ?? '').includes('fixture_tool_selected'), inspected }));
+    if (scenario === 'untrusted' || scenario === 'incomplete' || scenario === 'vision-invalid') {
       assert.equal(run.status, 1); assert.equal(run.stdout.trim(), '');
-      assert.equal(observed.last?.code, scenario === 'untrusted' ? 'codex_inspection_denied' : 'review_incomplete');
+      if(scenario!=='vision-invalid')assert.equal(observed.last?.code, scenario === 'untrusted' ? 'codex_inspection_denied' : 'review_incomplete');
+      else assert.equal((logs.stdout??'').includes('fixture_tool_selected'),false,'Invalid images must not reach upstream inference');
       assert.equal(inspected, scenario === 'incomplete');
     } else {
       assert.equal(run.status, 0, 'Actual Codex inspection failed; raw logs withheld'); assert.equal(inspected, true);
