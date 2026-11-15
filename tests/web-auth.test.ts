@@ -163,6 +163,8 @@ await test('identity-only website OAuth cannot activate inference and web remain
     assert.throws(() => websiteOAuth({ ...f.env, OPENAI_HOSTED_INFERENCE_AUTHORIZED: 'true', OPENAI_WEB_CLIENT_ID:'oaiapp_test', OPENAI_WEB_AUTH_METHOD:'none', OPENAI_WEB_SCOPES:'openid email profile' }), /inference_scopes/);
     const disabled = await worker.fetch(new Request('https://web.invalid/auth/github'), { ...f.env, WEB_ENABLED:'false' } as Env);
     assert.equal(disabled.status, 503); assert.ok(!(await disabled.text()).includes(f.env.GITHUB_CLIENT_SECRET!));
+    const cliLanding=await worker.fetch(new Request('https://web.invalid/dashboard?installation_id=untrusted&next=https://evil.invalid'),{...f.env,WEB_ENABLED:'false'} as Env);assert.equal(cliLanding.status,303);assert.equal(cliLanding.headers.get('location'),'/');
+    assert.equal((await worker.fetch(new Request('https://web.invalid/dashboard',{method:'POST'}),{...f.env,WEB_ENABLED:'false'} as Env)).status,503);
     const missing = await worker.fetch(new Request('https://web.invalid/dashboard'), f.env as Env); assert.equal(missing.status, 401);
   } finally { f.close(); }
 });

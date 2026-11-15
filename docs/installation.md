@@ -1,6 +1,6 @@
 # Repository installation and CLI provisioning
 
-This release uses the CLI once for credential provisioning. Install/select the GitHub App, protect the default branch, create and merge the workflow/configuration setup PR, then connect ChatGPT using the commands below. Ongoing automatic reviews and merges run on GitHub Actions without a running CLI or personal machine. Browser OAuth is deferred; WEB_ENABLED and OPENAI_HOSTED_INFERENCE_AUTHORIZED remain false until the separate website client is provisioned.
+This release uses the CLI once for credential provisioning. Install/select the GitHub App, protect the default branch, create and merge the workflow/configuration setup PR, then connect ChatGPT using the commands below. Ongoing automatic reviews and merges run on GitHub Actions without a running CLI or personal machine. With browser onboarding disabled, the GitHub App installation callback at `/dashboard` redirects to the canonical public CLI setup landing page; callback query values never authorize configuration. Browser OAuth is deferred; WEB_ENABLED and OPENAI_HOSTED_INFERENCE_AUTHORIZED remain false until the separate website client is provisioned.
 
 The hosted backend and CLI default is `https://codexbot.appsolves.workers.dev`. Self-hosted operators supply their own `--backend` and source pin. Existing ChatGPT connections must follow the [origin cutover and reconnect procedure](origin-migration.md) before using this new origin; they are not transferable ciphertext.
 

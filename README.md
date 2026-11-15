@@ -18,9 +18,11 @@ Set `bot.trigger: "@CBReview"` to use the example above. The legacy default `@co
 
 ## Status
 
-**Release acceptance in progress.** The existing production review pipeline is operational. The browser onboarding and management flow is implemented and tested locally against real workerd/D1 with synthetic GitHub/OpenAI providers. It remains disabled until the operator provisions the actual approved website OAuth client, callbacks, inference scopes and workspace claim, then completes staged acceptance. No production deployment follows from a PR or local test.
+**CLI release acceptance in progress.** Real complete COMMENT and inline advisory reviews, native APPROVE, high-confidence REQUEST_CHANGES, token rotation and an exact-head autonomous App merge without human approval have been verified. Final unattended-contributor and Human-in-the-Loop live acceptance is still pending; no public release is claimed yet.
 
-See [web onboarding, credentials and activation](docs/web-onboarding.md) for the explicit hosted credential trust boundary and remaining live gates. AI reviews can miss defects; keep required CI and choose human oversight according to repository policy. Automatic merging remains disabled.
+Browser ChatGPT onboarding is intentionally deferred and is **not a release blocker**. Keep `WEB_ENABLED=false` and `OPENAI_HOSTED_INFERENCE_AUTHORIZED=false`. Installation redirects lead to the CLI instructions; no website OAuth client is needed for the approved existing CLI connection. Reviews and merges then run without an ongoing CLI process. See [configuration](docs/configuration.md) for explicit repository-owner credential assignment and the two merge modes.
+
+AI reviews can miss defects. GitHub protections, required CI, separate merge authorization and repository opt-in always apply. The global merge gate stays closed during final acceptance; live merge tests are restricted to the exact disposable repository and installation.
 
 ## What is implemented
 
@@ -54,10 +56,10 @@ npm run check
 
 ```sh
 npm run cli -- setup --repository OWNER/REPO --backend https://codexbot.appsolves.workers.dev \
-  --source AppSolves/codexbot --ref 4ed668864cac0682e09ec49a2515a6e1893a2780
+  --source AppSolves/codexbot --ref FULL_TRUSTED_WORKFLOW_SHA
 ```
 
-The source must match the Worker's trusted reusable workflow. If you prefer a temporary personal setup token to granting the App Workflows write, add `--setup-as-user`; the user credential needs Contents/Pull requests/Workflows write. No files are overwritten. See [manual setup](docs/installation.md).
+Use the full 40-character revision from the operator’s deployed `TRUSTED_WORKFLOW` (the published deployment configuration records it). The source must match the Worker's trusted reusable workflow. If you prefer a temporary personal setup token to granting the App Workflows write, add `--setup-as-user`; the user credential needs Contents/Pull requests/Workflows write. No files are overwritten. See [manual setup](docs/installation.md).
 
 4. Choose authentication:
 
@@ -103,4 +105,4 @@ AI review can miss defects and is vulnerable to semantic prompt manipulation. Is
 
 See [the per-finding matrix](docs/remediation.md), [changelog](CHANGELOG.md), [migration/recovery runbook](docs/operations.md) and [live acceptance](docs/acceptance.md). Durable outbox/publication recovery, installation-bound session encryption, required-first context and deterministic output quarantine are implemented and locally tested. Existing OAuth sessions require reconnect after migration 0002.
 
-Both hosted ChatGPT eligibility and actual provider/GitHub acceptance remain external gates. MERGE_DEPLOYMENT_AUTHORIZED defaults false independently of repository policy. Initial smoke is advisory/no-merge. Private GitHub Free repositories lack the supported credential Environment path; merge queues are manual-only. No deployment or paid inference is performed by local checks.
+The approved CLI ChatGPT deployment is supported independently of the deferred website registration. New self-hosted operators must establish their own applicable authorization and acceptance. The merge deployment gate is independent of repository policy; verify the exact deployed settings and start new installations with advisory/no-merge acceptance. Private GitHub Free repositories lack the supported credential Environment path; merge queues are manual-only. No deployment or paid inference is performed by local checks.
