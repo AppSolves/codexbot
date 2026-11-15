@@ -46,7 +46,9 @@ globalThis.fetch = async (url, init) => {
   return new Response(${JSON.stringify(events)}, {headers:{'content-type':'text/event-stream'}});
 };
 createInferenceServer('fixture-only',{},detail=>process.stderr.write(executionEnvelope(detail)+'\\n'),value=>process.stderr.write(proxyRequestEnvelope(value)+'\\n')).listen('/run/proxy/inference.sock',()=>process.stdout.write('ready\\n'));`;
-const common = ['--label', `codexbot.run=${id}`, '--network=none', '--read-only', '--cap-drop=ALL', '--security-opt=no-new-privileges', '--pids-limit=128', '--memory=2g', '--user=1000:1000', '--tmpfs=/tmp:rw,noexec,nosuid,size=128m,uid=1000', '--tmpfs=/home/codex:rw,nosuid,size=128m,uid=1000'];
+const uid=process.getuid?.()??1000,gid=process.getgid?.()??1000;
+assert.notEqual(uid,0,'Run sandbox acceptance as a nonroot runner.');
+const common = ['--label', `codexbot.run=${id}`, '--network=none', '--read-only', '--cap-drop=ALL', '--security-opt=no-new-privileges', '--pids-limit=128', '--memory=2g', `--user=${uid}:${gid}`, `--tmpfs=/tmp:rw,noexec,nosuid,size=128m,uid=${uid}`, `--tmpfs=/home/codex:rw,nosuid,size=128m,uid=${uid}`];
 const partial = randomUUID();
 try {
   await cleanupReviewContainers(partial); // No accepted create is a successful cleanup.
@@ -55,7 +57,7 @@ try {
   assert.equal(docker(['ps', '-a', '--filter', `label=codexbot.run=${partial}`, '--format', '{{.ID}}']).trim(), '');
   docker(['volume', 'create', volume]);
   // Named-volume ownership preparation is confined to this disposable volume.
-  docker(['run', '--rm', '--network=none', '--user=0:0', '--mount', `type=volume,src=${volume},dst=/run/proxy`, '--entrypoint=node', 'codexbot-review:local', '-e', "require('fs').chownSync('/run/proxy',1000,1000)"]);
+  docker(['run', '--rm', '--network=none', '--user=0:0', '--mount', `type=volume,src=${volume},dst=/run/proxy`, '--entrypoint=node', 'codexbot-review:local', '-e', `require('fs').chownSync('/run/proxy',${uid},${gid})`]);
   docker(['create', '--name', proxy, ...common, '--mount', `type=volume,src=${volume},dst=/run/proxy`, 'codexbot-review:local', 'node', '--input-type=module', '-e', proxyScript]);
   docker(['start', proxy]);
   await new Promise((resolveReady, reject) => {
