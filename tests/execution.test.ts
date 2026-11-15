@@ -133,7 +133,7 @@ await test('actual review job records incomplete fallback, releases acquired lea
   const saved = { ...process.env }, request = snapshot(); request.config.credentials.mode = 'api-key';
   const submissions: Record<string, unknown>[] = [], operations: string[] = [], logs: unknown[][] = [];
   let rejectReporting = false, rejectReadTokenCleanup = false;
-  let containerOutput: unknown = null, unavailableContext = false, runs = 0, onDemandMissing = false;
+  let containerOutput: unknown = null, unavailableContext = false, runs = 0, onDemandMissing = false, probeOnly=false;
   let contextSocket='',contextListener:http.Server|undefined;
   const realServer=http.createServer;
   const serverMock=mock.method(http,'createServer',(...args:Parameters<typeof http.createServer>)=>{const server=realServer(...args);contextListener=server;server.once('listening',()=>{const address=server.address();if(typeof address==='string')contextSocket=address;});return server;});
@@ -149,7 +149,7 @@ await test('actual review job records incomplete fallback, releases acquired lea
       if (args[0] === 'logs' && args.includes('--follow')) { process.stdout.write('codexbot-proxy-ready\n'); return; }
       if (args[0] === 'run') {
         runs++;
-        if(onDemandMissing){await new Promise<void>((resolve,reject)=>{const req=http.request({socketPath:contextSocket,path:'/file',method:'POST'},res=>{let body='';res.on('data',x=>{body+=String(x);});res.on('end',()=>{try{assert.deepEqual(JSON.parse(body),{available:false});resolve();}catch(error){reject(error);}});});req.on('error',reject);req.end(JSON.stringify({snapshot:'head',path:'private-missing-name.ts'}));});}
+        if(onDemandMissing){await new Promise<void>((resolve,reject)=>{const req=http.request({socketPath:contextSocket,path:probeOnly?'/probe':'/file',method:'POST'},res=>{let body='';res.on('data',x=>{body+=String(x);});res.on('end',()=>{try{assert.deepEqual(JSON.parse(body),probeOnly?{exists:false}:{available:false});resolve();}catch(error){reject(error);}});});req.on('error',reject);req.end(JSON.stringify({snapshot:'head',path:'private-missing-name.ts'}));});}
         if (containerOutput !== null) process.stdout.write(JSON.stringify(containerOutput));
         else process.stderr.write(executionEnvelope({ component: 'turn', code: 'codex_turn_failed' }) + '\n');
       }
@@ -191,9 +191,11 @@ await test('actual review job records incomplete fallback, releases acquired lea
     rejectReporting = false; containerOutput = clean();
     await reviewJob(); assert.equal(submissions.at(-1)!.context_complete, true);
     assert.equal(submissions.at(-1)!.failure, undefined);
-    onDemandMissing=true;
+    onDemandMissing=true;probeOnly=true;containerOutput=clean();
+    await reviewJob();assert.equal(submissions.at(-1)!.context_complete,true);assert.equal(submissions.at(-1)!.failure,undefined);assert.deepEqual(submissions.at(-1)!.output,clean());
+    probeOnly=false;
     containerOutput={...clean(),result:'findings',findings:[{severity:'high',confidence:0.99,path:'auth.ts',line:2,side:'RIGHT',title:'Synthetic race condition',explanation:'A stale value can overwrite a newer result.',remediation:'Guard the update.'}]};
-    await assert.rejects(reviewJob(),error=>{assert(error instanceof ReviewCompletionError);assert.equal(error.completion.context_complete,false);assert.equal(error.completion.required_context_complete,false);assert.equal(error.completion.diff_complete,true);assert.equal(error.completion.output_complete,true);assert.equal(error.completion.output_result,'findings');assert.equal(error.completion.context_failure_code,'required_file_missing_or_special');return true;});
+    await assert.rejects(reviewJob(),error=>{assert(error instanceof ReviewCompletionError);assert.equal(error.completion.context_complete,false);assert.equal(error.completion.required_context_complete,false);assert.equal(error.completion.diff_complete,true);assert.equal(error.completion.output_complete,true);assert.equal(error.completion.output_result,'findings');assert.equal(error.completion.context_failure_code,'context_path_missing');return true;});
     assert.deepEqual(submissions.at(-1)!.output,containerOutput);assert.equal(submissions.at(-1)!.context_complete,false);assert.equal(decision(submissions.at(-1)!.output as ReturnType<typeof clean>,request.config,false),'COMMENT');assert.equal((submissions.at(-1)!.failure as {stage:string}).stage,'result');assert(!JSON.stringify(logs).includes('private-missing-name'));assert.equal(operations.at(-1),'release');
     onDemandMissing=false;containerOutput=clean();
     rejectReadTokenCleanup = true;

@@ -44,7 +44,9 @@ for (const scenario of ['untrusted', 'findings', 'clean', 'incomplete','vision',
       explanation: 'The nonempty owner string makes the authorization result truthy for every other role.', remediation: 'Compare role against owner explicitly.' }] };
   const encodedResult=scenario==='json-invalid'?'not-json':JSON.stringify(scenario==='schema-invalid'?{unexpected:true}:result);
   const probe = `import assert from 'node:assert/strict';import fs from 'node:fs';import net from 'node:net';import http from 'node:http';import {createHash} from 'node:crypto';
-    const lookup=body=>new Promise((resolve,reject)=>{const r=http.request({socketPath:'/run/proxy/context.sock',path:'/file',method:'POST'},s=>{let text='';s.on('data',b=>text+=b);s.on('end',()=>resolve(JSON.parse(text)))});r.on('error',reject);r.end(JSON.stringify(body))});
+    const lookup=(body,path='/file')=>new Promise((resolve,reject)=>{const r=http.request({socketPath:'/run/proxy/context.sock',path,method:'POST'},s=>{let text='';s.on('data',b=>text+=b);s.on('end',()=>resolve(JSON.parse(text)))});r.on('error',reject);r.end(JSON.stringify(body))});
+    assert.deepEqual(await lookup({snapshot:'head',path:'optional-missing.js'},'/probe'),{exists:false});
+    assert.deepEqual(await lookup({snapshot:'head',path:'src/caller.js'},'/probe'),{exists:true});
     assert.deepEqual(await lookup({snapshot:'head',path:'src/caller.js'}),{available:true});
     assert.deepEqual(await lookup({snapshot:'head',path:'src/caller.js',url:'https://evil.invalid'}),{error:'context_lookup_unavailable'});
     for(const [name,path] of Object.entries({diff:'/workspace/diff.json',source:'/workspace/source/head/src/access.js',base:'/workspace/source/base/src/access.js',instructions:'/workspace/trusted-instructions.json',caller:'/workspace/source/head/src/caller.js',hostile:'/workspace/source/head/README.md'})) console.log('fixture_read_'+name+'='+createHash('sha256').update(fs.readFileSync(path)).digest('hex'));

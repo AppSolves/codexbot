@@ -15,13 +15,13 @@ export interface ContextManifest {
   complete: boolean; diffComplete: boolean; requiredContextComplete: boolean;
   supplementary: { strategy: 'bounded-heuristics'; selected: number; omitted: number }; files: number; bytes: number; apiCalls: number; limitations: string[]; failureCodes:string[]; binaryFiles:BinaryChange[];
 }
-export type ContextLookup = (snapshot: 'base' | 'head', path: string) => Promise<boolean>;
+export type ContextLookup = (snapshot: 'base' | 'head', path: string, operation?: 'probe') => Promise<boolean>;
 export async function collectContext(github: Octokit, snapshot: RequestSnapshot, directory: string, register?: (lookup: ContextLookup) => void, signal?: AbortSignal): Promise<ContextManifest> {
   const repo = { ...splitRepo(snapshot.repository), request: {timeout:15_000,...(signal?{signal}:{})} };
   const manifest: ContextManifest = { complete: false, diffComplete: true, requiredContextComplete: true,
     supplementary: { strategy: 'bounded-heuristics', selected: 0, omitted: 0 }, files: 0, bytes: 0, apiCalls: 0, limitations: [], failureCodes:[], binaryFiles:[] };
   const limited = (required: boolean, error?:unknown) => {
-    if(required){const code=error instanceof AppError?error.code:'context_required_evidence_unavailable';if(!manifest.failureCodes.includes(code))manifest.failureCodes.push(code);}
+    if(required){const code=error instanceof AppError?error.code:error&&typeof error==='object'&&'status' in error&&typeof error.status==='number'&&error.status>=400&&error.status<=599?'context_github_api_failed':'context_required_evidence_unavailable';if(!manifest.failureCodes.includes(code))manifest.failureCodes.push(code);}
     if (required) manifest.requiredContextComplete = false; else manifest.supplementary.omitted++;
     const reason = required ? 'Essential source or trusted instructions unavailable.' : 'Supplementary context bounded or unavailable.';
     if (!manifest.limitations.includes(reason)) manifest.limitations.push(reason);
@@ -48,7 +48,8 @@ export async function collectContext(github: Octokit, snapshot: RequestSnapshot,
     try {
       const entry = await find(commit, path);
       if (!entry && optional) return;
-      requireCondition(entry?.sha && entry.type === 'blob' && ['100644', '100755'].includes(entry.mode ?? ''), 'required_file_missing_or_special');
+      requireCondition(entry, 'context_path_missing');
+      requireCondition(entry.sha && entry.type === 'blob' && ['100644', '100755'].includes(entry.mode ?? ''), 'context_special_object');
       requireCondition(entry.size !== undefined && entry.size <= MAX_FILE_BYTES, 'context_file_size_limit');
       requireCondition(manifest.bytes + entry.size <= MAX_BYTES, 'context_byte_budget');
       const bytes=await source.read(entry,MAX_FILE_BYTES);
@@ -145,19 +146,25 @@ export async function collectContext(github: Octokit, snapshot: RequestSnapshot,
   await writeFile(join(directory, 'file-index.json'), JSON.stringify({ paths: index, complete: indexComplete && queue.length === 0 && index.length < 5000 }), { mode: 0o600 });
   if (register) {
     let requests = 0, serial = Promise.resolve();
-    register(async (label, path) => {
-      try {requireCondition((label === 'base' || label === 'head') && safePath(path) && ++requests <= 24, 'context_lookup_rejected');}
-      catch(error){limited(true,error);manifest.complete=false;const work=serial.then(()=>writeFile(join(directory,'manifest.json'),JSON.stringify(manifest),{mode:0o600}));serial=work.catch(()=>{});await work;throw error;}
+    register(async (label, path, operation) => {
+      const required=operation!=='probe';
+      try {requireCondition(++requests<=24&&(operation===undefined||operation==='probe')&&(label === 'base' || label === 'head') && safePath(path), 'context_lookup_rejected');}
+      catch(error){limited(required,error);if(required)manifest.complete=false;const work=serial.then(()=>writeFile(join(directory,'manifest.json'),JSON.stringify(manifest),{mode:0o600}));serial=work.catch(()=>{});await work;throw error;}
       let available = false;
       const work = serial.then(async () => {
-        await collect(label, label === 'head' ? snapshot.head : snapshot.base, path, true);
-        available = written.has(`${label}/${path}`);
-        if (!available) { manifest.requiredContextComplete = false; manifest.complete = false; }
+        if(operation==='probe') {
+          try {available=Boolean(await find(label==='head'?snapshot.head:snapshot.base,path));if(!available)manifest.supplementary.omitted++;}
+          catch(error){limited(true,error);manifest.complete=false;await writeFile(join(directory,'manifest.json'),JSON.stringify(manifest),{mode:0o600});throw error;}
+        } else {
+          await collect(label, label === 'head' ? snapshot.head : snapshot.base, path, true);
+          available = written.has(`${label}/${path}`);
+          if (!available) { manifest.requiredContextComplete = false; manifest.complete = false; }
+        }
         await writeFile(join(directory, 'manifest.json'), JSON.stringify(manifest), { mode: 0o600 });
       });
       serial = work.catch(() => {}); await work; return available;
     });
-    manifest.limitations.push('Additional relevant files: POST {"snapshot":"base"|"head","path":"relative/file"} to /file over /run/proxy/context.sock using node:http. Read /workspace/source/<snapshot>/<path> after available=true. Maximum 24 requests, shared 768-call/16-MB source/512-KB file budgets; no URLs or execution. A requested file that cannot be obtained makes the review incomplete; use the index rather than probing optional nonexistent paths.');
+    manifest.limitations.push('Context socket /run/proxy/context.sock: POST {"snapshot":"base"|"head","path":"relative/file"} to /file for REQUIRED contents; then read /workspace/source/<snapshot>/<path>. For OPTIONAL existence exploration use /probe: {exists:false} means verified absence. Probes supply no contents or completeness waiver. Both share 24 requests and existing byte/API budgets. API/verification errors are not absence. A failed /file permanently invalidates completeness; /probe cannot clear it. No URLs or execution.');
   }
   call(true); const { data: current } = await github.rest.pulls.get({ ...repo, pull_number: snapshot.pr });
   requireCondition(current.head.sha === snapshot.head && current.base.sha === snapshot.base, 'pr_changed_during_context_collection', 409);

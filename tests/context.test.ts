@@ -8,13 +8,14 @@ import { join } from 'node:path';
 import { collectContext, type ContextLookup } from '../src/runner/context.js';
 import { snapshot, HEAD, BASE, WORKFLOW, files } from './fixtures.js';
 
-type Options = { source?: string; language?: 'py' | 'rs'; mode?: string; truncated?: boolean; binary?: boolean; corrupt?: boolean; status?: string; patch?: string; apiStatus?: number; missingFiles?: boolean; dependency?: 'present' | 'missing' };
+type Options = { source?: string; language?: 'py' | 'rs'; mode?: string; truncated?: boolean; binary?: boolean; corrupt?: boolean; status?: string; patch?: string; apiStatus?: number; missingFiles?: boolean; dependency?: 'present' | 'missing'; candidate?:boolean; candidateMode?:string; candidateOversized?:boolean; candidateCorrupt?:boolean; candidateApiStatus?:number; probeFailure?:number|'truncated'|'integrity' };
 async function fixture(options: Options = {}, exercise?: (lookup: ContextLookup, directory: string, manifest: Awaited<ReturnType<typeof collectContext>>) => Promise<void>) {
   const directory = await mkdtemp(join(tmpdir(), 'codexbot-context-'));
   const requested: string[] = [], blob = Buffer.from(options.source ?? (options.binary ? 'binary\0data' : options.language === 'py' ? 'from .dep import check\nfixture context text' : options.language === 'rs' ? 'mod dep;\nfixture context text' : options.dependency ? 'import { check } from "./dep.js";\nfixture context text' : 'fixture context text'));
   const blobSha = createHash('sha1').update(`blob ${blob.length}\0`).update(blob).digest('hex');
   const dependency = Buffer.from('export const check = () => true;'), dependencySha = createHash('sha1').update(`blob ${dependency.length}\0`).update(dependency).digest('hex');
-  const root = 'e'.repeat(40), src = 'f'.repeat(40);
+  const root = 'e'.repeat(40), src = 'f'.repeat(40),unexplored='d'.repeat(40),branches=Array.from({length:12},(_,n)=>(n+1).toString(16).padStart(40,'0'));
+  const candidate=Buffer.from(options.candidateOversized?'x'.repeat(512001):'candidate fixture source'),candidateSha=createHash('sha1').update('blob '+candidate.length+'\0').update(candidate).digest('hex');
   const fetcher: typeof fetch = async input => {
     const url = new URL(String(input)); requested.push(url.pathname);
     if (url.pathname.endsWith('/pulls/4')) return Response.json({ head: { sha: HEAD }, base: { sha: BASE }, changed_files: options.missingFiles ? 2 : 1 });
@@ -26,15 +27,21 @@ async function fixture(options: Options = {}, exercise?: (lookup: ContextLookup,
     }
     if (url.pathname.includes('/git/trees/')) {
       assert.equal(url.searchParams.has('recursive'), false);
-      const sha = url.pathname.split('/').at(-1); assert.ok(sha === root || sha === src, 'Trees endpoint must receive resolved tree SHA, never commit SHA');
+      const sha = url.pathname.split('/').at(-1);
+      if(options.probeFailure&&sha===unexplored)return typeof options.probeFailure==='number'?Response.json({message:'private API detail'},{status:options.probeFailure}):Response.json({sha:options.probeFailure==='integrity'?root:sha,truncated:options.probeFailure==='truncated',tree:[]});
+      if(options.probeFailure&&branches.includes(sha!))return Response.json({sha,truncated:false,tree:[]});
+      assert.ok(sha === root || sha === src, 'Trees endpoint must receive resolved tree SHA, never commit SHA');
       return Response.json({ sha, truncated: options.truncated ?? false, tree: sha === root ? [
         { type: 'tree', mode: '040000', path: 'src', sha: src },
         { type: 'blob', mode: '100644', path: 'AGENTS.md', size: blob.length, sha: blobSha },
+        ...(options.candidate?[{type:options.candidateMode==='160000'?'commit':options.candidateMode==='040000'?'tree':'blob',mode:options.candidateMode??'100644',path:'candidate.ts',sha:candidateSha,size:candidate.length}]:[]),
+        ...(options.probeFailure?[...branches.map((sha,n)=>({type:'tree',mode:'040000',path:'branch'+n,sha})),{type:'tree',mode:'040000',path:'unexplored',sha:unexplored}]:[]),
         ...Array.from({ length: 1200 }, (_, n) => ({ type: 'blob', mode: '100644', path: `unrelated-${n}.ts`, size: 500_000, sha: '0'.repeat(40) }))
       ] : [...[options.language ? 'auth.' + options.language : 'auth.ts', 'old.ts'].map(path => ({ type: options.mode === '160000' ? 'commit' : 'blob', mode: options.mode ?? '100644', path, size: blob.length, sha: blobSha })),
         ...(options.dependency === 'present' ? [{ type: 'blob', mode: '100644', path: options.language ? 'dep.' + options.language : 'dep.ts', size: dependency.length, sha: dependencySha }] : [])] });
     }
     if (url.pathname.includes('/git/blobs/')) {
+      if(url.pathname.endsWith(candidateSha))return options.candidateApiStatus?Response.json({message:'private blob detail'},{status:options.candidateApiStatus}):Response.json({sha:candidateSha,encoding:'base64',content:(options.candidateCorrupt?Buffer.alloc(candidate.length,120):candidate).toString('base64')});
       if (url.pathname.endsWith(dependencySha)) return Response.json({ sha: dependencySha, encoding: 'base64', content: dependency.toString('base64') });
       assert.equal(url.pathname.split('/').at(-1), blobSha, 'Unrelated blobs must never be downloaded');
       return Response.json({ sha: blobSha, encoding: 'base64', content: (options.corrupt ? Buffer.from('tampered') : blob).toString('base64') });
@@ -117,7 +124,7 @@ await test('initially complete context becomes incomplete after an essential on-
  const {result}=await fixture({},async(lookup,directory,manifest)=>{
   assert.equal(manifest.complete,true);assert.equal(manifest.diffComplete,true);
   assert.equal(await lookup('head','src/private-missing-name.ts'),false);
-  assert.equal(manifest.complete,false);assert.equal(manifest.requiredContextComplete,false);assert(manifest.failureCodes.includes('required_file_missing_or_special'));
+  assert.equal(manifest.complete,false);assert.equal(manifest.requiredContextComplete,false);assert(manifest.failureCodes.includes('context_path_missing'));
   const persisted=JSON.parse(await readFile(join(directory,'manifest.json'),'utf8'));
   assert.equal(persisted.complete,false);assert.equal(persisted.requiredContextComplete,false);assert(!JSON.stringify(persisted.failureCodes).includes('private-missing-name'));
   assert.equal(await lookup('head','src/old.ts'),true);assert.equal(manifest.complete,false,'A later success must not erase missing essential evidence');
@@ -125,4 +132,34 @@ await test('initially complete context becomes incomplete after an essential on-
 });
 await test('exhausting on-demand lookup allowance cannot leave an approving context flag',async()=>{
  await fixture({},async(lookup,_directory,manifest)=>{for(let n=0;n<24;n++)assert.equal(await lookup('head','src/old.ts'),true);assert.equal(manifest.complete,true);await assert.rejects(lookup('head','src/old.ts'),/context_lookup_rejected/);assert.equal(manifest.complete,false);assert.equal(manifest.requiredContextComplete,false);assert(manifest.failureCodes.includes('context_lookup_rejected'));});
+});
+
+await test('optional probes verify absence without source reads or completeness loss; required misses stay sticky',async()=>{
+ await fixture({},async(lookup,directory,manifest)=>{
+  assert.equal(await lookup('head','src/speculative-name.ts','probe'),false);assert.equal(manifest.complete,true);assert.equal(manifest.requiredContextComplete,true);assert.equal(manifest.failureCodes.length,0);
+  assert.equal(await lookup('head','src/old.ts','probe'),true);await assert.rejects(readFile(join(directory,'source/head/src/old.ts')));
+  assert.equal(await lookup('head','src/speculative-name.ts'),false);assert.equal(manifest.complete,false);assert(manifest.failureCodes.includes('context_path_missing'));
+  assert.equal(await lookup('head','src/speculative-name.ts','probe'),false);assert.equal(await lookup('head','src/old.ts'),true);assert.equal(manifest.complete,false);
+  assert.equal(JSON.parse(await readFile(join(directory,'manifest.json'),'utf8')).complete,false);
+ });
+ await fixture({dependency:'missing'},async(lookup,_directory,manifest)=>{assert.equal(manifest.complete,false);assert.equal(await lookup('head','src/dep.ts','probe'),false);assert.equal(manifest.complete,false);assert(manifest.failureCodes.includes('context_missing_dependency'));});
+ const {requested}=await fixture({candidate:true},async(lookup,directory,manifest)=>{assert.equal(await lookup('head','candidate.ts','probe'),true);assert.equal(manifest.complete,true);await assert.rejects(readFile(join(directory,'source/head/candidate.ts')));});assert.equal(requested.filter(path=>path.includes('/git/blobs/')).length,1,'An existence probe must not fetch source blobs');
+});
+await test('API failures, truncated and inconsistent trees are never converted into optional path absence',async()=>{
+ for(const probeFailure of [404,403,429,500,'truncated','integrity'] as const)await fixture({probeFailure},async(lookup,_directory,manifest)=>{
+  assert.equal(manifest.complete,true);await assert.rejects(lookup('head','unexplored/candidate.ts','probe'));assert.equal(manifest.complete,false);assert.equal(manifest.requiredContextComplete,false);assert(manifest.failureCodes.includes(typeof probeFailure==='number'?'context_github_api_failed':'required_tree_unverifiable'));
+ });
+});
+await test('mandatory content distinguishes missing paths, special objects, size limits, API errors and blob verification',async()=>{
+ const cases=[{options:{candidate:true,candidateMode:'120000'},code:'context_special_object'},{options:{candidate:true,candidateMode:'160000'},code:'context_special_object'},{options:{candidate:true,candidateMode:'100664'},code:'context_special_object'},{options:{candidate:true,candidateOversized:true},code:'context_file_size_limit'},{options:{candidate:true,candidateCorrupt:true},code:'blob_integrity_failure'},{options:{candidate:true,candidateApiStatus:404},code:'context_github_api_failed'},{options:{candidate:true,candidateApiStatus:429},code:'context_github_api_failed'}];
+ for(const {options,code}of cases)await fixture(options,async(lookup,_directory,manifest)=>{assert.equal(manifest.complete,true);assert.equal(await lookup('head','candidate.ts','probe'),true,'Probe means existence only, never readable/verified contents');assert.equal(manifest.complete,true);assert.equal(await lookup('head','candidate.ts'),false);assert.equal(manifest.complete,false);assert(manifest.failureCodes.includes(code),JSON.stringify(manifest.failureCodes));});
+});
+await test('optional probes share the original lookup cap without invalidating coverage; required calls cannot bypass it',async()=>{
+ await fixture({},async(lookup,directory,manifest)=>{for(let n=0;n<24;n++)assert.equal(await lookup('head','src/missing-'+n+'.ts','probe'),false);await assert.rejects(lookup('head','src/no-more.ts','probe'),/context_lookup_rejected/);assert.equal(manifest.complete,true);assert.equal(manifest.failureCodes.length,0);await assert.rejects(lookup('head','src/old.ts'),/context_lookup_rejected/);assert.equal(manifest.complete,false);assert(manifest.failureCodes.includes('context_lookup_rejected'));assert.equal(JSON.parse(await readFile(join(directory,'manifest.json'),'utf8')).complete,false);});
+});
+await test('concurrent optional exploration and required reads serialize immutable state and never erase a required failure',async()=>{
+ const {requested}=await fixture({candidate:true},async(lookup,directory,manifest)=>{
+  const optional=await Promise.all([lookup('head','missing-a.ts','probe'),lookup('base','missing-b.ts','probe'),lookup('head','candidate.ts','probe')]);assert.deepEqual(optional,[false,false,true]);assert.equal(manifest.complete,true);
+  const mixed=await Promise.all([lookup('head','candidate.ts'),lookup('head','required-missing.ts'),lookup('base','missing-c.ts','probe'),lookup('head','candidate.ts')]);assert.deepEqual(mixed,[true,false,false,true]);assert.equal(manifest.complete,false);assert(manifest.failureCodes.includes('context_path_missing'));assert.equal(JSON.parse(await readFile(join(directory,'manifest.json'),'utf8')).complete,false);
+ });assert.equal(requested.filter(path=>path.includes('/git/blobs/')).length,2,'Concurrent content requests must reuse verified blobs');
 });

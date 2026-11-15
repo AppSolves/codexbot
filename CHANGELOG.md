@@ -2,6 +2,7 @@
 
 ## Unreleased — final context completion
 
+- Add metadata-only optional existence probes without weakening mandatory file evidence, immutable verification or existing request/API budgets. Verified absent candidates no longer invalidate otherwise complete context; infrastructure/verification errors stay distinct.
 - Report the exact trusted-host/model completion conditions when analysis cannot be accepted. Preserve findings and fail closed when on-demand essential evidence becomes unavailable.
 - Record required on-demand failure reasons and close/drain lookups before the final result check, preventing late context mutation after submission. No inference, context-budget or approval-policy relaxation.
 
