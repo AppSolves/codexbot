@@ -52,7 +52,7 @@ await test('proxy diagnostics retain only proven HTTP status and exact provider 
   const secret = 'Bearer fixture-secret OAuth-code source prompt private-provider-message';
   for (const [status, code, param] of [[401, 'subscription_sharing_invalid_user', null], [403, 'subscription_sharing_user_not_eligible', null],
     [403, 'chatpass_v2_scope_not_authorized', null], [429, 'subscription_sharing_usage_limit_exceeded', null],
-    [400, 'subscription_sharing_unsupported_capability', 'tools'], [404, 'model_not_found', 'model'], [503, secret, secret], [502, 'oversized', null]] as const) {
+    [400, 'subscription_sharing_unsupported_capability', 'tools'], [400, 'invalid_json_schema', 'text.format.schema'], [404, 'model_not_found', 'model'], [503, secret, secret], [502, 'oversized', null]] as const) {
     const diagnostics: ExecutionFailure[] = []; let calls = 0;
     const upstream: typeof fetch = async () => {
       calls++; return new Response(code === 'oversized' ? secret.repeat(1000) : JSON.stringify({ error: { code, param, message: secret, body: secret }, detail: secret }), { status });

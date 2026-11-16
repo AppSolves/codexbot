@@ -9,6 +9,7 @@ import { DEFAULT_CONFIG } from '../dist/src/core/config.js';
 import { cleanupReviewContainers } from '../dist/src/runner/docker.js';
 import { ExecutionDiagnostics } from '../dist/src/core/execution.js';
 import {buildReviewPlan} from '../dist/src/runner/orchestration.js';
+import { assertProviderSchema } from './provider-schema-fixture.mjs';
 
 // Runs real pinned Codex and real container isolation with synthetic Responses SSE, no credentials/quota.
 const id = randomUUID(), volume = `codexbot-test-${id}`, proxy = `codexbot-test-proxy-${id}`, review = `codexbot-test-review-${id}`;
@@ -35,12 +36,14 @@ const events = [
   { type: 'response.output_item.done', output_index: 0, item },
   { type: 'response.completed', response: { id: 'resp_fixture', status: 'completed', output: [item], usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } }
 ].map((event, sequence_number) => `event: ${event.type}\ndata: ${JSON.stringify({ ...event, sequence_number })}\n\n`).join('');
-const proxyScript = `import {createInferenceServer} from '/app/dist/src/runner/proxy.js';
+const proxyScript = `import assert from 'node:assert/strict';import {createInferenceServer} from '/app/dist/src/runner/proxy.js';
 import {executionEnvelope,proxyRequestEnvelope} from '/app/dist/src/core/execution.js';
+const assertProviderSchema=${assertProviderSchema.toString()};
 let calls=0;
 globalThis.fetch = async (url, init) => {
   if(url !== 'https://api.openai.com/v1/responses' || init.headers.Authorization !== 'Bearer fixture-only') throw new Error('Invalid inference boundary');
   const request=JSON.parse(init.body);
+  assert.equal(request.text?.format?.strict,true);assertProviderSchema(request.text.format.schema);
   if(request.store!==false || request.stream!==true || !Array.isArray(request.input) || request.input.some(item=>item.role==='system')) throw new Error('Invalid SIWC request contract');
   if(++calls > 1) return Response.json({error:{code:calls===2?'subscription_sharing_unsupported_capability':'model_not_found',param:calls===2?'tools':'model',message:'private-fixture-provider-body'}},{status:calls===2?400:200});
   return new Response(${JSON.stringify(events)}, {headers:{'content-type':'text/event-stream'}});

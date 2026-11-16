@@ -16,8 +16,8 @@ const PROVIDER_CODES = new Set(`subscription_sharing_user_not_eligible subscript
 subscription_sharing_usage_unavailable subscription_sharing_unsupported_capability subscription_sharing_route_not_supported
 subscription_sharing_invalid_user chatpass_v2_scope_not_authorized chatpass_v2_invalid_authorization_context
 subscription_sharing_user_unavailable invalid_api_key insufficient_quota rate_limit_exceeded model_not_found
-unsupported_parameter unsupported_value invalid_request_error`.split(/\s+/));
-const PROVIDER_PARAMS = new Set(['model', 'reasoning.effort', 'tools', 'tool_choice', 'input', 'text.format', 'store', 'stream',
+unsupported_parameter unsupported_value invalid_request_error invalid_json_schema`.split(/\s+/));
+const PROVIDER_PARAMS = new Set(['model', 'reasoning.effort', 'tools', 'tool_choice', 'input', 'text.format', 'text.format.schema', 'store', 'stream',
   'max_output_tokens', 'previous_response_id', 'temperature', 'prompt_cache_retention', 'metadata']);
 const METHODS = new Set(['initialize', 'model/list', 'thread/start', 'turn/start']);
 const SIGNALS = new Set(['SIGKILL', 'SIGTERM', 'SIGABRT', 'SIGSEGV', 'SIGINT']);
