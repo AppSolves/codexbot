@@ -18,6 +18,20 @@ await test('identical native encodings are not mistaken for missing Git images w
  const localFetch:typeof fetch=globalThis.fetch;const intercepted=mock.method(globalThis,'fetch',async()=>new Response('data: {"type":"response.completed"}\n\n',{headers:{'content-type':'text/event-stream'}}));const server=createInferenceServer('fixture-only',{minimumImages:4});server.listen(0,'127.0.0.1');await once(server,'listening');const address=server.address();assert(address&&typeof address!=='string');
  try{for(const count of [4,4,3]){const response:Response=await localFetch(`http://127.0.0.1:${address.port}/v1/responses`,{method:'POST',body:JSON.stringify({model:'fixture',store:false,stream:true,input:Array.from({length:count},()=>({type:'input_image',image_url:'data:image/jpeg;base64,AAAA'}))})});assert.equal(response.status,count===4?200:403);await response.text();}}finally{server.closeAllConnections();server.close();intercepted.mock.restore();}
 });
+await test('compaction restores the original labeled images, with budgets and per-execution isolation intact',async()=>{
+ const localFetch=globalThis.fetch,upstream:Record<string,unknown>[]=[];
+ const intercepted=mock.method(globalThis,'fetch',async(_url:Parameters<typeof fetch>[0],init?:RequestInit)=>{upstream.push(JSON.parse(String(init?.body)) as Record<string,unknown>);return new Response('data: {"type":"response.completed"}\n\n',{headers:{'content-type':'text/event-stream'}});});
+ const images=['AAAA','BBBB','CCCC','DDDD'].flatMap((value,index)=>[{type:'input_text',text:'Verified PR image: head/image-'+index+'.png'},{type:'input_image',image_url:'data:image/png;base64,'+value}]);
+ const server=createInferenceServer('fixture-only',{minimumImages:4,maxInputBytes:1800}),other=createInferenceServer('other-fixture',{minimumImages:4});
+ server.listen(0,'127.0.0.1');other.listen(0,'127.0.0.1');await Promise.all([once(server,'listening'),once(other,'listening')]);
+ const post=async(target:typeof server,input:unknown[])=>{const address=target.address();assert(address&&typeof address!=='string');const response=await localFetch(`http://127.0.0.1:${address.port}/v1/responses`,{method:'POST',body:JSON.stringify({model:'fixture',store:false,stream:true,input})});await response.text();return response.status;};
+ try{
+  assert.equal(await post(server,[]),403);assert.equal(await post(server,[{role:'user',content:images}]),200);
+  for(let i=0;i<2;i++){assert.equal(await post(server,[{role:'user',content:[{type:'input_text',text:'compacted checkpoint'}]}]),200);assert.deepEqual((upstream.at(-1)?.input as unknown[]).at(-1),{role:'user',content:images});}
+  assert.equal(await post(server,[{role:'user',content:[{type:'input_text',text:'x'.repeat(1200)}]}]),403);
+  assert.equal(await post(other,[]),403);assert.equal(upstream.length,3);
+ }finally{for(const value of [server,other]){value.closeAllConnections();value.close();}intercepted.mock.restore();}
+});
 await test('API-key and ChatGPT adapters inject only their own bearer at the isolated inference boundary', async () => {
   for (const credential of ['fixture-personal-api-key', 'fixture-personal-oauth-token']) {
     const requests: { url: string; auth: string; body: string }[] = [];
