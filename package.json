@@ -1,6 +1,6 @@
 {
   "name": "codexbot",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Self-hostable GitHub App for isolated Codex pull request reviews",
   "license": "Apache-2.0",

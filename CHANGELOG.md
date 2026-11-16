@@ -1,13 +1,15 @@
 # Security and behavior changes
 
-## Unreleased — Responses output schema compatibility
+## 0.1.1 — review execution and bounded orchestration
+
+### Responses output schema compatibility
 
 - Project group/continuation/synthesis output schemas onto the documented Responses subset. Keep `uniqueItems` and string-length constraints in unchanged strict host validation, rather than sending them to the provider.
 - Check every group schema and the actual pinned Codex wire schema against the same contract; duplicate reasons remain invalid locally. Retain only exact `invalid_json_schema` / `text.format.schema` diagnostics from bounded error envelopes.
 - Track successful tool inspection across the execution instead of demanding a redundant command in every later group/synthesis turn. Every group's input is still independently hash-verified/provided, an execution with no inspection is still rejected, and incomplete group/context/synthesis checks still deny approval.
 - Restore the first verified native image inputs after Codex compaction drops all image history. Retain their labels, fingerprints and original request/byte limits; partial replacement or substitution remains denied. Native acceptance forces real pinned-Codex compaction across a 93-file/four-distinct-image review.
 
-## Unreleased — bounded review orchestration
+### Bounded review orchestration
 
 - Harden required visual-input retention against duplicate/substituted images; native multi-turn acceptance now uses four distinct PNGs across groups, continuation and synthesis.
 - Integrate final whole-PR checks for one-group reviews without raising budgets. Add bounded host-generated coverage/reason status to incomplete COMMENT reports and recheck output size after adding metadata.
@@ -16,13 +18,13 @@
 - Build immutable host-owned evidence groups, run bounded same-thread continuation and mandatory cross-group synthesis, and independently validate coverage before accepting completeness. All groups share the existing proxy, request/time limits and context lookup budget.
 - Preserve primary analysis failures when the workflow reports failure. Add deterministic and real pinned Codex/Docker coverage for large PRs, images, continuation, synthesis, evidence integrity and global budget exhaustion.
 
-## Unreleased — final context completion
+### Final context completion
 
 - Add metadata-only optional existence probes without weakening mandatory file evidence, immutable verification or existing request/API budgets. Verified absent candidates no longer invalidate otherwise complete context; infrastructure/verification errors stay distinct.
 - Report the exact trusted-host/model completion conditions when analysis cannot be accepted. Preserve findings and fail closed when on-demand essential evidence becomes unavailable.
 - Record required on-demand failure reasons and close/drain lookups before the final result check, preventing late context mutation after submission. No inference, context-budget or approval-policy relaxation.
 
-## Unreleased — inference diagnostics
+### Inference diagnostics
 
 - Preserve correlated per-request primary and cleanup errors, bounded HTTP/SSE metadata and allowlisted transport causes. A consumer closing after a completed SSE response is no longer mislabeled as a provider failure; successful retries clear stale failures.
 - Distinguish fixed engine rejection reasons for incomplete/inconclusive results, invalid schema/head, quarantine and truncation. Incomplete reviews still fail CI and publish only a non-approving fallback.
