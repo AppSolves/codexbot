@@ -1,13 +1,15 @@
-import { mkdir, mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { client } from '../worker/github.js';
 import type { RequestSnapshot } from '../worker/store.js';
 import type { Envelope } from '../core/crypto.js';
 import { unseal, seal, sessionBinding } from '../core/crypto.js';
 import { record, requireCondition, AppError } from '../core/errors.js';
 import { diagnostic, FAILURE_CODES, BROKER_CODES, ReviewCompletionError, type ReviewCompletion } from '../core/diagnostics.js';
 import { OAuth, validateSession } from '../auth/oauth.js';
+import type {OAuthSession} from '../auth/oauth.js';
+import {atomicPrivateFile} from '../auth/files.js';
+import {maintainCredential,renewableContextClient,CREDENTIAL_REFRESH_MARGIN_MS} from './credentials.js';
 import { broker, backendUrl, checkWorkload } from './broker.js';
 import { collectContext } from './context.js';
 import { contextServer } from './context-server.js';
@@ -18,6 +20,7 @@ import { isolatedReview } from './docker.js';
 import { failedReview, normalizeReview, validateReview, type ChangedFile } from '../core/review.js';
 import { buildReviewPlan, validateExecution } from './orchestration.js';
 import { ExecutionError } from '../core/execution.js';
+import {reviewTimeoutMs} from '../core/limits.js';
 
 const REFRESH_WINDOW_MS = 25 * 60_000;
 export async function waitForRefresh(earliest: number): Promise<void> {
@@ -33,6 +36,7 @@ export async function reviewJob(): Promise<void> {
   let submission: { output: unknown; context_complete: boolean; failure?: ReturnType<typeof diagnostic> } | null = null;
   let completion:ReviewCompletion|undefined;
   let stage = 'environment';
+  let failed=false;
   let closeContext: (() => Promise<void>) | undefined, revokeContext: (() => Promise<unknown>) | undefined;
   try {
     backend = backendUrl(process.env.CODEXBOT_BACKEND ?? '');
@@ -44,16 +48,14 @@ export async function reviewJob(): Promise<void> {
     snapshot = prepared.snapshot as RequestSnapshot;
     requireCondition(snapshot.id === id && String(snapshot.actorId) === process.env.CODEXBOT_CREDENTIAL_OWNER && String(snapshot.installationId) === process.env.CODEXBOT_INSTALLATION_ID, 'credential_owner_mismatch');
     requireCondition(typeof prepared.read_token === 'string', 'missing_read_token');
-    const github = client(prepared.read_token);
-    revokeContext = () => github.rest.apps.revokeInstallationAccessToken();
+    const timeout=reviewTimeoutMs(snapshot);
+    const contextClient=renewableContextClient(prepared.read_token,async()=>{
+      const renewed=record(await broker(backend,id,'context'));requireCondition(typeof renewed.read_token==='string','missing_read_token');return renewed.read_token;
+    });
+    const github=contextClient.github;revokeContext=contextClient.close;
     const directory = join(temporary, 'context');
-    stage = 'context';
-    let lookup: ContextLookup | undefined;
-    const contextCancellation = new AbortController();
-    const manifest = await collectContext(github, snapshot, directory, reader => { lookup = reader; }, contextCancellation.signal);
-    requireCondition(manifest.complete, manifest.failureCodes[0] ?? 'review_context_incomplete');
-    const plan=await buildReviewPlan(directory,snapshot.head,snapshot.base,manifest.binaryFiles);
     let credential: string;
+    let renewable:OAuthSession|undefined,renew:((session:OAuthSession)=>Promise<OAuthSession>)|undefined;
     stage = 'credentials';
     if (snapshot.config.credentials.mode === 'api-key') {
       requireCondition(process.env.CODEXBOT_API_KEY && !process.env.CODEXBOT_VAULT_KEY, 'api_key_missing_or_ambiguous_credentials');
@@ -62,23 +64,34 @@ export async function reviewJob(): Promise<void> {
       requireCondition(process.env.CODEXBOT_VAULT_KEY && !process.env.CODEXBOT_API_KEY, 'vault_key_missing_or_ambiguous_credentials');
       const saved = record(prepared.session);
       const binding = sessionBinding(backend, snapshot.installationId, snapshot.repositoryId, snapshot.actorId);
+      let version=Number(saved.version);
+      renew=async(current:OAuthSession)=>{
+        if(current.hosted){const renewed=record(await broker(backend,id,'renew'));version=Number(renewed.version);return validateSession(await unseal(renewed.envelope as Envelope,process.env.CODEXBOT_VAULT_KEY!,binding));}
+        const next=await new OAuth().refresh(current);
+        await broker(backend,id,'rotate',{version,envelope:await seal(next,process.env.CODEXBOT_VAULT_KEY!,binding)});version++;return next;
+      };
       let session = validateSession(await unseal(saved.envelope as Envelope, process.env.CODEXBOT_VAULT_KEY, binding));
-      if (session.expires_at - Date.now() < REFRESH_WINDOW_MS) {
+      if (session.expires_at - Date.now() <= CREDENTIAL_REFRESH_MARGIN_MS) {
         await waitForRefresh(session.earliest_refresh_at);
-        if (session.hosted) {
-          const renewed = record(await broker(backend, id, 'renew'));
-          session = validateSession(await unseal(renewed.envelope as Envelope, process.env.CODEXBOT_VAULT_KEY, binding));
-        } else {
-          session = await new OAuth().refresh(session);
-          // Durably persist rotated credentials before starting inference. A conflict fails closed.
-          await broker(backend, id, 'rotate', { version: saved.version, envelope: await seal(session, process.env.CODEXBOT_VAULT_KEY, binding) });
-        }
+        session=await renew(session);
       }
-      requireCondition(session.expires_at - Date.now() >= 22 * 60_000, 'session_too_short_reconnect_required');
+      requireCondition(session.expires_at-Date.now()>CREDENTIAL_REFRESH_MARGIN_MS,'session_too_short_for_requested_timeout');
+      renewable=session;
       credential = session.access_token;
     }
-    const credentialPath = join(temporary, 'credential');
-    await writeFile(credentialPath, credential, { mode: 0o600 });
+    stage = 'context';
+    let lookup: ContextLookup | undefined;
+    const contextCancellation = new AbortController();
+    const manifest = await collectContext(github, snapshot, directory, reader => { lookup = reader; }, contextCancellation.signal);
+    requireCondition(manifest.complete, manifest.failureCodes[0] ?? 'review_context_incomplete');
+    const plan=await buildReviewPlan(directory,snapshot.head,snapshot.base,manifest.binaryFiles);
+    if(renewable&&renew&&renewable.expires_at-Date.now()<=CREDENTIAL_REFRESH_MARGIN_MS){
+      await waitForRefresh(renewable.earliest_refresh_at);
+      renewable=await renew(renewable);credential=renewable.access_token;
+      requireCondition(renewable.expires_at-Date.now()>CREDENTIAL_REFRESH_MARGIN_MS,'session_too_short_for_requested_timeout');
+    }
+    const credentialPath = join(temporary, 'credentials','current');
+    await atomicPrivateFile(credentialPath,{access_token:credential});
     // The container runs as this host uid; the credential file remains owner-readable only.
     await mkdir(directory, { recursive: true });
     // Context is private source, readable only by the dedicated container uid via a read-only bind.
@@ -89,7 +102,13 @@ export async function reviewJob(): Promise<void> {
     stage = 'analyzing';
     await broker(backend, id, 'stage', { stage: 'analyzing' });
     let partialFailure:ExecutionError|undefined;
-    const raw=await isolatedReview(image, directory, credentialPath, sockets,{minimumImages:reviewImages(JSON.stringify(manifest)).length},failure=>{partialFailure=failure;});
+    const stopRefresh=new AbortController(),abortReview=new AbortController();let credentialFailure:unknown;
+    const refreshing=renewable&&renew?maintainCredential(renewable,renew,token=>atomicPrivateFile(credentialPath,{access_token:token}),stopRefresh.signal).catch(error=>{credentialFailure=error;abortReview.abort();}):Promise.resolve();
+    let raw:unknown,reviewFailure:unknown;
+    try{raw=await isolatedReview(image, directory, credentialPath, sockets,{minimumImages:reviewImages(JSON.stringify(manifest)).length,timeoutMinutes:timeout/60_000},failure=>{partialFailure=failure;},abortReview.signal);}
+    catch(error){reviewFailure=error;}
+    finally{stopRefresh.abort();await refreshing;}
+    if(reviewFailure)throw credentialFailure??reviewFailure;
     stage = 'result';
     const execution=validateExecution(raw,plan);let output = normalizeReview(execution.review, snapshot.head);
     try { validateReview(output, snapshot.head, JSON.parse(await readFile(join(directory, 'diff.json'), 'utf8')) as ChangedFile[],binaryLocations(manifest.binaryFiles)); }
@@ -107,10 +126,12 @@ export async function reviewJob(): Promise<void> {
       output_complete:output.complete,output_result:output.result,quarantined:output.quarantined===true,output_truncated:output.output_truncated===true,
       orchestration:coverage,
       ...(manifest.failureCodes[0]?{context_failure_code:manifest.failureCodes[0]}:{}),...(manifest.lookups?{context_lookups:manifest.lookups}:{})};
+    if(credentialFailure)throw credentialFailure;
     if(partialFailure||execution.failure)throw partialFailure??new ExecutionError(execution.failure!);
     if(!(manifest.complete&&manifest.diffComplete&&manifest.requiredContextComplete&&output.complete&&output.result!=='inconclusive'&&!output.quarantined&&!output.output_truncated))throw new ReviewCompletionError(completion);
     await broker(backend, id, 'result', submission);
   } catch (error) {
+    failed=true;
     const report = diagnostic(error, stage,completion); console.error(JSON.stringify(report));
     // Always leave a deterministic non-approving result when preflight succeeded.
     const failure = { ...report, code: report.broker_code ?? (FAILURE_CODES.has(report.code) || BROKER_CODES.has(report.code) ? report.code : 'external_or_execution_failure') };
@@ -132,7 +153,7 @@ export async function reviewJob(): Promise<void> {
         // Backend cleanup releases terminal/expired leases; surface the cleanup failure explicitly.
         console.error(JSON.stringify({ ...diagnostic(error, 'release'), event: 'session_release_deferred' }));
       }
-      requireCondition(!contextCleanupFailed, 'read_token_cleanup_failed');
+      if(!failed)requireCondition(!contextCleanupFailed, 'read_token_cleanup_failed');
     } finally { if (temporary) await rm(temporary, { recursive: true, force: true }); }
   }
 }

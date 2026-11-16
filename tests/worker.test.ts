@@ -37,7 +37,7 @@ await test('retained aliases expose only public pages; privileged routes never r
   env.PUBLIC_URL = DEFAULT_BACKEND;
   const endpoints: [string, string][] = [['/webhook','POST'], ['/v1/workload/check','POST'], ['/v1/capabilities','GET'], ['/v1/setup','POST'],
     ['/v1/session','GET'], ['/v1/session','PUT'], ['/v1/session','DELETE'], ['/v1/operations','GET'],
-    ...['prepare','rotate','renew','result','publish','release','failure','stage'].map(operation => [`/v1/requests/${snapshot().id}/${operation}`, 'POST'] as [string, string])];
+    ...['prepare','context','rotate','renew','result','publish','release','failure','stage'].map(operation => [`/v1/requests/${snapshot().id}/${operation}`, 'POST'] as [string, string])];
   for (const [path, method] of endpoints) {
     const response = await worker.fetch(new Request(`https://retired.invalid${path}`, { method, headers: { Origin: DEFAULT_BACKEND, 'X-Forwarded-Host': new URL(DEFAULT_BACKEND).host } }), env);
     assert.equal(response.status, 421); assert.equal(response.headers.get('location'), null);
@@ -90,6 +90,22 @@ await test('signed webhook, OIDC preflight, committed result and separate public
   assert.equal((await post('publish', 'codexbot-publish-1')).status, 200); assert.equal(f.state.reviews.length, 1);
   for (const issued of f.calls.filter(x => x.path.endsWith('/access_tokens'))) assert.deepEqual(issued.body.repository_ids, [2]);
 }));
+await test('long reviews renew only repository-read tokens through the same live OIDC and permission checks',async()=>fixture(async(env,f)=>{
+  await worker.fetch(signed(payload('@codexbot review --timeout 120'),env.GITHUB_WEBHOOK_SECRET),env);
+  const id=(f.calls.find(x=>x.path.endsWith('/dispatches'))!.body.inputs as Record<string,string>).request_id!;
+  const post=async(operation:string,environment='codexbot-1-5',claims:Record<string,unknown>={})=>worker.fetch(new Request(`https://broker.invalid/v1/requests/${id}/${operation}`,{method:'POST',headers:{Authorization:`Bearer ${await oidc(environment,claims)}`},body:'{}'}),env);
+  assert.equal((await post('context')).status,409);
+  assert.equal((await post('prepare')).status,200);
+  const before=f.calls.length,renewed=await post('context');assert.equal(renewed.status,200);
+  assert.deepEqual(await renewed.json(),{read_token:'fixture-installation-token'});
+  const issued=f.calls.slice(before).filter(x=>x.path.endsWith('/access_tokens'));assert.equal(issued.length,2);
+  assert.deepEqual(issued.at(-1)!.body,{repository_ids:[2],permissions:{contents:'read',pull_requests:'read'}});
+  assert.equal((await post('context','codexbot-publish-1')).status,403);
+  assert.equal((await post('context','codexbot-1-5',{run_id:'456'})).status,403);
+  f.state.permission='none';assert.equal((await post('context')).status,403);f.state.permission='write';
+  f.state.head='e'.repeat(40);assert.equal((await post('context')).status,409);f.state.head=HEAD;
+  f.state.suspended=true;assert.equal((await post('context')).status,403);
+}));
 await test('delayed authorization-revocation webhooks do not delete newly authorized browser sessions by actor alone', async () => fixture(async env => {
   await env.DB.prepare('INSERT INTO web_sessions(id_hash,actor_id,payload,expires_at) VALUES(?,?,?,?)').bind('new-authorization',5,'encrypted-fixture',Date.now()+60_000).run();
   const request=signed({action:'revoked',sender:{id:5,type:'User'}},env.GITHUB_WEBHOOK_SECRET); request.headers.set('x-github-event','github_app_authorization');
@@ -123,7 +139,7 @@ await test('all broker operations reject authoritative default-branch drift and 
       const body = record(await response.json()); change(body); return Response.json(body);
     });
     try {
-      for (const operation of ['prepare','failure','publish','rotate','renew','result','stage','release']) {
+      for (const operation of ['prepare','context','failure','publish','rotate','renew','result','stage','release']) {
         const environment = operation === 'publish' ? 'codexbot-publish-1' : 'codexbot-1-5';
         const response = await worker.fetch(new Request(`https://broker.invalid/v1/requests/${id}/${operation}`, {
           method: 'POST', headers: { Authorization: `Bearer ${await oidc(environment)}` }, body: '{}'

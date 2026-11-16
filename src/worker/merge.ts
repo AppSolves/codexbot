@@ -5,7 +5,7 @@ import { splitRepo, permission, trustedConfig, verifyActor } from './github.js';
 import { authorize } from '../core/policy.js';
 import { requireCondition } from '../core/errors.js';
 import { mergeDisposition, mergeRequested } from '../core/review.js';
-import { REQUEST_LIFETIME_MS } from '../core/limits.js';
+import { MERGE_INTENT_LIFETIME_MS } from '../core/limits.js';
 
 export interface MergeOptions { enabled: boolean; appId: number }
 interface MergeQuery { repository: { autoMergeAllowed: boolean; pullRequest: {
@@ -33,7 +33,7 @@ export async function invalidateMerge(github: Octokit, snapshot: RequestSnapshot
 export async function controlMerge(github: Octokit, snapshot: RequestSnapshot, config: Config, appSlug: string, options: MergeOptions, beforeWrite: () => Promise<void> = async () => {}): Promise<string> {
   if (!options.enabled) return 'deployment_merge_acceptance_gate_closed';
   if (!mergeRequested(snapshot)) return 'policy_denied';
-  requireCondition(Date.now() - snapshot.createdAt < REQUEST_LIFETIME_MS, 'merge_intent_expired', 410);
+  requireCondition(Date.now() - snapshot.createdAt < MERGE_INTENT_LIFETIME_MS, 'merge_intent_expired', 410);
   const repo = splitRepo(snapshot.repository);
   const state = await github.graphql<MergeQuery>(QUERY, { ...repo, number: snapshot.pr }), pr = state.repository.pullRequest;
   if (pr.state === 'MERGED' && pr.headRefOid === snapshot.head) return 'merged';

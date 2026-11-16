@@ -1,8 +1,9 @@
 import { requireCondition } from './errors.js';
+import {MAX_REVIEW_TIMEOUT_MINUTES} from './limits.js';
 
 export const EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const;
 export type Effort = typeof EFFORTS[number];
-export interface ReviewCommand { merge: boolean; effort: Effort | null; instructions: string; rerun?: boolean; model?: string }
+export interface ReviewCommand { merge: boolean; effort: Effort | null; instructions: string; rerun?: boolean; model?: string; timeout_minutes?:number }
 
 export function validateHandle(handle: string): string {
   requireCondition(/^@[a-zA-Z0-9]{1,39}$/.test(handle), 'handle_must_be_at_and_1_to_39_ascii_letters_or_digits');
@@ -43,6 +44,7 @@ export function parseCommand(body: string, trigger: string): ReviewCommand | nul
   const tokens = words(first.slice(match[0].length));
   let merge = false, effort: Effort | null = null, literal = false, rerun = false;
   let model: string | undefined;
+  let timeout:number|undefined;
   const context: string[] = [];
   for (let i = 0; i < tokens.length; i++) {
     const token = tokens[i]!;
@@ -50,7 +52,11 @@ export function parseCommand(body: string, trigger: string): ReviewCommand | nul
     else if (token === '--') literal = true;
     else if (token === '--merge') { requireCondition(!merge, 'duplicate_merge'); merge = true; }
     else if (token === '--rerun') { requireCondition(!rerun, 'duplicate_rerun'); rerun = true; }
-    else if (token === '--model' || token.startsWith('--model=')) {
+    else if(token==='--timeout'||token.startsWith('--timeout=')){
+      requireCondition(timeout===undefined,'duplicate_timeout');const value=token==='--timeout'?tokens[++i]:token.slice(10);
+      requireCondition(typeof value==='string'&&/^[1-9][0-9]*$/.test(value)&&Number.isSafeInteger(Number(value)),'review_timeout_must_be_positive_minutes');
+      requireCondition(Number(value)<=MAX_REVIEW_TIMEOUT_MINUTES,'review_timeout_exceeds_github_actions_job_limit');timeout=Number(value);
+    } else if (token === '--model' || token.startsWith('--model=')) {
       requireCondition(model === undefined, 'duplicate_model');
       const value = token === '--model' ? tokens[++i] : token.slice(8);
       requireCondition(typeof value === 'string' && !value.startsWith('-') && /^[a-zA-Z0-9._-]{1,100}$/.test(value), 'model_must_be_a_1_to_100_character_catalog_identifier');
@@ -62,5 +68,5 @@ export function parseCommand(body: string, trigger: string): ReviewCommand | nul
       effort = value as Effort;
     } else { requireCondition(!token.startsWith('-'), 'unknown_flag_use_double_dash_for_literal_context'); context.push(token); }
   }
-  return { merge, effort, instructions: [context.join(' '), ...lines.slice(1)].join('\n').trim(), ...(rerun ? { rerun: true } : {}), ...(model !== undefined ? { model } : {}) };
+  return { merge, effort, instructions: [context.join(' '), ...lines.slice(1)].join('\n').trim(), ...(rerun ? { rerun: true } : {}), ...(model !== undefined ? { model } : {}),...(timeout!==undefined?{timeout_minutes:timeout}:{}) };
 }

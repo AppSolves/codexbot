@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto';
 import { safeEvents, type StreamProgress } from './stream.js';
 import { record, requireCondition } from '../core/errors.js';
 import { executionError, providerFailure, transportCode, type ExecutionFailure, type ProxyRequestDiagnostic } from '../core/execution.js';
+import {DEFAULT_REVIEW_TIMEOUT_MINUTES,MAX_REVIEW_TIMEOUT_MINUTES,REVIEW_CLEANUP_MS} from '../core/limits.js';
 // client_metadata is emitted by pinned Codex's Responses transport (core/src/responses_metadata.rs).
 const RESPONSE_FIELDS = new Set(['model', 'instructions', 'input', 'tools', 'tool_choice', 'parallel_tool_calls', 'reasoning', 'store', 'stream', 'include', 'service_tier', 'prompt_cache_key', 'text', 'context_management', 'stream_options', 'client_metadata']);
 function checkTools(tools: unknown, depth = 0): void {
@@ -76,7 +77,7 @@ export function inspectMedia(value:unknown,depth=0,images?:Set<string>,retained?
   return Object.values(item).reduce<number>((count,item)=>count+inspectMedia(item,depth+1,images,retained),0);
 }
 
-export async function inferenceProxy(request: IncomingMessage, response: ServerResponse, token: string, fetcher: typeof fetch = fetch, enforceSelection: (body: Record<string, unknown>) => void = () => {}, report: (failure: ExecutionFailure) => void = () => {}, onRequest?: (value: ProxyRequestDiagnostic) => void, requestIndex = 1): Promise<void> {
+export async function inferenceProxy(request: IncomingMessage, response: ServerResponse, token: string|(()=>Promise<string>), fetcher: typeof fetch = fetch, enforceSelection: (body: Record<string, unknown>) => void = () => {}, report: (failure: ExecutionFailure) => void = () => {}, onRequest?: (value: ProxyRequestDiagnostic) => void, requestIndex = 1,timeoutMinutes=DEFAULT_REVIEW_TIMEOUT_MINUTES): Promise<void> {
   const disconnected = new AbortController(), started = Date.now();
   const progress: StreamProgress = { bytes: 0, frames: 0, terminal: 'none' };
   let stage: 'validation' | 'transport' | 'stream' = 'validation', deadline: AbortSignal | undefined;
@@ -122,9 +123,12 @@ export async function inferenceProxy(request: IncomingMessage, response: ServerR
     inspectMedia(body.input);
     enforceSelection(body);
     stage = 'transport';
-    deadline = AbortSignal.timeout(20 * 60_000);
+    requireCondition(Number.isInteger(timeoutMinutes)&&timeoutMinutes>=1&&timeoutMinutes<=MAX_REVIEW_TIMEOUT_MINUTES,'proxy_deadline_exceeded');
+    deadline = AbortSignal.timeout(timeoutMinutes * 60_000);
+    const accessToken=typeof token==='string'?token:await token();
+    requireCondition(accessToken.length>0&&accessToken.length<=20_000&&!/[\r\n]/.test(accessToken),'proxy_transport_failed');
     const upstream = await fetcher('https://api.openai.com/v1/responses', {
-      method: 'POST', headers: { Authorization: 'Bearer '+token, 'Content-Type': 'application/json', 'User-Agent': 'CodexBot/0.1.2',
+      method: 'POST', headers: { Authorization: 'Bearer '+accessToken, 'Content-Type': 'application/json', 'User-Agent': 'CodexBot/0.1.2',
         ...(typeof request.headers['originator'] === 'string' && request.headers['originator'] === 'CodexBot' ? { originator: 'CodexBot' } : {}) },
       body: JSON.stringify(body), redirect: 'error', signal: AbortSignal.any([deadline, disconnected.signal])
     });
@@ -139,7 +143,7 @@ export async function inferenceProxy(request: IncomingMessage, response: ServerR
     }
     stage = 'stream';
     response.writeHead(upstream.status, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store' });
-    await pipeline(Readable.from(safeEvents(upstream.body, token, recordFailure, progress, consumerCompleted)), response);
+    await pipeline(Readable.from(safeEvents(upstream.body, accessToken, recordFailure, progress, consumerCompleted)), response);
   } catch (error) {
     if(!consumerCompleted()) {
       const abort = deadline?.aborted ? 'deadline' : localPipeline ? 'pipeline' : disconnected.signal.aborted ? 'downstream' : null;
@@ -152,13 +156,14 @@ export async function inferenceProxy(request: IncomingMessage, response: ServerR
     }
     if(!response.destroyed&&!response.writableEnded){if(!response.headersSent)response.writeHead(403, { 'Content-Type': 'application/json' });response.end('{"error":"inference_proxy_denied_or_unavailable"}');}
   } finally {
-    const fields = { ...metadata, request_index: requestIndex, elapsed_ms: Math.min(1_320_000,Math.max(0,Date.now()-started)), stream_bytes: progress.bytes, stream_frames: progress.frames, terminal_event: progress.terminal, abort_origin: deadline?.aborted ? 'deadline' as const : localPipeline ? 'pipeline' as const : disconnected.signal.aborted ? 'downstream' as const : 'none' as const };
+    const fields = { ...metadata, request_index: requestIndex, elapsed_ms: Math.min(MAX_REVIEW_TIMEOUT_MINUTES*60_000+REVIEW_CLEANUP_MS,Math.max(0,Date.now()-started)), stream_bytes: progress.bytes, stream_frames: progress.frames, terminal_event: progress.terminal, abort_origin: deadline?.aborted ? 'deadline' as const : localPipeline ? 'pipeline' as const : disconnected.signal.aborted ? 'downstream' as const : 'none' as const };
     const value: ProxyRequestDiagnostic = { ...fields, phase:'finished', primary: primary ? { ...primary, ...fields } : null, cleanup: cleanup ? { ...cleanup, ...fields } : null };
     if(onRequest)onRequest(value);else {if(value.primary)report(value.primary);if(value.cleanup)report(value.cleanup);}
   }
 }
-export interface InferenceLimits { maxRequests?: number; maxOutputTokens?: number; maxInputBytes?: number; minimumImages?:number }
-export function createInferenceServer(token: string, limits: InferenceLimits = {}, report: (failure: ExecutionFailure) => void = () => {}, onRequest?: (value: ProxyRequestDiagnostic) => void) {
+export interface InferenceLimits { maxRequests?: number; maxOutputTokens?: number; maxInputBytes?: number; minimumImages?:number;timeoutMinutes?:number }
+export function createInferenceServer(token: string|(()=>Promise<string>), limits: InferenceLimits = {}, report: (failure: ExecutionFailure) => void = () => {}, onRequest?: (value: ProxyRequestDiagnostic) => void) {
+  requireCondition(Number.isInteger(limits.timeoutMinutes??DEFAULT_REVIEW_TIMEOUT_MINUTES)&&(limits.timeoutMinutes??DEFAULT_REVIEW_TIMEOUT_MINUTES)>=1&&(limits.timeoutMinutes??DEFAULT_REVIEW_TIMEOUT_MINUTES)<=MAX_REVIEW_TIMEOUT_MINUTES,'review_timeout_exceeds_github_actions_job_limit');
   requireCondition(Number.isInteger(limits.maxRequests ?? 100) && (limits.maxRequests ?? 100) >= 1 && (limits.maxRequests ?? 100) <= 100, 'invalid_proxy_request_limit');
   if (limits.maxOutputTokens !== undefined) requireCondition(Number.isInteger(limits.maxOutputTokens) && limits.maxOutputTokens >= 1 && limits.maxOutputTokens <= 2048, 'invalid_acceptance_token_limit');
   requireCondition(Number.isInteger(limits.minimumImages??0)&&(limits.minimumImages??0)>=0&&(limits.minimumImages??0)<=16,'invalid_proxy_image_limit');
@@ -188,6 +193,6 @@ export function createInferenceServer(token: string, limits: InferenceLimits = {
     if (requests > (limits.maxRequests ?? 100)) { denied('proxy_request_limit'); return; }
     if (active) { denied('proxy_concurrent_request_denied'); return; }
     active = true;
-    void inferenceProxy(request, response, token, fetch, enforceSelection, report, onRequest, index).then(() => { active = false; }, () => { active = false; response.destroy(); });
+    void inferenceProxy(request, response, token, fetch, enforceSelection, report, onRequest, index,limits.timeoutMinutes).then(() => { active = false; }, () => { active = false; response.destroy(); });
   });
 }

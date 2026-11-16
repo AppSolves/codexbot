@@ -17,6 +17,7 @@ See [the complete example](../examples/codexbot.yml).
 | review.request_changes | true | High-confidence critical/high findings request changes |
 | review.model | null | Effective Codex catalog default |
 | review.effort | null | Effective Codex model default; no override |
+| review.timeout_minutes | 30 | Isolated execution timeout in whole minutes; an authorized `--timeout` overrides it for one review |
 | review.blocking_confidence | 0.9 | Critical/high threshold, range 0.5–1 |
 | review.advisory_confidence | 0.7 | Advisory versus manual-verification label, at most blocking threshold |
 | merge.enabled | false | Owner opt-in to guarded merging; separate merge authorization always applies |
@@ -45,9 +46,11 @@ Count limits are 1–1000, concurrency 1–10 and cooldown 0–86400 seconds. Ad
 
 Patterns are full-string, case-insensitive RE2. `*` matches a sequence; `?` one character. At most 64 comma-separated patterns of 128 characters each. Backreferences/lookarounds are rejected. Commas remain separators, including in regex quantifiers.
 
+Timeout precedence is command override, protected-default-branch configuration, then 30 minutes. For example, `@CBReview review --effort xhigh --timeout 60` allows an authorized request up to 60 minutes of inference. Positive whole minutes are required. GitHub-hosted jobs have a [six-hour platform limit](https://docs.github.com/en/actions/reference/limits); the workflow reserves 30 minutes for refresh eligibility, setup and cleanup, leaving at most 330 inference minutes. There is no separate 45-minute product limit. The unchanged global 100-provider-request allowance can still end a review earlier. Longer timeouts consume more repository Actions compute and do not guarantee completion. Authorization and quotas are unchanged; a longer request does not extend the separate one-hour merge-intent deadline.
+
 ## Commands and aliases
 
-The first nonempty top-level line must begin with a configured trigger and `review`. Four-space/tab indents, quotations, inline examples and code fences do not invoke. Flags may occur in any order on that first line: `--merge`, `--model MODEL_ID`, `--model=MODEL_ID`, `--effort LEVEL`, `--effort=LEVEL`, `--rerun`, and `--` for literal context. Duplicates, unknown flags and unclosed quotes are errors. Later lines are advisory context, never flags or authorization.
+The first nonempty top-level line must begin with a configured trigger and `review`. Four-space/tab indents, quotations, inline examples and code fences do not invoke. Flags may occur in any order on that first line: `--merge`, `--model MODEL_ID`, `--model=MODEL_ID`, `--effort LEVEL`, `--effort=LEVEL`, `--timeout MINUTES`, `--timeout=MINUTES`, `--rerun`, and `--` for literal context. Duplicates, unknown flags and unclosed quotes are errors. Later lines are advisory context, never flags or authorization.
 
 Aliases are textual commands, not guaranteed GitHub App mentions. A custom alias can notify an unrelated GitHub account with the same name. Existing @codexbot installations remain compatible. New automated setup uses @CBReview followed by the numeric repository ID to reduce collisions; it remains editable. Configure `bot: {trigger: "@CBReview", aliases: []}` for a short explicit alternative. Avoid adding the old name as an alias if the purpose is avoiding an independent connector. Changing a trigger never changes the App's publishing identity. See [trigger isolation](review-rollout.md).
 

@@ -4,6 +4,7 @@ import { EFFORTS, validateHandle } from './command.js';
 import type { Effort } from './command.js';
 import { requireCondition } from './errors.js';
 import { validatePolicy } from './policy.js';
+import {DEFAULT_REVIEW_TIMEOUT_MINUTES,MAX_REVIEW_TIMEOUT_MINUTES} from './limits.js';
 
 export type ReviewQuota = number | 'unlimited';
 export interface Policy { whitelist: string; blacklist: string }
@@ -11,14 +12,14 @@ export interface Config {
   version: 1;
   bot: { trigger: string; aliases: string[] };
   authorization: Policy;
-  review: { enabled: boolean; auto_review: boolean; auto_approve: boolean; request_changes: boolean; model: string | null; effort: Effort | null; blocking_confidence: number; advisory_confidence: number };
+  review: { enabled: boolean; auto_review: boolean; auto_approve: boolean; request_changes: boolean; model: string | null; effort: Effort | null; timeout_minutes:number; blocking_confidence: number; advisory_confidence: number };
   merge: { enabled: boolean; auto_merge_on_approval: boolean; method: 'squash' | 'merge' | 'rebase'; authorization: Policy; minimum_human_approvals: number; guard_check: string };
   credentials: { mode: 'chatgpt' | 'api-key'; automatic_reviewer: string | null };
   quotas: { user_per_day: ReviewQuota; repository_per_day: ReviewQuota; installation_per_day: ReviewQuota; concurrent_repository: number; concurrent_installation: number; cooldown_seconds: number; reruns_per_day: ReviewQuota };
 }
 export const DEFAULT_CONFIG: Config = {
   version: 1, bot: { trigger: '@codexbot', aliases: [] }, authorization: { whitelist: '', blacklist: '*' },
-  review: { enabled: true, auto_review: false, auto_approve: true, request_changes: true, model: null, effort: null, blocking_confidence: 0.9, advisory_confidence: 0.7 },
+  review: { enabled: true, auto_review: false, auto_approve: true, request_changes: true, model: null, effort: null, timeout_minutes:DEFAULT_REVIEW_TIMEOUT_MINUTES, blocking_confidence: 0.9, advisory_confidence: 0.7 },
   merge: { enabled: false, auto_merge_on_approval: false, method: 'squash', authorization: { whitelist: '', blacklist: '*' }, minimum_human_approvals: 0, guard_check: 'CodexBot reviewed commit' },
   credentials: { mode: 'chatgpt', automatic_reviewer: null },
   quotas: { user_per_day: 10, repository_per_day: 40, installation_per_day: 200, concurrent_repository: 1, concurrent_installation: 4, cooldown_seconds: 60, reruns_per_day: 2 }
@@ -32,6 +33,7 @@ const schema = { type: 'object', additionalProperties: false, properties: {
   review: { type: 'object', additionalProperties: false, properties: {
     enabled: { type: 'boolean' }, auto_review: { type: 'boolean' }, auto_approve: { type: 'boolean' }, request_changes: { type: 'boolean' },
     model: { type: ['string', 'null'], minLength: 1, maxLength: 100, pattern: '^[a-zA-Z0-9._-]+$' },
+    timeout_minutes:{type:'integer',minimum:1,maximum:MAX_REVIEW_TIMEOUT_MINUTES},
     effort: { enum: [null, ...EFFORTS] }, blocking_confidence: { type: 'number', minimum: 0.5, maximum: 1 }, advisory_confidence: { type: 'number', minimum: 0, maximum: 1 }
   } },
   merge: { type: 'object', additionalProperties: false, properties: {

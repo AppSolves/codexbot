@@ -2,10 +2,10 @@ import type { Config } from '../core/config.js';
 import type { ReviewCommand } from '../core/command.js';
 import type { Envelope } from '../core/crypto.js';
 import { sha256 } from '../core/crypto.js';
-import { AdmissionError, admissionRejection, getRejection, rejectionId } from './admission.js';
+import { AdmissionError, admissionRejection, getRejection, rejectionId,REQUEST_EXPIRY_SQL } from './admission.js';
 import { requireCondition } from '../core/errors.js';
 import { normalizeReview } from '../core/review.js';
-import { MAX_REVIEW_BYTES, MAX_RECOVERY_ATTEMPTS, RECOVERY_LEASE_MS, REQUEST_LIFETIME_MS } from '../core/limits.js';
+import { MAX_REVIEW_BYTES, MAX_RECOVERY_ATTEMPTS, RECOVERY_LEASE_MS,requestLifetimeMs,reviewTimeoutMs,MERGE_INTENT_LIFETIME_MS } from '../core/limits.js';
 
 export interface RequestSnapshot {
   id: string; installationId: number; repositoryId: number; ownerId: number; repository: string; defaultBranch: string;
@@ -53,7 +53,7 @@ export class Store {
     const existing = await existingRequest();
     if (existing) return JSON.parse(existing.snapshot) as RequestSnapshot;
     const prior = await getRejection(this.db, await rejectionId(snapshot)); if (prior) throw new AdmissionError(prior);
-    const command = { ...snapshot.command }; delete command.rerun;
+    const command = { ...snapshot.command,timeout_minutes:reviewTimeoutMs(snapshot)/60_000 }; delete command.rerun;
     const key = await sha256(JSON.stringify({ installation: snapshot.installationId, repository: snapshot.repositoryId, owner: snapshot.ownerId,
       actor: snapshot.actorId, pr: snapshot.pr, head: snapshot.head, base: snapshot.base, branch: snapshot.defaultBranch,
       workflow: snapshot.workflowSha, trustedWorkflow, config: snapshot.config, command, mergeIntent: snapshot.mergeIntent ?? null, automaticGrantId:snapshot.automaticGrantId ?? null, rerun: snapshot.command.rerun ? snapshot.commandId ?? snapshot.id : null }));
@@ -66,14 +66,14 @@ export class Store {
       ((SELECT count(*) FROM requests WHERE installation_id=? AND actor_id=? AND created_at>?)<? OR ? IS NULL) AND
       ((SELECT count(*) FROM requests WHERE installation_id=? AND repository_id=? AND created_at>?)<? OR ? IS NULL) AND
       ((SELECT count(*) FROM requests WHERE installation_id=? AND created_at>?)<? OR ? IS NULL) AND
-      (SELECT count(*) FROM requests WHERE installation_id=? AND repository_id=? AND state NOT IN ('published','failed') AND created_at>?)<? AND
-      (SELECT count(*) FROM requests WHERE installation_id=? AND state NOT IN ('published','failed') AND created_at>?)<? AND
+      (SELECT count(*) FROM requests WHERE installation_id=? AND repository_id=? AND state NOT IN ('published','failed') AND ${REQUEST_EXPIRY_SQL}>?)<? AND
+      (SELECT count(*) FROM requests WHERE installation_id=? AND state NOT IN ('published','failed') AND ${REQUEST_EXPIRY_SQL}>?)<? AND
       NOT EXISTS(SELECT 1 FROM requests WHERE installation_id=? AND repository_id=? AND actor_id=? AND created_at>?) AND
       ((SELECT count(*) FROM requests WHERE installation_id=? AND actor_id=? AND rerun=1 AND created_at>?)<? OR ? IS NULL)`)
       .bind(snapshot.id, snapshot.installationId, snapshot.repositoryId, snapshot.actorId, JSON.stringify(snapshot), snapshot.createdAt, key, snapshot.command.rerun ? 1 : 0,
         snapshot.installationId, snapshot.actorId, day, limit(q.user_per_day), limit(q.user_per_day), snapshot.installationId, snapshot.repositoryId, day, limit(q.repository_per_day), limit(q.repository_per_day),
-        snapshot.installationId, day, limit(q.installation_per_day), limit(q.installation_per_day), snapshot.installationId, snapshot.repositoryId, now - REQUEST_LIFETIME_MS, q.concurrent_repository,
-        snapshot.installationId, now - REQUEST_LIFETIME_MS, q.concurrent_installation, snapshot.installationId, snapshot.repositoryId, snapshot.actorId, cooldown,
+        snapshot.installationId, day, limit(q.installation_per_day), limit(q.installation_per_day), snapshot.installationId, snapshot.repositoryId, now, q.concurrent_repository,
+        snapshot.installationId, now, q.concurrent_installation, snapshot.installationId, snapshot.repositoryId, snapshot.actorId, cooldown,
         snapshot.installationId, snapshot.actorId, day, limit(snapshot.command.rerun ? q.reruns_per_day : 'unlimited'), limit(snapshot.command.rerun ? q.reruns_per_day : 'unlimited'));
     const [result] = await this.db.batch([insert, await admissionRejection(this.db, {...snapshot,config:{...snapshot.config,quotas:q}}, key, now, feedback)]);
     if (result!.meta.changes !== 1) {
@@ -89,7 +89,7 @@ export class Store {
   async get(id: string): Promise<{ row: RequestRow; snapshot: RequestSnapshot }> {
     const row = await this.db.prepare('SELECT * FROM requests WHERE id=?').bind(id).first<RequestRow>(); requireCondition(row, 'request_not_found', 404);
     const snapshot = JSON.parse(row.snapshot) as RequestSnapshot;
-    requireCondition(Date.now() - snapshot.createdAt < REQUEST_LIFETIME_MS, 'request_expired', 410); return { row, snapshot };
+    requireCondition(Date.now() - snapshot.createdAt < requestLifetimeMs(snapshot), 'request_expired', 410); return { row, snapshot };
   }
   async beginDispatch(id: string): Promise<string | null> {
     const attempt = crypto.randomUUID();
@@ -138,15 +138,15 @@ export class Store {
     requireCondition(result.meta.changes === 1, 'publication_lease_lost', 409);
   }
   async duePublications(): Promise<string[]> {
-    const { results } = await this.db.prepare(`SELECT id FROM requests WHERE (state='publishing' OR (state='published' AND merge_phase='queued')) AND publish_until<? AND next_publish<=? AND publish_attempts<? AND created_at>? ORDER BY next_publish,created_at LIMIT 1`)
-      .bind(Date.now(), Date.now(), MAX_RECOVERY_ATTEMPTS, Date.now() - REQUEST_LIFETIME_MS).all<{ id: string }>(); return results.map(x => x.id);
+    const { results } = await this.db.prepare(`SELECT id FROM requests WHERE (state='publishing' OR (state='published' AND merge_phase='queued')) AND publish_until<? AND next_publish<=? AND publish_attempts<? AND ${REQUEST_EXPIRY_SQL}>? ORDER BY next_publish,created_at LIMIT 1`)
+      .bind(Date.now(), Date.now(), MAX_RECOVERY_ATTEMPTS, Date.now()).all<{ id: string }>(); return results.map(x => x.id);
   }
   async expiredIntent(): Promise<{ id: string; snapshot: RequestSnapshot; lease: string; attempts: number } | null> {
     const lease = crypto.randomUUID(), now = Date.now();
     const row = await this.db.prepare(`UPDATE requests SET publish_lease=?,publish_until=?,publish_attempts=publish_attempts+1 WHERE id=(
       SELECT id FROM requests WHERE merge_phase IN ('queued','arming','cancelling') AND created_at<? AND next_publish<=? AND publish_until<? AND publish_attempts<?
       ORDER BY next_publish,created_at LIMIT 1) RETURNING id,snapshot,publish_attempts`)
-      .bind(lease, now + RECOVERY_LEASE_MS, now - REQUEST_LIFETIME_MS, now, now, MAX_RECOVERY_ATTEMPTS).first<{ id: string; snapshot: string; publish_attempts: number }>();
+      .bind(lease, now + RECOVERY_LEASE_MS, now - MERGE_INTENT_LIFETIME_MS, now, now, MAX_RECOVERY_ATTEMPTS).first<{ id: string; snapshot: string; publish_attempts: number }>();
     return row ? { id: row.id, snapshot: JSON.parse(row.snapshot) as RequestSnapshot, lease, attempts: row.publish_attempts } : null;
   }
   async expiryFailed(id: string, lease: string, attempts: number): Promise<void> {
@@ -168,8 +168,8 @@ export class Store {
       .bind(id, repository, installation).run();
     if (result.meta.changes) return;
     const publication = await this.db.prepare(`UPDATE requests SET state='publishing',publish_phase='retryable',publish_until=0,next_publish=0,publish_attempts=0,operator_retries=operator_retries+1
-      WHERE id=? AND repository_id=? AND installation_id=? AND publish_phase IN ('failed','retryable') AND publish_attempts>0 AND merge_phase NOT IN ('cancelled','cancelling') AND operator_retries<2 AND created_at>? AND result IS NOT NULL`)
-      .bind(id, repository, installation, Date.now() - REQUEST_LIFETIME_MS).run();
+      WHERE id=? AND repository_id=? AND installation_id=? AND publish_phase IN ('failed','retryable') AND publish_attempts>0 AND merge_phase NOT IN ('cancelled','cancelling') AND operator_retries<2 AND ${REQUEST_EXPIRY_SQL}>? AND result IS NOT NULL`)
+      .bind(id, repository, installation, Date.now()).run();
     requireCondition(publication.meta.changes === 1, 'retry_not_allowed_or_limit_reached', 409);
   }
   async operatorRetryProgress(id: string, repository: number, installation: number): Promise<void> {
@@ -182,8 +182,8 @@ export class Store {
   async cancellable(id: string, repository: number, installation: number): Promise<RequestSnapshot> {
     // Claim cancellation atomically before remote cleanup; a publisher cannot acquire afterwards.
     const row = await this.db.prepare(`UPDATE requests SET state='failed',publish_phase='failed',merge_phase='cancelling' WHERE id=? AND repository_id=? AND installation_id=? AND publish_until<?
-      AND (state IN ('reviewed','publishing','published','failed') OR created_at<?) RETURNING snapshot`)
-      .bind(id, repository, installation, Date.now(), Date.now() - REQUEST_LIFETIME_MS).first<{ snapshot: string }>();
+      AND (state IN ('reviewed','publishing','published','failed') OR ${REQUEST_EXPIRY_SQL}<=?) RETURNING snapshot`)
+      .bind(id, repository, installation, Date.now(), Date.now()).first<{ snapshot: string }>();
     requireCondition(row, 'request_active_missing_or_foreign', 409); return JSON.parse(row.snapshot) as RequestSnapshot;
   }
   async result(id: string, output: unknown, complete: boolean, runId: string): Promise<void> {
@@ -236,7 +236,7 @@ export class Store {
   async acquire(snapshot: RequestSnapshot): Promise<void> {
     await this.authorizeAutomatic(snapshot);
     const result = await this.db.prepare('UPDATE sessions SET lease_request=?,lease_until=? WHERE repository_id=? AND actor_id=? AND installation_id=? AND (lease_until<? OR lease_request=?) AND NOT EXISTS(SELECT 1 FROM web_operations WHERE installation_id=? AND repository_id=? AND lease_until>?) AND (?=0 OR EXISTS(SELECT 1 FROM automatic_review_grants WHERE installation_id=? AND repository_id=? AND actor_id=? AND actor=? AND credential_mode=? AND id=?))')
-      .bind(snapshot.id, Date.now() + REQUEST_LIFETIME_MS, snapshot.repositoryId, snapshot.actorId, snapshot.installationId, Date.now(), snapshot.id, snapshot.installationId, snapshot.repositoryId, Date.now(), snapshot.triggerActor ? 1 : 0, snapshot.installationId,snapshot.repositoryId,snapshot.actorId,snapshot.actor,snapshot.config.credentials.mode,snapshot.automaticGrantId ?? null).run(); requireCondition(result.meta.changes === 1, 'session_missing_or_in_use', 409);
+      .bind(snapshot.id,snapshot.createdAt+requestLifetimeMs(snapshot), snapshot.repositoryId, snapshot.actorId, snapshot.installationId, Date.now(), snapshot.id, snapshot.installationId, snapshot.repositoryId, Date.now(), snapshot.triggerActor ? 1 : 0, snapshot.installationId,snapshot.repositoryId,snapshot.actorId,snapshot.actor,snapshot.config.credentials.mode,snapshot.automaticGrantId ?? null).run(); requireCondition(result.meta.changes === 1, 'session_missing_or_in_use', 409);
   }
   async rotate(snapshot: RequestSnapshot, version: number, envelope: Envelope, operationLease: string | null = null): Promise<void> {
     const result = await this.db.prepare('UPDATE sessions SET envelope=?,version=version+1 WHERE repository_id=? AND actor_id=? AND installation_id=? AND version=? AND lease_request=? AND lease_until>? AND (? IS NULL OR EXISTS(SELECT 1 FROM web_operations WHERE installation_id=? AND repository_id=? AND lease=? AND lease_until>?)) AND (?=0 OR EXISTS(SELECT 1 FROM automatic_review_grants WHERE installation_id=? AND repository_id=? AND actor_id=? AND id=?))')
@@ -302,8 +302,8 @@ export class Store {
   async dueProgress(): Promise<string | null> {
     const row = await this.db.prepare(`SELECT id FROM requests WHERE progress_until<? AND progress_next_at<=? AND progress_attempts<? AND progress_phase NOT IN ('deleted','disabled')
       AND created_at>? AND NOT (state IN ('published','failed') AND progress_phase='ready' AND progress_reported_stage=CASE WHEN state='failed' OR failure_code IS NOT NULL THEN 'failed' ELSE 'completed' END
-        AND (COALESCE(workflow_status,'')='completed' OR (run_id IS NULL AND created_at<?)))
-      ORDER BY progress_next_at,created_at LIMIT 1`).bind(Date.now(), Date.now(), MAX_RECOVERY_ATTEMPTS, Date.now() - 7 * 86_400_000, Date.now() - REQUEST_LIFETIME_MS).first<{ id: string }>();
+        AND (COALESCE(workflow_status,'')='completed' OR (run_id IS NULL AND ${REQUEST_EXPIRY_SQL}<=?)))
+      ORDER BY progress_next_at,created_at LIMIT 1`).bind(Date.now(), Date.now(), MAX_RECOVERY_ATTEMPTS, Date.now() - 7 * 86_400_000, Date.now()).first<{ id: string }>();
     return row?.id ?? null;
   }
   async cleanup(): Promise<void> {
@@ -316,7 +316,7 @@ export class Store {
       this.db.prepare('DELETE FROM web_operations WHERE lease_until<?').bind(Date.now()),
       this.db.prepare(`UPDATE deliveries SET phase='failed',lease_until=0 WHERE phase='processing' AND lease_until<? AND attempts>=?`).bind(Date.now(), MAX_RECOVERY_ATTEMPTS),
       this.db.prepare(`UPDATE requests SET state='failed',publish_phase='failed' WHERE state='publishing' AND publish_until<? AND publish_attempts>=?`).bind(Date.now(), MAX_RECOVERY_ATTEMPTS),
-      this.db.prepare(`UPDATE requests SET state='failed',publish_phase='failed',failure_code=COALESCE(failure_code,'request_expired') WHERE state IN ('created','dispatched','running','reviewed','publishing') AND created_at<? AND merge_phase NOT IN ('queued','arming','cancelling')`).bind(Date.now() - REQUEST_LIFETIME_MS),
+      this.db.prepare(`UPDATE requests SET state='failed',publish_phase='failed',failure_code=COALESCE(failure_code,'request_expired') WHERE state IN ('created','dispatched','running','reviewed','publishing') AND ${REQUEST_EXPIRY_SQL}<=? AND merge_phase NOT IN ('queued','arming','cancelling')`).bind(Date.now()),
       this.db.prepare(`UPDATE sessions SET lease_request=NULL,lease_until=0 WHERE lease_request IS NOT NULL AND (lease_until<? OR EXISTS(SELECT 1 FROM requests WHERE requests.id=sessions.lease_request AND requests.state IN ('published','failed')))`)
         .bind(Date.now()),
       this.db.prepare('DELETE FROM deliveries WHERE created_at<?').bind(Date.now() - 7 * 86_400_000),

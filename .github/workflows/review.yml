@@ -42,7 +42,7 @@ jobs:
   review:
     needs: source
     runs-on: ubuntu-24.04
-    timeout-minutes: 50 # Provider refresh eligibility can require up to 25 minutes before bounded inference.
+    timeout-minutes: 360 # GitHub-hosted platform ceiling; the trusted per-review timer normally stops at 30m.
     environment: codexbot-${{ inputs.installation_id }}-${{ inputs.credential_owner }}
     permissions:
       contents: read

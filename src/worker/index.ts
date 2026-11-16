@@ -188,7 +188,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     else return Response.json({ installation_id: installation.id, session: await store.session(repo.id, user.id, installation.id) });
     return Response.json({ status: 'ok' });
   }
-  const match = /^\/v1\/requests\/([a-f0-9-]{36})\/(prepare|rotate|renew|result|publish|release|failure|stage)$/.exec(url.pathname);
+  const match = /^\/v1\/requests\/([a-f0-9-]{36})\/(prepare|context|rotate|renew|result|publish|release|failure|stage)$/.exec(url.pathname);
   if (!match || request.method !== 'POST') throw new AppError('not_found', 404);
   const id = match[1]!, operation = match[2]!;
   const { row, snapshot } = await store.get(id);
@@ -229,7 +229,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     await store.stage(id, identity.runId, 'analyzing'); await notify(env, store, snapshot);
     return Response.json({ status: 'recorded' });
   }
-  if (operation === 'prepare') {
+  if (operation === 'prepare'||operation==='context') {
     const hosted = await env.DB.prepare('SELECT state FROM web_connections WHERE installation_id=? AND repository_id=? AND actor_id=?').bind(snapshot.installationId, snapshot.repositoryId, snapshot.actorId).first<{ state: string }>();
     requireCondition(!hosted || hosted.state === 'ready', 'hosted_connection_requires_reconnect', 409);
     const { data: pr } = await github.rest.pulls.get({ ...splitRepo(snapshot.repository), pull_number: snapshot.pr });
@@ -241,12 +241,14 @@ async function route(request: Request, env: Env): Promise<Response> {
     const livePermission = await permission(github, snapshot.repository, snapshot.actor,snapshot.actorId);
     requireCondition(!snapshot.triggerActor || (livePermission==='admin' && config.credentials.automatic_reviewer?.toLowerCase()===snapshot.actor.toLowerCase()),'automatic_review_authorization_revoked',403);
     requireCondition(config.review.enabled && authorize(snapshot.actor, livePermission, config.authorization), 'review_authorization_revoked', 403);
-    requireCondition(await store.prepare(id, identity.runId), 'request_already_started', 409);
+    if(operation==='prepare')requireCondition(await store.prepare(id, identity.runId), 'request_already_started', 409);
+    else requireCondition(row.state==='running'&&row.run_id===identity.runId,'request_not_running',409);
     // Acquire before reading: reconnect must not replace the record between snapshot and lease.
-    if (snapshot.config.credentials.mode === 'chatgpt') await store.acquire(snapshot);
-    const credentialSession = snapshot.config.credentials.mode === 'chatgpt' ? await store.session(snapshot.repositoryId, snapshot.actorId, snapshot.installationId) : null;
-    if (snapshot.config.credentials.mode === 'chatgpt') requireCondition(credentialSession, 'chatgpt_session_not_connected', 409);
+    if (operation==='prepare'&&snapshot.config.credentials.mode === 'chatgpt') await store.acquire(snapshot);
+    const credentialSession = operation==='prepare'&&snapshot.config.credentials.mode === 'chatgpt' ? await store.session(snapshot.repositoryId, snapshot.actorId, snapshot.installationId) : null;
+    if (operation==='prepare'&&snapshot.config.credentials.mode === 'chatgpt') requireCondition(credentialSession, 'chatgpt_session_not_connected', 409);
     const { token } = await installationClient(env, snapshot.installationId, snapshot.repositoryId, { contents: 'read', pull_requests: 'read' });
+    if(operation==='context')return Response.json({read_token:token});
     await notify(env, store, snapshot);
     return Response.json({ snapshot, read_token: token, session: credentialSession });
   }
