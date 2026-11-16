@@ -47,7 +47,7 @@ export async function runCodex(snapshot: RequestSnapshot, manifest: string, plan
   let timedOut = false;
   const timer = setTimeout(() => { timedOut = true; child.kill('SIGKILL'); }, 20 * 60_000);
   try {
-    await rpc.request('initialize', { clientInfo: { name: 'CodexBot', title: 'CodexBot', version: '0.1.1' } });
+    await rpc.request('initialize', { clientInfo: { name: 'CodexBot', title: 'CodexBot', version: '0.1.2' } });
     rpc.notify('initialized');
     const models: Record<string, unknown>[] = [];
     let cursor: string | null = null;
