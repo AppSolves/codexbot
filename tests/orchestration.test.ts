@@ -47,6 +47,9 @@ await test('host planner supplies every changed base/head file, shared instructi
       assert(data.available_source.includes('source/base/src/caller.ts'));
       assert(data.trusted_instructions.includes('Inspect callers'));
     }
+    await writeFile(join(directory, 'source/head', changed[20]!.filename), 'tampered');
+    await unitEvidence(directory,actual.units[0]!);
+    await assert.rejects(unitEvidence(directory,actual.units[1]!),/review_plan_unverifiable/);
     await writeFile(join(directory, 'source/head', changed[0]!.filename), 'tampered');
     await assert.rejects(unitEvidence(directory, actual.units[0]!), /review_plan_unverifiable/);
     await rm(join(directory, 'source/head', changed[0]!.filename));

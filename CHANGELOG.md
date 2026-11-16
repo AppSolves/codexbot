@@ -4,7 +4,7 @@
 
 - Project group/continuation/synthesis output schemas onto the documented Responses subset. Keep `uniqueItems` and string-length constraints in unchanged strict host validation, rather than sending them to the provider.
 - Check every group schema and the actual pinned Codex wire schema against the same contract; duplicate reasons remain invalid locally. Retain only exact `invalid_json_schema` / `text.format.schema` diagnostics from bounded error envelopes.
-- Let final synthesis reuse successfully completed group inspections instead of failing a valid synthesis solely because it needs no additional shell command. Every group still requires inspection, and incomplete group/context/synthesis checks still deny approval.
+- Track successful tool inspection across the execution instead of demanding a redundant command in every later group/synthesis turn. Every group's input is still independently hash-verified/provided, an execution with no inspection is still rejected, and incomplete group/context/synthesis checks still deny approval.
 
 ## Unreleased — bounded review orchestration
 
