@@ -1,6 +1,6 @@
 # Security and behavior changes
 
-## Unreleased — bounded context reuse and review efficiency
+## 0.1.2 — bounded context reuse and review efficiency
 
 - Reuse verified source without spending another distinct-path lookup; separate 24 uncached snapshot/path lookups from a hard 100 total context-request cap. Preserve all GitHub API, byte, integrity, authorization and inference limits. Missing evidence and resource exhaustion remain non-approving, with fixed error reasons.
 - Avoid retransmitting full modified old files alongside complete patches/current source; all base/head files remain independently hash-verified and available read-only.
