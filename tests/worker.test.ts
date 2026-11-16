@@ -102,8 +102,8 @@ await test('long reviews renew only repository-read tokens through the same live
   assert.deepEqual(issued.at(-1)!.body,{repository_ids:[2],permissions:{contents:'read',pull_requests:'read'}});
   assert.equal((await post('context','codexbot-publish-1')).status,403);
   assert.equal((await post('context','codexbot-1-5',{run_id:'456'})).status,403);
-  f.state.permission='none';assert.equal((await post('context')).status,403);f.state.permission='write';
-  f.state.head='e'.repeat(40);assert.equal((await post('context')).status,409);f.state.head=HEAD;
+  f.state.permission='none';for(const operation of ['context','rotate','renew'])assert.equal((await post(operation)).status,403);f.state.permission='write';
+  f.state.head='e'.repeat(40);for(const operation of ['context','rotate','renew'])assert.equal((await post(operation)).status,409);f.state.head=HEAD;
   f.state.suspended=true;assert.equal((await post('context')).status,403);
 }));
 await test('delayed authorization-revocation webhooks do not delete newly authorized browser sessions by actor alone', async () => fixture(async env => {

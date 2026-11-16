@@ -229,7 +229,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     await store.stage(id, identity.runId, 'analyzing'); await notify(env, store, snapshot);
     return Response.json({ status: 'recorded' });
   }
-  if (operation === 'prepare'||operation==='context') {
+  if (['prepare','context','rotate','renew'].includes(operation)) {
     const hosted = await env.DB.prepare('SELECT state FROM web_connections WHERE installation_id=? AND repository_id=? AND actor_id=?').bind(snapshot.installationId, snapshot.repositoryId, snapshot.actorId).first<{ state: string }>();
     requireCondition(!hosted || hosted.state === 'ready', 'hosted_connection_requires_reconnect', 409);
     const { data: pr } = await github.rest.pulls.get({ ...splitRepo(snapshot.repository), pull_number: snapshot.pr });
@@ -241,6 +241,8 @@ async function route(request: Request, env: Env): Promise<Response> {
     const livePermission = await permission(github, snapshot.repository, snapshot.actor,snapshot.actorId);
     requireCondition(!snapshot.triggerActor || (livePermission==='admin' && config.credentials.automatic_reviewer?.toLowerCase()===snapshot.actor.toLowerCase()),'automatic_review_authorization_revoked',403);
     requireCondition(config.review.enabled && authorize(snapshot.actor, livePermission, config.authorization), 'review_authorization_revoked', 403);
+  }
+  if(operation==='prepare'||operation==='context'){
     if(operation==='prepare')requireCondition(await store.prepare(id, identity.runId), 'request_already_started', 409);
     else requireCondition(row.state==='running'&&row.run_id===identity.runId,'request_not_running',409);
     // Acquire before reading: reconnect must not replace the record between snapshot and lease.

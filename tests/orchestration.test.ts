@@ -209,3 +209,20 @@ await test('synthesis reserve cannot authorize unfinished work or spend another 
  t.mock.timers.enable({apis:['Date'],now:1700000000000});const started=Date.now();let calls=0;
  try{const result=await orchestrateReview(plan(2),async()=>'',async id=>{calls++;t.mock.timers.setTime(started+5*60000-1000);return response(id,false,[finding]);},started+5*60000);assert.equal(calls,2);assert.equal(result.synthesis,false);assert.equal(result.review.complete,false);assert.deepEqual(result.review.findings,[finding]);validateExecution(result,plan(2));}finally{t.mock.timers.reset();}
 });
+await test('large textual changes are grouped by changed-line work without splitting or omitting files',async()=>{
+ const directory=await mkdtemp(join(tmpdir(),'cb-lines-'));try{
+  await mkdir(join(directory,'source/head'),{recursive:true});await mkdir(join(directory,'source/base'),{recursive:true});
+  const changed=[];
+  for(let i=0;i<89;i++){
+   const filename=`module-${String(i).padStart(2,'0')}.js`,lines=i===88?800:60;
+   const before=Array.from({length:lines},(_,n)=>`export const before${i}_${n}=${n};`).join('\n')+'\n';
+   const after=Array.from({length:lines},(_,n)=>`export const after${i}_${n}=${n+1};`).join('\n')+'\n';
+   await writeFile(join(directory,'source/base',filename),before);await writeFile(join(directory,'source/head',filename),after);
+   changed.push({filename,status:'modified',patch:`@@ -1,${lines} +1,${lines} @@\n`+before.trimEnd().split('\n').map(line=>'-'+line).join('\n')+'\n'+after.trimEnd().split('\n').map(line=>'+'+line).join('\n')});
+  }
+  await writeFile(join(directory,'diff.json'),JSON.stringify(changed));await writeFile(join(directory,'trusted-instructions.json'),'[]');
+  const p=await buildReviewPlan(directory,HEAD,BASE,[]);assert.equal(p.units.length,9);assert.deepEqual(p.units.flatMap(u=>u.paths).sort(),changed.map(f=>f.filename).sort());
+  for(const unit of p.units){const evidence=JSON.parse(await unitEvidence(directory,unit));const lines=evidence.changes.reduce((total:number,file:{patch:string})=>total+file.patch.split('\n').filter(line=>/^[+-]/.test(line)).length,0);assert(unit.paths.length===1||lines<=1500);}
+  assert.deepEqual(p.units.at(-1)!.paths,['module-88.js']);
+ }finally{await rm(directory,{recursive:true,force:true});}
+});
