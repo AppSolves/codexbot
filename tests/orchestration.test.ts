@@ -106,12 +106,26 @@ await test('a model cannot waive its missing essential or visual evidence by cla
     const p = plan(2);
     let calls = 0;
     const result = await orchestrateReview(p, async () => '', async (id) => { calls++; return id === 'synthesis' ? response(id) : { ...response(id, false, [finding]), unfinished_reasons: [reason] }; });
-    assert.equal(calls, 3);
+    assert.equal(calls, 1);
+    assert.equal(result.synthesis,false);
+    assert.deepEqual(result.review.findings,[finding]);
     assert.equal(result.review.complete, false);
     assert.equal(result.coverage[0]!.complete, false);
     assert(result.reasons.includes(reason as typeof result.reasons[number]));
     validateExecution(result, p);
   }
+});
+await test('unavailable essential evidence stops further groups and synthesis while preserving validated findings',async()=>{
+ const p=plan(6),calls:string[]=[];const result=await orchestrateReview(p,async()=>'',async id=>{calls.push(id);return{...response(id,false,[finding]),unfinished_reasons:['missing_required_context']};});
+ assert.deepEqual(calls,['group-00']);assert.equal(result.synthesis,false);assert.equal(result.review.complete,false);assert.deepEqual(result.review.findings,[finding]);assert(result.reasons.includes('unreviewed_changes'));assert.equal(decision(result.review,DEFAULT_CONFIG,true),'COMMENT');validateExecution(result,p);
+});
+await test('modified-file evidence keeps the complete diff and verified base without retransmitting the full old source',async()=>{
+ const directory=await mkdtemp(join(tmpdir(),'cb-lean-evidence-'));try{
+  for(const side of['base','head']){await mkdir(join(directory,'source',side,'src'),{recursive:true});await writeFile(join(directory,'source',side,'src','auth.ts'),side==='base'?'old source':'new source');}
+  await writeFile(join(directory,'diff.json'),JSON.stringify([{filename:'src/auth.ts',status:'modified',patch:'@@ -1 +1 @@\n-old source\n+new source'}]));await writeFile(join(directory,'trusted-instructions.json'),'[]');
+  const p=await buildReviewPlan(directory,HEAD,BASE,[]),data=JSON.parse(await unitEvidence(directory,p.units[0]!));assert.equal(data.evidence.length,2);assert.equal(data.evidence[0].text,undefined);assert.equal(data.evidence[1].text,'new source');assert(data.changes[0].patch.includes('-old source'));
+  await writeFile(join(directory,'source/base/src/auth.ts'),'tampered');await assert.rejects(unitEvidence(directory,p.units[0]!),/review_plan_unverifiable/);
+ }finally{await rm(directory,{recursive:true,force:true});}
 });
 await test('malformed, wrongly scoped, unsafe and fabricated unit outputs never satisfy coverage', async () => {
   for (const bad of [{ unexpected: true }, response('group-99'), { ...response('group-00'), review: { ...clean(), head_sha: BASE } }, { ...response('group-00'), review: { ...clean(), summary: 'Bearer sk-proj-' + 'x'.repeat(45) } }, { ...response('group-00'), all_groups_inspected: true }])

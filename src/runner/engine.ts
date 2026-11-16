@@ -110,8 +110,8 @@ export async function runCodex(snapshot: RequestSnapshot, manifest: string, plan
       } finally {off();}
     };
     const result=await orchestrateReview(plan,unit=>unitEvidence('/workspace',unit),turn);
-    if(timedOut){result.failure={component:'turn',code:'codex_turn_timeout'};result.review.complete=false;if(result.review.result==='clean')result.review.result='inconclusive';if(!result.reasons.includes('execution_failed'))result.reasons.push('execution_failed');}
+    if(timedOut){result.failure={component:'turn',code:'codex_turn_timeout',timeout_scope:'execution'};result.review.complete=false;if(result.review.result==='clean')result.review.result='inconclusive';if(!result.reasons.includes('execution_failed'))result.reasons.push('execution_failed');}
     return result;
-  } catch (error) { throw timedOut ? new ExecutionError({ component: 'turn', code: 'codex_turn_timeout' }) : executionError(error, 'codex_rpc', 'invalid_codex_protocol'); }
+  } catch (error) { throw timedOut ? new ExecutionError({ component: 'turn', code: 'codex_turn_timeout',timeout_scope:'execution' }) : executionError(error, 'codex_rpc', 'invalid_codex_protocol'); }
   finally { clearTimeout(timer); child.stdin.end(); child.kill('SIGKILL'); }
 }

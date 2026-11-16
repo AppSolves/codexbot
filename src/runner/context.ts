@@ -9,11 +9,14 @@ import { safePath, completePatch } from '../core/review.js';
 import { splitRepo } from '../worker/github.js';
 import type { RequestSnapshot } from '../worker/store.js';
 import { requireCondition } from '../core/errors.js';
+import { MAX_CONTEXT_PATHS, MAX_CONTEXT_REQUESTS } from '../core/limits.js';
+import type { ContextLookupStats } from '../core/diagnostics.js';
 
 const MAX_BYTES = 16_000_000, MAX_DIFF_BYTES = 6_000_000, MAX_FILE_BYTES = 512_000, MAX_CALLS = 768, COLLECTION_MS = 120_000;
 export interface ContextManifest {
   complete: boolean; diffComplete: boolean; requiredContextComplete: boolean;
   supplementary: { strategy: 'bounded-heuristics'; selected: number; omitted: number }; files: number; bytes: number; apiCalls: number; limitations: string[]; failureCodes:string[]; binaryFiles:BinaryChange[];
+  lookups?:ContextLookupStats;
 }
 export type ContextLookup = (snapshot: 'base' | 'head', path: string, operation?: 'probe') => Promise<boolean>;
 export async function collectContext(github: Octokit, snapshot: RequestSnapshot, directory: string, register?: (lookup: ContextLookup) => void, signal?: AbortSignal): Promise<ContextManifest> {
@@ -21,10 +24,12 @@ export async function collectContext(github: Octokit, snapshot: RequestSnapshot,
   const manifest: ContextManifest = { complete: false, diffComplete: true, requiredContextComplete: true,
     supplementary: { strategy: 'bounded-heuristics', selected: 0, omitted: 0 }, files: 0, bytes: 0, apiCalls: 0, limitations: [], failureCodes:[], binaryFiles:[] };
   const limited = (required: boolean, error?:unknown) => {
-    if(required){const code=error instanceof AppError?error.code:error&&typeof error==='object'&&'status' in error&&typeof error.status==='number'&&error.status>=400&&error.status<=599?'context_github_api_failed':'context_required_evidence_unavailable';if(!manifest.failureCodes.includes(code))manifest.failureCodes.push(code);}
+    const code=error instanceof AppError?error.code:error&&typeof error==='object'&&'status' in error&&typeof error.status==='number'&&error.status>=400&&error.status<=599?'context_github_api_failed':'context_required_evidence_unavailable';
+    if(required&&!manifest.failureCodes.includes(code))manifest.failureCodes.push(code);
     if (required) manifest.requiredContextComplete = false; else manifest.supplementary.omitted++;
     const reason = required ? 'Essential source or trusted instructions unavailable.' : 'Supplementary context bounded or unavailable.';
     if (!manifest.limitations.includes(reason)) manifest.limitations.push(reason);
+    return code;
   };
   const deadline=Date.now()+COLLECTION_MS;let collected=false;
   const call = (final = false) => { requireCondition(!signal?.aborted && (collected||Date.now()<deadline),'context_collection_timeout');requireCondition(manifest.apiCalls < MAX_CALLS - (final||collected?0:1),'context_api_budget'); manifest.apiCalls++; };
@@ -60,7 +65,7 @@ export async function collectContext(github: Octokit, snapshot: RequestSnapshot,
       written.set(key, bytes); manifest.files++; manifest.bytes += bytes.length;
       if (!required) manifest.supplementary.selected++;
       if (label === 'trusted') instructions.push({ path, content: bytes.toString('utf8') });
-    } catch(error) { limited(required,error); }
+    } catch(error) { return new AppError(limited(required,error)); }
   };
   // Essential evidence precedes supplementary files; unrelated repository size is immaterial.
   for (const file of changed.filter(file=>Boolean(file.patch))) {
@@ -145,26 +150,32 @@ export async function collectContext(github: Octokit, snapshot: RequestSnapshot,
   }
   await writeFile(join(directory, 'file-index.json'), JSON.stringify({ paths: index, complete: indexComplete && queue.length === 0 && index.length < 5000 }), { mode: 0o600 });
   if (register) {
-    let requests = 0, serial = Promise.resolve();
+    let serial = Promise.resolve();const paths=new Set<string>();
+    const stats=manifest.lookups={requests:0,paths:0,cache_hits:0} as ContextLookupStats;
     register(async (label, path, operation) => {
       const required=operation!=='probe';
-      try {requireCondition(++requests<=24&&(operation===undefined||operation==='probe')&&(label === 'base' || label === 'head') && safePath(path), 'context_lookup_rejected');}
-      catch(error){limited(required,error);if(required)manifest.complete=false;const work=serial.then(()=>writeFile(join(directory,'manifest.json'),JSON.stringify(manifest),{mode:0o600}));serial=work.catch(()=>{});await work;throw error;}
+      const request=stats.requests=Math.min(stats.requests+1,MAX_CONTEXT_REQUESTS+1);
       let available = false;
       const work = serial.then(async () => {
-        if(operation==='probe') {
-          try {available=Boolean(await find(label==='head'?snapshot.head:snapshot.base,path));if(!available)manifest.supplementary.omitted++;}
-          catch(error){limited(true,error);manifest.complete=false;await writeFile(join(directory,'manifest.json'),JSON.stringify(manifest),{mode:0o600});throw error;}
-        } else {
-          await collect(label, label === 'head' ? snapshot.head : snapshot.base, path, true);
-          available = written.has(`${label}/${path}`);
-          if (!available) { manifest.requiredContextComplete = false; manifest.complete = false; }
-        }
+        let invalidate=required;
+        try{
+          requireCondition(request<=MAX_CONTEXT_REQUESTS,'context_request_limit');
+          requireCondition((operation===undefined||operation==='probe')&&(label==='base'||label==='head')&&safePath(path),'context_lookup_rejected');
+          const key=`${label}/${path}`;
+          if(written.has(key)){stats.cache_hits++;available=true;}
+          else{
+            if(!paths.has(key)){requireCondition(paths.size<MAX_CONTEXT_PATHS,'context_lookup_limit');paths.add(key);stats.paths=paths.size;}
+            if(operation==='probe'){
+              try{available=Boolean(await find(label==='head'?snapshot.head:snapshot.base,path));if(!available)manifest.supplementary.omitted++;}
+              catch(error){invalidate=true;throw error;}
+            }else{const failure=await collect(label,label==='head'?snapshot.head:snapshot.base,path,true);if(failure)throw failure;available=written.has(key);requireCondition(available,'context_required_evidence_unavailable');}
+          }
+        }catch(error){stats.last_failure=limited(invalidate,error);if(invalidate)manifest.complete=false;await writeFile(join(directory,'manifest.json'),JSON.stringify(manifest),{mode:0o600});throw new AppError(stats.last_failure);}
         await writeFile(join(directory, 'manifest.json'), JSON.stringify(manifest), { mode: 0o600 });
       });
       serial = work.catch(() => {}); await work; return available;
     });
-    manifest.limitations.push('Context socket /run/proxy/context.sock: POST {"snapshot":"base"|"head","path":"relative/file"} to /file for REQUIRED contents; then read /workspace/source/<snapshot>/<path>. For OPTIONAL existence exploration use /probe: {exists:false} means verified absence. Probes supply no contents or completeness waiver. Both share 24 requests and existing byte/API budgets. API/verification errors are not absence. A failed /file permanently invalidates completeness; /probe cannot clear it. No URLs or execution.');
+    manifest.limitations.push('Read already supplied source directly under /workspace/source/<snapshot>/<path>; do not request it again. Context socket /run/proxy/context.sock: POST {"snapshot":"base"|"head","path":"relative/file"} to /file for REQUIRED contents; then read the supplied file. For OPTIONAL existence exploration use /probe: {exists:false} means verified absence. Both share 24 distinct snapshot/path lookups and 100 total requests; cached contents need no new repository lookup. Existing byte/API budgets apply. API/verification errors are not absence. A failed essential retrieval permanently invalidates completeness; /probe cannot clear it. No URLs or execution.');
   }
   call(true); const { data: current } = await github.rest.pulls.get({ ...repo, pull_number: snapshot.pr });
   requireCondition(current.head.sha === snapshot.head && current.base.sha === snapshot.base, 'pr_changed_during_context_collection', 409);

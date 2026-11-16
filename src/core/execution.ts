@@ -37,6 +37,7 @@ export interface ProxyRequestDiagnostic extends RequestMetadata { request_index:
 export interface ExecutionFailure extends RequestMetadata {
   component: string; code: string; exit_code?: number; signal?: string; rpc_code?: number; rpc_method?: string;
   provider_code?: string; provider_param?: string; origin?: string; transport_code?: string; rejection_reason?: EngineRejectionReason;
+  timeout_scope?:'execution';
 }
 function object(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -70,6 +71,7 @@ export function executionFailure(value: unknown): ExecutionFailure | null {
   const { component, code } = source;
   if (typeof component !== 'string' || !COMPONENTS.has(component) || typeof code !== 'string' || !CODES.has(code)) return null;
   const result: ExecutionFailure = { component, code };
+  if((component==='turn'||component==='engine')&&code==='codex_turn_timeout'&&source.timeout_scope==='execution')result.timeout_scope='execution';
   if (Number.isInteger(source.exit_code) && Number(source.exit_code) >= 0 && Number(source.exit_code) <= 255) result.exit_code = Number(source.exit_code);
   if (typeof source.signal === 'string' && SIGNALS.has(source.signal)) result.signal = source.signal;
   if (typeof source.rpc_method === 'string' && METHODS.has(source.rpc_method)) result.rpc_method = source.rpc_method;

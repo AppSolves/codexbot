@@ -69,15 +69,15 @@ await test('bounded file index and on-demand lookups reach unchanged immutable f
     assert.ok(index.paths.includes('src/old.ts')); assert.ok(index.paths.length <= 5000);
     assert.equal(await lookup('head','src/old.ts'), true);
     assert.equal(await readFile(join(directory,'source/head/src/old.ts'),'utf8'), 'fixture context text');
-    assert.equal(await lookup('base','src/missing.ts'), false);
+    await assert.rejects(lookup('base','src/missing.ts'),/context_path_missing/);
     for (const path of ['../secret','src/../../secret','/etc/passwd','src\\old.ts','https://evil.invalid']) await assert.rejects(lookup('head',path));
     await assert.rejects(lookup('trusted' as 'head','AGENTS.md'));
-    const remaining = await Promise.allSettled(Array.from({ length: 25 }, () => lookup('head','src/old.ts')));
+    const remaining = await Promise.allSettled(Array.from({ length: 101 }, () => lookup('head','src/old.ts')));
     assert.ok(remaining.some(item => item.status === 'rejected'));
   });
   assert.equal(result.complete,false); assert.equal(result.requiredContextComplete,false);
   assert.equal(requested.filter(path => path.includes('/git/blobs/')).length,1);
-  await fixture({ mode:'120000' }, async lookup => { assert.equal(await lookup('head','src/old.ts'),false); });
+  await fixture({ mode:'120000' }, async lookup => { await assert.rejects(lookup('head','src/old.ts'),/context_special_object/); });
 });
 await test('direct local dependencies on base and head are essential, with TypeScript .js import resolution', async () => {
   const found = await fixture({ dependency: 'present' }); assert.equal(found.result.complete, true); assert.equal(found.result.files, 5);
@@ -123,7 +123,7 @@ export const fixture = {generated,template};`;
 await test('initially complete context becomes incomplete after an essential on-demand miss, with a safe durable reason',async()=>{
  const {result}=await fixture({},async(lookup,directory,manifest)=>{
   assert.equal(manifest.complete,true);assert.equal(manifest.diffComplete,true);
-  assert.equal(await lookup('head','src/private-missing-name.ts'),false);
+  await assert.rejects(lookup('head','src/private-missing-name.ts'),/context_path_missing/);
   assert.equal(manifest.complete,false);assert.equal(manifest.requiredContextComplete,false);assert(manifest.failureCodes.includes('context_path_missing'));
   const persisted=JSON.parse(await readFile(join(directory,'manifest.json'),'utf8'));
   assert.equal(persisted.complete,false);assert.equal(persisted.requiredContextComplete,false);assert(!JSON.stringify(persisted.failureCodes).includes('private-missing-name'));
@@ -131,14 +131,22 @@ await test('initially complete context becomes incomplete after an essential on-
  });assert.equal(result.complete,false);
 });
 await test('exhausting on-demand lookup allowance cannot leave an approving context flag',async()=>{
- await fixture({},async(lookup,_directory,manifest)=>{for(let n=0;n<24;n++)assert.equal(await lookup('head','src/old.ts'),true);assert.equal(manifest.complete,true);await assert.rejects(lookup('head','src/old.ts'),/context_lookup_rejected/);assert.equal(manifest.complete,false);assert.equal(manifest.requiredContextComplete,false);assert(manifest.failureCodes.includes('context_lookup_rejected'));});
+ await fixture({},async(lookup,_directory,manifest)=>{for(let n=0;n<100;n++)assert.equal(await lookup('head','src/old.ts'),true);assert.equal(manifest.complete,true);await assert.rejects(lookup('head','src/old.ts'),/context_request_limit/);assert.equal(manifest.complete,false);assert.equal(manifest.requiredContextComplete,false);assert(manifest.failureCodes.includes('context_request_limit'));assert.deepEqual(manifest.lookups,{requests:101,paths:1,cache_hits:99,last_failure:'context_request_limit'});});
+});
+await test('verified cached contents and repeated probes do not consume distinct repository lookups',async()=>{
+ await fixture({candidate:true},async(lookup,_directory,manifest)=>{
+  assert.equal(await lookup('head','candidate.ts','probe'),true);assert.equal(await lookup('head','candidate.ts'),true);
+  const calls=manifest.apiCalls;assert.deepEqual(await Promise.all(Array.from({length:30},()=>lookup('head','candidate.ts'))),Array(30).fill(true));
+  assert.equal(manifest.apiCalls,calls);assert.equal(manifest.complete,true);
+  assert.deepEqual(manifest.lookups,{requests:32,paths:1,cache_hits:30});
+ });
 });
 
 await test('optional probes verify absence without source reads or completeness loss; required misses stay sticky',async()=>{
  await fixture({},async(lookup,directory,manifest)=>{
   assert.equal(await lookup('head','src/speculative-name.ts','probe'),false);assert.equal(manifest.complete,true);assert.equal(manifest.requiredContextComplete,true);assert.equal(manifest.failureCodes.length,0);
   assert.equal(await lookup('head','src/old.ts','probe'),true);await assert.rejects(readFile(join(directory,'source/head/src/old.ts')));
-  assert.equal(await lookup('head','src/speculative-name.ts'),false);assert.equal(manifest.complete,false);assert(manifest.failureCodes.includes('context_path_missing'));
+  await assert.rejects(lookup('head','src/speculative-name.ts'),/context_path_missing/);assert.equal(manifest.complete,false);assert(manifest.failureCodes.includes('context_path_missing'));
   assert.equal(await lookup('head','src/speculative-name.ts','probe'),false);assert.equal(await lookup('head','src/old.ts'),true);assert.equal(manifest.complete,false);
   assert.equal(JSON.parse(await readFile(join(directory,'manifest.json'),'utf8')).complete,false);
  });
@@ -152,14 +160,14 @@ await test('API failures, truncated and inconsistent trees are never converted i
 });
 await test('mandatory content distinguishes missing paths, special objects, size limits, API errors and blob verification',async()=>{
  const cases=[{options:{candidate:true,candidateMode:'120000'},code:'context_special_object'},{options:{candidate:true,candidateMode:'160000'},code:'context_special_object'},{options:{candidate:true,candidateMode:'100664'},code:'context_special_object'},{options:{candidate:true,candidateOversized:true},code:'context_file_size_limit'},{options:{candidate:true,candidateCorrupt:true},code:'blob_integrity_failure'},{options:{candidate:true,candidateApiStatus:404},code:'context_github_api_failed'},{options:{candidate:true,candidateApiStatus:429},code:'context_github_api_failed'}];
- for(const {options,code}of cases)await fixture(options,async(lookup,_directory,manifest)=>{assert.equal(manifest.complete,true);assert.equal(await lookup('head','candidate.ts','probe'),true,'Probe means existence only, never readable/verified contents');assert.equal(manifest.complete,true);assert.equal(await lookup('head','candidate.ts'),false);assert.equal(manifest.complete,false);assert(manifest.failureCodes.includes(code),JSON.stringify(manifest.failureCodes));});
+ for(const {options,code}of cases)await fixture(options,async(lookup,_directory,manifest)=>{assert.equal(manifest.complete,true);assert.equal(await lookup('head','candidate.ts','probe'),true,'Probe means existence only, never readable/verified contents');assert.equal(manifest.complete,true);await assert.rejects(lookup('head','candidate.ts'),new RegExp(code));assert.equal(manifest.complete,false);assert(manifest.failureCodes.includes(code),JSON.stringify(manifest.failureCodes));});
 });
 await test('optional probes share the original lookup cap without invalidating coverage; required calls cannot bypass it',async()=>{
- await fixture({},async(lookup,directory,manifest)=>{for(let n=0;n<24;n++)assert.equal(await lookup('head','src/missing-'+n+'.ts','probe'),false);await assert.rejects(lookup('head','src/no-more.ts','probe'),/context_lookup_rejected/);assert.equal(manifest.complete,true);assert.equal(manifest.failureCodes.length,0);await assert.rejects(lookup('head','src/old.ts'),/context_lookup_rejected/);assert.equal(manifest.complete,false);assert(manifest.failureCodes.includes('context_lookup_rejected'));assert.equal(JSON.parse(await readFile(join(directory,'manifest.json'),'utf8')).complete,false);});
+ await fixture({},async(lookup,directory,manifest)=>{for(let n=0;n<24;n++)assert.equal(await lookup('head','src/missing-'+n+'.ts','probe'),false);await assert.rejects(lookup('head','src/no-more.ts','probe'),/context_lookup_limit/);assert.equal(manifest.complete,true);assert.equal(manifest.failureCodes.length,0);assert.equal(await lookup('head','src/auth.ts'),true);await assert.rejects(lookup('head','src/old.ts'),/context_lookup_limit/);assert.equal(manifest.complete,false);assert(manifest.failureCodes.includes('context_lookup_limit'));assert.equal(JSON.parse(await readFile(join(directory,'manifest.json'),'utf8')).complete,false);});
 });
 await test('concurrent optional exploration and required reads serialize immutable state and never erase a required failure',async()=>{
  const {requested}=await fixture({candidate:true},async(lookup,directory,manifest)=>{
   const optional=await Promise.all([lookup('head','missing-a.ts','probe'),lookup('base','missing-b.ts','probe'),lookup('head','candidate.ts','probe')]);assert.deepEqual(optional,[false,false,true]);assert.equal(manifest.complete,true);
-  const mixed=await Promise.all([lookup('head','candidate.ts'),lookup('head','required-missing.ts'),lookup('base','missing-c.ts','probe'),lookup('head','candidate.ts')]);assert.deepEqual(mixed,[true,false,false,true]);assert.equal(manifest.complete,false);assert(manifest.failureCodes.includes('context_path_missing'));assert.equal(JSON.parse(await readFile(join(directory,'manifest.json'),'utf8')).complete,false);
+  const mixed=await Promise.allSettled([lookup('head','candidate.ts'),lookup('head','required-missing.ts'),lookup('base','missing-c.ts','probe'),lookup('head','candidate.ts')]);assert.deepEqual(mixed.map(item=>item.status==='fulfilled'?item.value:'rejected'),[true,'rejected',false,true]);assert.equal((mixed[1] as PromiseRejectedResult).reason.code,'context_path_missing');assert.equal(manifest.complete,false);assert(manifest.failureCodes.includes('context_path_missing'));assert.equal(JSON.parse(await readFile(join(directory,'manifest.json'),'utf8')).complete,false);
  });assert.equal(requested.filter(path=>path.includes('/git/blobs/')).length,2,'Concurrent content requests must reuse verified blobs');
 });

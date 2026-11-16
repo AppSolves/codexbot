@@ -1,5 +1,13 @@
 # Security and behavior changes
 
+## Unreleased — bounded context reuse and review efficiency
+
+- Reuse verified source without spending another distinct-path lookup; separate 24 uncached snapshot/path lookups from a hard 100 total context-request cap. Preserve all GitHub API, byte, integrity, authorization and inference limits. Missing evidence and resource exhaustion remain non-approving, with fixed error reasons.
+- Avoid retransmitting full modified old files alongside complete patches/current source; all base/head files remain independently hash-verified and available read-only.
+- Stop subsequent groups/synthesis after unrecoverable required/visual-context or output-loss reports, preserving validated findings without additional inference. Soft continuations and complete cross-group synthesis retain their existing checks.
+- Preserve host context failure flags/counters alongside the primary execution failure. Identify the unchanged 20-minute timeout as execution-wide; never log paths, source, prompts or credentials in these diagnostics.
+
+
 ## 0.1.1 — review execution and bounded orchestration
 
 ### Responses output schema compatibility
