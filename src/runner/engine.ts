@@ -69,9 +69,10 @@ export async function runCodex(snapshot: RequestSnapshot, manifest: string, plan
       developerInstructions: SYSTEM_REVIEW, config: { web_search: 'disabled' }
     }));
     const thread = record(started.thread); requireCondition(typeof thread.id === 'string', 'codex_thread_id_missing');
-    let attachedImages=false;
+    // Unit contents are independently verified/provided; tool inspection is execution-wide, not a per-turn quota.
+    let attachedImages=false,inspectionCompleted=false;
     const turn = async (unitId:string, evidence:string, schema:unknown):Promise<unknown> => {
-      let finalText='',inspectionCompleted=false,turnId:string|undefined;
+      let finalText='',turnId:string|undefined;
       const seen: {method:string;params:unknown}[]=[];let queuedBytes=0;
       let receive=(method:string,params:unknown)=>{seen.push({method,params});};
       const completed=new Promise<unknown>((resolve,reject)=>{

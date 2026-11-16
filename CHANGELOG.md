@@ -1,5 +1,12 @@
 # Security and behavior changes
 
+## Unreleased — Responses output schema compatibility
+
+- Project group/continuation/synthesis output schemas onto the documented Responses subset. Keep `uniqueItems` and string-length constraints in unchanged strict host validation, rather than sending them to the provider.
+- Check every group schema and the actual pinned Codex wire schema against the same contract; duplicate reasons remain invalid locally. Retain only exact `invalid_json_schema` / `text.format.schema` diagnostics from bounded error envelopes.
+- Track successful tool inspection across the execution instead of demanding a redundant command in every later group/synthesis turn. Every group's input is still independently hash-verified/provided, an execution with no inspection is still rejected, and incomplete group/context/synthesis checks still deny approval.
+- Restore the first verified native image inputs after Codex compaction drops all image history. Retain their labels, fingerprints and original request/byte limits; partial replacement or substitution remains denied. Native acceptance forces real pinned-Codex compaction across a 93-file/four-distinct-image review.
+
 ## Unreleased — bounded review orchestration
 
 - Harden required visual-input retention against duplicate/substituted images; native multi-turn acceptance now uses four distinct PNGs across groups, continuation and synthesis.

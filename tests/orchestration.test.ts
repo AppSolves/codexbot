@@ -47,6 +47,9 @@ await test('host planner supplies every changed base/head file, shared instructi
       assert(data.available_source.includes('source/base/src/caller.ts'));
       assert(data.trusted_instructions.includes('Inspect callers'));
     }
+    await writeFile(join(directory, 'source/head', changed[20]!.filename), 'tampered');
+    await unitEvidence(directory,actual.units[0]!);
+    await assert.rejects(unitEvidence(directory,actual.units[1]!),/review_plan_unverifiable/);
     await writeFile(join(directory, 'source/head', changed[0]!.filename), 'tampered');
     await assert.rejects(unitEvidence(directory, actual.units[0]!), /review_plan_unverifiable/);
     await rm(join(directory, 'source/head', changed[0]!.filename));
@@ -156,4 +159,13 @@ await test('a genuinely complete clean analysis is distinguishable from inconclu
 });
 await test('a sole group retains the global continuation cap and cannot skip an unfinished integrated final check',async()=>{
  const p=plan(1);let calls=0;const result=await orchestrateReview(p,async()=>'',async id=>{calls++;return response(id,false,[finding]);});assert.equal(calls,3);assert.equal(result.turns,3);assert.equal(result.synthesis,false);assert.equal(result.review.complete,false);assert.equal(decision(result.review,DEFAULT_CONFIG,true),'COMMENT');validateExecution(result,p);
+});
+await test('provider schema projection never weakens host uniqueness or review string bounds',async()=>{
+ for(const value of [
+  {...response('group-00',false),unfinished_reasons:['unresolved_analysis','unresolved_analysis']},
+  {...response('group-00'),review:{...clean(),summary:'short'}},
+  {...response('group-00'),review:{...clean(),summary:'s'.repeat(8001)}}
+ ])await assert.rejects(orchestrateReview(plan(1),async()=>'',async()=>value),error=>error instanceof ExecutionError&&error.detail.rejection_reason==='schema_invalid');
+ const result=await orchestrateReview(plan(2),async()=>'',async id=>id==='synthesis'?{...response(id,false),unfinished_reasons:['unresolved_analysis','unresolved_analysis']}:response(id,true,[finding]));
+ assert.equal(result.failure?.rejection_reason,'schema_invalid');assert.equal(result.review.complete,false);assert.deepEqual(result.review.findings,[finding]);assert.equal(decision(result.review,DEFAULT_CONFIG,true),'COMMENT');
 });

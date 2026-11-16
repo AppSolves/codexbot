@@ -66,13 +66,14 @@ async function hasEventStreamPrefix(upstream: Response): Promise<boolean> {
   finally { void reader.cancel().catch(() => {}); }
 }
 
-export function inspectMedia(value:unknown,depth=0,images?:Set<string>):number {
+export function inspectMedia(value:unknown,depth=0,images?:Set<string>,retained?:unknown[]):number {
   requireCondition(depth<=32,'proxy_unsupported_media_input');if(value===null||typeof value!=='object')return 0;
-  if(Array.isArray(value))return value.reduce((count,item)=>count+inspectMedia(item,depth+1,images),0);
+  if(Array.isArray(value))return value.reduce((count,item)=>count+inspectMedia(item,depth+1,images,retained),0);
   const item=value as Record<string,unknown>;
   requireCondition(!['input_audio','input_video','input_file'].includes(String(item.type)),'proxy_unsupported_media_input');
-  if(item.type==='input_image'){requireCondition(typeof item.image_url==='string'&&/^data:image\/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/]+={0,2}$/.test(item.image_url),'proxy_image_source_denied');images?.add(createHash('sha256').update(item.image_url).digest('hex'));return 1;}
-  return Object.values(item).reduce<number>((count,item)=>count+inspectMedia(item,depth+1,images),0);
+  if(item.type==='input_text'&&typeof item.text==='string'&&item.text.startsWith('Verified PR image: '))retained?.push({type:'input_text',text:item.text});
+  if(item.type==='input_image'){requireCondition(typeof item.image_url==='string'&&/^data:image\/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/]+={0,2}$/.test(item.image_url),'proxy_image_source_denied');images?.add(createHash('sha256').update(item.image_url).digest('hex'));retained?.push({type:'input_image',image_url:item.image_url,...(item.detail===undefined?{}:{detail:item.detail})});return 1;}
+  return Object.values(item).reduce<number>((count,item)=>count+inspectMedia(item,depth+1,images,retained),0);
 }
 
 export async function inferenceProxy(request: IncomingMessage, response: ServerResponse, token: string, fetcher: typeof fetch = fetch, enforceSelection: (body: Record<string, unknown>) => void = () => {}, report: (failure: ExecutionFailure) => void = () => {}, onRequest?: (value: ProxyRequestDiagnostic) => void, requestIndex = 1): Promise<void> {
@@ -165,8 +166,11 @@ export function createInferenceServer(token: string, limits: InferenceLimits = {
   let active = false;
   let selection: string | null = null;
   let requiredImages:Set<string>|null=null;
+  let retainedImages:unknown[]=[];
   const enforceSelection = (body: Record<string, unknown>) => {
-    const images=new Set<string>(),count=inspectMedia(body.input,0,images);
+    const images=new Set<string>(),retained:unknown[]=[];let count=inspectMedia(body.input,0,images,retained);
+    // Codex 0.169 compaction drops images; restore only the first verified inputs, never partial replacements.
+    if(count===0&&requiredImages!==null){(body.input as unknown[]).push({role:'user',content:retainedImages});count=inspectMedia(retainedImages,0,images);}
     requireCondition(count>=(limits.minimumImages??0)&&(!requiredImages||[...requiredImages].every(image=>images.has(image))),'proxy_image_inputs_missing');
     requireCondition(Buffer.byteLength(JSON.stringify(body)) <= (limits.maxInputBytes ?? 24_000_000), 'proxy_acceptance_input_budget');
     // Only the trusted API-key acceptance harness sets this. OAuth never adds unsupported fields.
@@ -176,7 +180,7 @@ export function createInferenceServer(token: string, limits: InferenceLimits = {
     if (selection === null) selection = next;
     requireCondition(selection === next, 'proxy_model_or_effort_change_denied');
     // Lock the first trusted native image inputs; repetition cannot replace missing visual evidence.
-    if((limits.minimumImages??0)>0&&requiredImages===null)requiredImages=images;
+    if((limits.minimumImages??0)>0&&requiredImages===null){requiredImages=images;retainedImages=retained;}
   };
   return createServer((request, response) => {
     const index=Math.min(++requests,101);

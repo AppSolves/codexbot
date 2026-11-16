@@ -40,7 +40,15 @@ export interface ReviewExecution {
 const hash = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
 const turnSchema = { type: 'object', additionalProperties: false, required: ['unit_id', 'review', 'unfinished_reasons'], properties: { unit_id: { type: 'string', pattern: '^(group-[0-9]{2}|synthesis)$' }, review: REVIEW_SCHEMA, unfinished_reasons: { type: 'array', maxItems: UNFINISHED_REASONS.length, uniqueItems: true, items: { enum: UNFINISHED_REASONS } } } };
 const checkTurn = new Ajv().compile(turnSchema);
-export function reviewTurnSchema(id: string) { return { ...turnSchema, properties: { ...turnSchema.properties, unit_id: { enum: [id] } } }; }
+// Keep uniqueness/string bounds in Ajv; send only documented Responses constraints.
+function providerSchema(schema: Record<string, unknown>): Record<string, unknown> {
+  const projected = { ...schema };
+  for (const key of ['uniqueItems', 'minLength', 'maxLength']) delete projected[key];
+  if (projected.properties) projected.properties = Object.fromEntries(Object.entries(record(projected.properties)).map(([key, child]) => [key, providerSchema(record(child))]));
+  if (projected.items) projected.items = providerSchema(record(projected.items));
+  return projected;
+}
+export function reviewTurnSchema(id: string) { return providerSchema({ ...turnSchema, properties: { ...turnSchema.properties, unit_id: { enum: [id] } } }); }
 /** The credential-owning host writes immutable evidence inputs; the model cannot choose coverage. */
 export async function buildReviewPlan(directory: string, head: string, base: string, binaries: BinaryChange[]): Promise<ReviewPlan> {
   const files = JSON.parse(await readFile(join(directory, 'diff.json'), 'utf8')) as ChangedFile[];
