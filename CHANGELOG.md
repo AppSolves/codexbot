@@ -1,5 +1,12 @@
 # Security and behavior changes
 
+## Unreleased — targeted continuation and configurable review timeout
+
+- Default to 30 minutes of isolated execution; support trusted `review.timeout_minutes` and an authorized `--timeout` override. Bound execution by GitHub's six-hour job limit, retaining setup/refresh/cleanup reserves and the existing global inference-request cap.
+- Group changed JS/TS dependencies together within file, byte and changed-line bounds. Track per-file checkpoints, give every group a first pass before targeted continuation, reuse prior findings/evidence, and reserve time for final synthesis. Missing evidence or unfinished analysis still fails the job and cannot approve or merge.
+- Serialize host-only OAuth rotation during long reviews and persist the encrypted new session before atomically updating the proxy's access-token file. Renew read-only GitHub context tokens through the same live OIDC/installation/actor/commit checks. The model receives no credentials.
+- Align request expiry, concurrency and session leases with the selected timeout; preserve the separate one-hour merge-intent deadline and existing quotas.
+
 ## 0.1.2 — bounded context reuse and review efficiency
 
 - Reuse verified source without spending another distinct-path lookup; separate 24 uncached snapshot/path lookups from a hard 100 total context-request cap. Preserve all GitHub API, byte, integrity, authorization and inference limits. Missing evidence and resource exhaustion remain non-approving, with fixed error reasons.

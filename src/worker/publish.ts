@@ -9,7 +9,7 @@ import { splitRepo, permission, trustedConfig, verifyActor } from './github.js';
 import type { RequestSnapshot } from './store.js';
 import { controlMerge, invalidateMerge } from './merge.js';
 import type { MergeOptions } from './merge.js';
-import { REQUEST_LIFETIME_MS } from '../core/limits.js';
+import { requestLifetimeMs } from '../core/limits.js';
 
 export interface PublishOptions { merge?: MergeOptions; checkpoint?: (id: number, phase: 'pending' | 'submitted', merge: string) => Promise<void>; beforeWrite?: () => Promise<void> }
 export async function discardPendingReview(github: Octokit, snapshot: RequestSnapshot, appSlug: string): Promise<void> {
@@ -62,7 +62,7 @@ export async function publish(github: Octokit, snapshot: RequestSnapshot, output
     await github.rest.pulls.deletePendingReview({ ...repo, pull_number: snapshot.pr, review_id: stale.id });
   }
   const assertPublicationAllowed = async () => {
-    requireCondition(Date.now() - snapshot.createdAt < REQUEST_LIFETIME_MS, 'request_expired', 410);
+    requireCondition(Date.now() - snapshot.createdAt < requestLifetimeMs(snapshot), 'request_expired', 410);
     const { data: latest } = await github.rest.pulls.get({ ...repo, pull_number: snapshot.pr });
     requireCondition(latest.head.sha === snapshot.head && latest.base.sha === snapshot.base && latest.state === 'open' && !latest.draft, 'head_changed_before_publish', 409);
     const { data: branch } = await github.rest.repos.getBranch({ ...repo, branch: snapshot.defaultBranch });

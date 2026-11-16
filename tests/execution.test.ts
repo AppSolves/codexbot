@@ -157,14 +157,19 @@ await test('actual review job records incomplete fallback, releases acquired lea
     const process = child();
     queueMicrotask(() => {void(async()=>{
       if (args[0] === 'logs' && args.includes('--follow')) { process.stdout.write('codexbot-proxy-ready\n'); return; }
+      if(args[0]==='create'){
+        const mount=args.find(arg=>arg.startsWith('type=bind,src=')&&arg.endsWith(',dst=/run/credentials,readonly'));
+        assert(mount);assert.deepEqual(JSON.parse(await readFile(join(mount.slice('type=bind,src='.length,-',dst=/run/credentials,readonly'.length),'current'),'utf8')),{access_token:sensitive});
+      }
       if (args[0] === 'run') {
+        assert(!args.some(arg=>arg.includes('/run/credentials')));
         runs++;
         if(onDemandMissing){await new Promise<void>((resolve,reject)=>{const req=http.request({socketPath:contextSocket,path:probeOnly?'/probe':'/file',method:'POST'},res=>{let body='';res.on('data',x=>{body+=String(x);});res.on('end',()=>{try{assert.deepEqual(JSON.parse(body),probeOnly?{exists:false}:{available:false,reason:'context_path_missing'});resolve();}catch(error){reject(error);}});});req.on('error',reject);req.end(JSON.stringify({snapshot:'head',path:'private-missing-name.ts'}));});}
         if (containerOutput !== null) {
           const mount=args.find(arg=>arg.startsWith('type=bind,src=')&&arg.endsWith(',dst=/workspace,readonly'))!;
           const directory=mount.slice('type=bind,src='.length,-',dst=/workspace,readonly'.length),plan=JSON.parse(await readFile(join(directory,'review-plan.json'),'utf8')) as ReviewPlan;
           const review=containerOutput as {complete:boolean;result:string};const complete=review.complete&&review.result!=='inconclusive';
-          process.stdout.write(JSON.stringify({review:containerOutput,coverage:plan.units.map(u=>({id:u.id,sha256:u.sha256,complete,attempts:1,reasons:complete?[]:['model_incomplete']})),synthesis:complete,turns:plan.units.length+(plan.units.length===1?0:1),reasons:complete?[]:['model_incomplete'],failure:partialExecutionFailure?{component:'turn',code:timeoutDuringContext?'codex_turn_timeout':'codex_turn_failed',...(timeoutDuringContext?{timeout_scope:'execution'}:{})}:null}));
+          process.stdout.write(JSON.stringify({review:containerOutput,coverage:plan.units.map(u=>({id:u.id,sha256:u.sha256,complete,completed_files:complete?u.paths.length:0,attempts:1,reasons:complete?[]:['model_incomplete']})),synthesis:complete,turns:plan.units.length+(plan.units.length===1?0:1),reasons:complete?[]:['model_incomplete'],failure:partialExecutionFailure?{component:'turn',code:timeoutDuringContext?'codex_turn_timeout':'codex_turn_failed',...(timeoutDuringContext?{timeout_scope:'execution'}:{})}:null}));
         }
         else process.stderr.write(executionEnvelope({ component: 'turn', code: 'codex_turn_failed' }) + '\n');
       }
@@ -196,6 +201,7 @@ await test('actual review job records incomplete fallback, releases acquired lea
   try {
     await assert.rejects(reviewJob(), error => { assert.ok(error instanceof ExecutionError); assert.equal(error.detail.code, 'codex_turn_failed'); assert.equal(error.proxyFailure?.upstream_status, 401); return true; });
     assert.equal(submissions.length, 1); assert.equal(submissions[0]!.context_complete, false);
+    rejectReadTokenCleanup=true;await assert.rejects(reviewJob(),error=>error instanceof ExecutionError&&error.detail.code==='codex_turn_failed');rejectReadTokenCleanup=false;
     const output = submissions[0]!.output as Record<string, unknown>; assert.equal(output.complete, false); assert.equal(output.result, 'inconclusive');
     assert.equal((submissions[0]!.failure as Record<string, unknown>).code, 'isolated_review_failed');
     assert.equal((submissions[0]!.failure as Record<string, unknown>).stage, 'analyzing');

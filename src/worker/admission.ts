@@ -1,9 +1,11 @@
 import { AppError, requireCondition } from '../core/errors.js';
 import { sha256 } from '../core/crypto.js';
-import { REQUEST_LIFETIME_MS } from '../core/limits.js';
+import { DEFAULT_REVIEW_TIMEOUT_MINUTES,REQUEST_OVERHEAD_MS } from '../core/limits.js';
 import type { RequestSnapshot } from './store.js';
 
 export const QUOTA_WINDOW_MS = 86_400_000;
+// Trusted snapshots only: keep SQL concurrency/recovery expiry identical to requestLifetimeMs.
+export const REQUEST_EXPIRY_SQL=`(created_at+${REQUEST_OVERHEAD_MS}+60000*COALESCE(json_extract(snapshot,'$.command.timeout_minutes'),json_extract(snapshot,'$.config.review.timeout_minutes'),${DEFAULT_REVIEW_TIMEOUT_MINUTES}))`;
 export type RejectionCode = 'rerun_limit_exceeded' | 'user_quota_exceeded' | 'repository_quota_exceeded' | 'installation_quota_exceeded' |
   'repository_concurrency_exceeded' | 'installation_concurrency_exceeded' | 'cooldown_active' | 'duplicate_review' |
   'invalid_command' | 'merge_not_authorized' | 'rerun_requires_write_permission' | 'pr_not_reviewable' | 'chatgpt_deployment_not_authorized';
@@ -32,8 +34,8 @@ export async function admissionRejection(db: D1Database, snapshot: RequestSnapsh
     { code: 'user_quota_exceeded', where: 'installation_id=? AND actor_id=? AND created_at>?', args: [snapshot.installationId,snapshot.actorId,day], limit: q.user_per_day, window: QUOTA_WINDOW_MS },
     { code: 'repository_quota_exceeded', where: 'installation_id=? AND repository_id=? AND created_at>?', args: [snapshot.installationId,snapshot.repositoryId,day], limit: q.repository_per_day, window: QUOTA_WINDOW_MS },
     { code: 'installation_quota_exceeded', where: 'installation_id=? AND created_at>?', args: [snapshot.installationId,day], limit: q.installation_per_day, window: QUOTA_WINDOW_MS },
-    { code: 'repository_concurrency_exceeded', where: "installation_id=? AND repository_id=? AND state NOT IN ('published','failed') AND created_at>?", args: [snapshot.installationId,snapshot.repositoryId,now-REQUEST_LIFETIME_MS], limit: q.concurrent_repository, window: null },
-    { code: 'installation_concurrency_exceeded', where: "installation_id=? AND state NOT IN ('published','failed') AND created_at>?", args: [snapshot.installationId,now-REQUEST_LIFETIME_MS], limit: q.concurrent_installation, window: null },
+    { code: 'repository_concurrency_exceeded', where: `installation_id=? AND repository_id=? AND state NOT IN ('published','failed') AND ${REQUEST_EXPIRY_SQL}>?`, args: [snapshot.installationId,snapshot.repositoryId,now], limit: q.concurrent_repository, window: null },
+    { code: 'installation_concurrency_exceeded', where: `installation_id=? AND state NOT IN ('published','failed') AND ${REQUEST_EXPIRY_SQL}>?`, args: [snapshot.installationId,now], limit: q.concurrent_installation, window: null },
     { code: 'cooldown_active', where: 'installation_id=? AND repository_id=? AND actor_id=? AND created_at>?', args: [snapshot.installationId,snapshot.repositoryId,snapshot.actorId,now-q.cooldown_seconds*1000], limit: 1, window: q.cooldown_seconds*1000 }
   ];
   // VALUES avoids D1's small compound-SELECT limit; all policy predicates stay in the admission transaction.

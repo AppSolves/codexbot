@@ -16,6 +16,8 @@ Use `--model MODEL_ID` (or `--model=MODEL_ID`) to override the repository's mode
 
 Reviews use bounded groups of immutable changed-file evidence and a final cross-group synthesis in the same isolated Codex session. Unfinished analysis retains validated findings and its explanation as a non-approving COMMENT; it still fails the review check. Grouping does not reset usage budgets or authorize merging.
 
+The execution timeout defaults to 30 minutes. Set `review.timeout_minutes` in `.codexbot.yml`, or use `@CBReview review --timeout 60` for one authorized request. Groups prioritize changed dependencies; continuations target pending files and reuse completed work. The single 100-request inference budget still applies. GitHub-hosted jobs have a six-hour platform limit; setup, refresh eligibility and cleanup reserve 30 minutes, leaving at most 330 minutes for inference. There is no separate 45-minute product limit.
+
 Set `bot.trigger: "@CBReview"` to use the example above. The legacy default `@codexbot` remains supported; new setup chooses `@CBReview<repository_id>`. Use a name without “codex” when another Codex integration is installed. CodexBot cannot control that independent connector; see [trigger isolation and rollout](docs/review-rollout.md).
 
 ## Status

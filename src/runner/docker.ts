@@ -1,26 +1,30 @@
 import { spawn } from 'node:child_process';
+import {dirname} from 'node:path';
 import { requireCondition } from '../core/errors.js';
 import type { InferenceLimits } from './proxy.js';
 import { ExecutionDiagnostics, ExecutionError, executionError, executionFailure, proxyRequestEnvelope } from '../core/execution.js';
+import {DEFAULT_REVIEW_TIMEOUT_MINUTES,MAX_REVIEW_TIMEOUT_MINUTES,REVIEW_CLEANUP_MS} from '../core/limits.js';
 
-export async function docker(args: string[], maxBytes = 100_000, diagnostics = new ExecutionDiagnostics()): Promise<string> {
+export async function docker(args: string[], maxBytes = 100_000, diagnostics = new ExecutionDiagnostics(),timeoutMs=DEFAULT_REVIEW_TIMEOUT_MINUTES*60_000+REVIEW_CLEANUP_MS,signal?:AbortSignal): Promise<string> {
   const child = spawn('docker', args, { stdio: ['ignore', 'pipe', 'pipe'] });
   const chunks: Buffer[] = []; let size = 0;
   child.stderr.setEncoding('utf8');
   child.stderr.on('data', (chunk: string) => diagnostics.write(chunk));
   let timedOut = false;
-  const timeout = setTimeout(() => { timedOut = true; child.kill('SIGKILL'); }, 22 * 60_000);
+  const timeout = setTimeout(() => { timedOut = true; child.kill('SIGKILL'); }, timeoutMs);
+  const abort=()=>child.kill('SIGKILL');signal?.addEventListener('abort',abort,{once:true});if(signal?.aborted)abort();
   return new Promise((resolve, reject) => {
     child.stdout.on('data', (chunk: Buffer) => { size += chunk.length; if (size > maxBytes) child.kill('SIGKILL'); else chunks.push(chunk); });
-    child.on('error', () => { clearTimeout(timeout); reject(new ExecutionError({ component: 'docker', code: 'docker_unavailable' })); });
-    child.on('close', (code, signal) => {
+    child.on('error', () => { clearTimeout(timeout);signal?.removeEventListener('abort',abort); reject(new ExecutionError({ component: 'docker', code: 'docker_unavailable' })); });
+    child.on('close', (code, exitSignal) => {
       clearTimeout(timeout);
+      signal?.removeEventListener('abort',abort);
       // The unprivileged reviewer cannot attest to provider HTTP; only separate proxy logs can.
       const engine = diagnostics.last && ['engine','codex_process','codex_rpc','model','turn'].includes(diagnostics.last.component)
         ? executionFailure({ ...diagnostics.last, upstream_status: null, provider_code: null, provider_param: null }) : null;
       if (code !== 0 || size > maxBytes || timedOut) reject(new ExecutionError((!timedOut && size <= maxBytes ? engine : null) ?? { component: 'docker',
         code: timedOut ? 'container_timeout' : size > maxBytes ? 'container_output_limit' : code !== null && [125,126,127].includes(code) ? 'container_start_failed' : 'container_exit_failed',
-        ...(code !== null ? { exit_code: code } : {}), ...(signal ? { signal } : {}) }));
+        ...(code !== null ? { exit_code: code } : {}), ...(exitSignal ? { signal:exitSignal } : {}) }));
       else resolve(Buffer.concat(chunks).toString('utf8'));
     });
   });
@@ -48,7 +52,8 @@ export async function cleanupReviewContainers(id: string): Promise<void> {
   const cleanup = await Promise.allSettled(containers.map(container => docker(['rm', '-f', container])));
   requireCondition(cleanup.every(result => result.status === 'fulfilled'), 'docker_cleanup_failed_check_runner');
 }
-export async function isolatedReview(image: string, directory: string, credentialFile: string, socketDirectory: string, limits: InferenceLimits = {}, onPartialFailure: (failure: ExecutionError)=>void = failure=>{throw failure;}): Promise<unknown> {
+export async function isolatedReview(image: string, directory: string, credentialFile: string, socketDirectory: string, limits: InferenceLimits = {}, onPartialFailure: (failure: ExecutionError)=>void = failure=>{throw failure;},signal?:AbortSignal): Promise<unknown> {
+  const minutes=limits.timeoutMinutes??DEFAULT_REVIEW_TIMEOUT_MINUTES;requireCondition(Number.isInteger(minutes)&&minutes>=1&&minutes<=MAX_REVIEW_TIMEOUT_MINUTES,'review_timeout_exceeds_github_actions_job_limit');
   requireCondition(/^[a-zA-Z0-9._:/@-]+$/.test(image), 'invalid_review_image');
   const id = crypto.randomUUID(), proxy = `codexbot-proxy-${id}`, review = `codexbot-review-${id}`;
   const uid = process.getuid?.(), gid = process.getgid?.();
@@ -64,10 +69,10 @@ export async function isolatedReview(image: string, directory: string, credentia
     if(observed.request){failure.proxyRequest=observed.request;if(observed.request.primary)failure.proxyFailure=observed.request.primary;if(observed.request.cleanup)failure.proxyCleanup=observed.request.cleanup;}else if(observed.last)failure.proxyFailure=observed.last;
   };
   try {
-    await docker(['create', '--name', proxy, '--network=bridge', ...common, '--env', `CODEXBOT_ACCEPTANCE_LIMITS=${JSON.stringify(limits)}`, '--mount', `type=bind,src=${credentialFile},dst=/run/credential,readonly`, '--mount', `type=bind,src=${socketDirectory},dst=/run/proxy`, image, 'node', 'dist/src/runner/proxy-main.js']);
+    await docker(['create', '--name', proxy, '--network=bridge', ...common, '--env', `CODEXBOT_ACCEPTANCE_LIMITS=${JSON.stringify(limits)}`, '--mount', `type=bind,src=${dirname(credentialFile)},dst=/run/credentials,readonly`, '--mount', `type=bind,src=${socketDirectory},dst=/run/proxy`, image, 'node', 'dist/src/runner/proxy-main.js']);
     await docker(['start', proxy]);
     await proxyReady(proxy);
-    const output = await docker(['run', '--name', review, '--network=none', ...common, '--mount', `type=bind,src=${directory},dst=/workspace,readonly`, '--mount', `type=bind,src=${socketDirectory},dst=/run/proxy,readonly`, image, 'node', 'dist/src/runner/engine-main.js']);
+    const output = await docker(['run', '--name', review, '--network=none', ...common, '--mount', `type=bind,src=${directory},dst=/workspace,readonly`, '--mount', `type=bind,src=${socketDirectory},dst=/run/proxy,readonly`, image, 'node', 'dist/src/runner/engine-main.js'],100_000,new ExecutionDiagnostics(),minutes*60_000+REVIEW_CLEANUP_MS,signal);
     try { result = JSON.parse(output) as unknown; } catch { throw new ExecutionError({ component: 'engine', code: 'codex_output_not_json' }); }
     if(result&&typeof result==='object'&&'failure' in result&&result.failure!==null){const detail=executionFailure(result.failure);requireCondition(detail&&['engine','turn','model','codex_rpc','codex_process'].includes(detail.component),'review_coverage_invalid');partial=new ExecutionError(detail);await observe(partial);}
     else if(result&&typeof result==='object'&&'review' in result&&result.review&&typeof result.review==='object'&&'complete' in result.review&&result.review.complete===false)await observe(new ExecutionError({component:'engine',code:'review_incomplete',rejection_reason:'model_incomplete'}));

@@ -1,4 +1,5 @@
 import { AppError } from './errors.js';
+import {MAX_REVIEW_TIMEOUT_MINUTES,REVIEW_CLEANUP_MS} from './limits.js';
 
 // This is a projection, never a redaction of arbitrary process/provider text.
 const COMPONENTS = new Set(['docker', 'proxy', 'provider', 'codex_process', 'codex_rpc', 'model', 'turn', 'engine']);
@@ -43,7 +44,7 @@ function object(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 function projectRequestMetadata(source: Record<string, unknown>, result: RequestMetadata): void {
-  for (const [key, maximum] of [['request_index',101],['elapsed_ms',1_320_000],['stream_bytes',20_000_001],['stream_frames',1_000_000],['upstream_status',599]] as const) {
+  for (const [key, maximum] of [['request_index',101],['elapsed_ms',MAX_REVIEW_TIMEOUT_MINUTES*60_000+REVIEW_CLEANUP_MS],['stream_bytes',20_000_001],['stream_frames',1_000_000],['upstream_status',599]] as const) {
     const value=source[key]; if(typeof value==='number'&&Number.isInteger(value)&&value>=(key==='request_index'?1:key==='upstream_status'?200:0)&&value<=maximum)result[key]=value;
   }
   if(typeof source.content_type_category==='string'&&CONTENT_TYPES.has(source.content_type_category))result.content_type_category=source.content_type_category;

@@ -13,6 +13,15 @@ const privateText='fixture-private-provider-text OAuth-code source prompt';
 const frame=(value:unknown)=>'data: '+JSON.stringify(value)+'\n\n';
 const completed=frame({type:'response.completed'}),created=frame({type:'response.created'});
 const failure=frame({type:'response.failed',response:{error:{code:'subscription_sharing_usage_limit_exceeded',message:privateText}}});
+await test('the proxy reads the host-rotated access token per request and never exposes it to the model',async()=>{
+ let token='synthetic-first-token';const sent:string[]=[],reports:ExecutionFailure[]=[];
+ const fetcher:typeof fetch=async(_url,options)=>{sent.push(String((options?.headers as Record<string,string>).Authorization));return new Response(completed,{headers:{'content-type':'text/event-stream'}});};
+ const server=createServer((req,res)=>{void inferenceProxy(req,res,async()=>token,fetcher,()=>{},failure=>reports.push(failure));});
+ server.listen(0,'127.0.0.1');await once(server,'listening');const address=server.address();assert(address&&typeof address!=='string');
+ const send=async()=>{const response=await fetch(`http://127.0.0.1:${address.port}/v1/responses`,{method:'POST',body:JSON.stringify({model:'fixture',stream:true,store:false,input:[]})});const text=await response.text();assert(!text.includes('synthetic-'));return response.status;};
+ try{assert.equal(await send(),200);token='synthetic-renewed-token';assert.equal(await send(),200);assert.deepEqual(sent,['Bearer synthetic-first-token','Bearer synthetic-renewed-token']);token='invalid\r\ncredential';assert.equal(await send(),403);assert.equal(sent.length,2);assert(!JSON.stringify(reports).includes('credential'));}
+ finally{server.closeAllConnections();await new Promise<void>(resolve=>server.close(()=>resolve()));}
+});
 function source(chunks:string[],readError?:Error,cancelError?:Error){let index=0;return new ReadableStream<Uint8Array>({pull(c){if(index<chunks.length)c.enqueue(new TextEncoder().encode(chunks[index++]));else if(readError)c.error(readError);else if(!cancelError)c.close();},cancel(){if(cancelError)throw cancelError;}});}
 await test('primary provider event and safe cleanup failure remain independent; cleanup never replaces or escapes the primary',async()=>{
  const reports:ExecutionFailure[]=[];let output='';for await(const chunk of safeEvents(source([failure],undefined,new Error(privateText)),'fixture-credential',value=>reports.push(value)))output+=chunk;
@@ -54,7 +63,7 @@ await test('bounded correlated records survive envelopes and outer diagnostics; 
  const error=new ExecutionError({component:'engine',code:'review_incomplete',rejection_reason:'model_incomplete'});error.proxyFailure=primary;error.proxyCleanup=cleanup;assert.deepEqual(diagnostic(error,'analyzing').proxy_cleanup,cleanup);
  parser.write(proxyRequestEnvelope({request_index:2,phase:'started',primary:null,cleanup:null})+'\n');assert.equal(parser.last,null);
  parser.write(proxyRequestEnvelope({request_index:2,phase:'finished',primary:null,cleanup:null,terminal_event:'completed'})+'\n');parser.write(proxyRequestEnvelope({request_index:1,phase:'finished',primary,cleanup})+'\n');assert.equal(parser.last,null);assert.equal(parser.request!.request_index,2);assert.equal(parser.request!.primary,null);
- const projected=proxyRequestDiagnostic({request_index:3,phase:'finished',primary:null,cleanup:null,headers:privateText,terminal_event:['completed'],elapsed_ms:1_320_001,stream_bytes:-1,abort_origin:privateText});assert.deepEqual(projected,{request_index:3,phase:'finished',primary:null,cleanup:null});
+ const projected=proxyRequestDiagnostic({request_index:3,phase:'finished',primary:null,cleanup:null,headers:privateText,terminal_event:['completed'],elapsed_ms:19_920_001,stream_bytes:-1,abort_origin:privateText});assert.deepEqual(projected,{request_index:3,phase:'finished',primary:null,cleanup:null});
  for(let index=3;index<=8;index++)parser.write(proxyRequestEnvelope({request_index:index,phase:'finished',primary,cleanup})+'\n');assert.equal(parser.history.length,4);assert.deepEqual(parser.history.map(x=>x.request_index),[5,6,7,8]);
  assert.equal(proxyRequestDiagnostic({request_index:102,phase:'finished',primary:null,cleanup:null}),null);
  assert.deepEqual(executionFailure({component:'engine',code:'review_incomplete',rejection_reason:privateText,upstream_status:401}),{component:'engine',code:'review_incomplete'});

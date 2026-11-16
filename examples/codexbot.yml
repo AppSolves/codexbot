@@ -12,6 +12,7 @@ review:
   request_changes: true
   model: null
   effort: null
+  timeout_minutes: 30 # Authorized commands may override, e.g. --timeout 60. GitHub job limits still apply.
   blocking_confidence: 0.9
   advisory_confidence: 0.7
 merge:

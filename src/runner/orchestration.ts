@@ -1,13 +1,13 @@
 import { createHash } from 'node:crypto';
 import { readFile, writeFile, mkdir, readdir } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join,posix } from 'node:path';
 import { Ajv } from 'ajv';
 import { AppError, record, requireCondition } from '../core/errors.js';
 import { binaryLocations, type BinaryChange } from '../core/binary.js';
 import { REVIEW_SCHEMA, normalizeReview, validateReview, safePath, type Review, type ChangedFile, type ReviewRejectionReason } from '../core/review.js';
 import { scanSecrets } from '../core/dlp.js';
 import { ExecutionError, executionError, executionFailure, UNFINISHED_REASONS, type ExecutionFailure } from '../core/execution.js';
-const GROUP_FILES = 16, GROUP_BYTES = 2_000_000, MAX_GROUPS = 32, MAX_CONTINUATIONS = 2;
+const GROUP_FILES = 16, GROUP_BYTES = 2_000_000,GROUP_CHANGED_LINES=1500, MAX_GROUPS = 32, MAX_CONTINUATIONS = 2;
 const TERMINAL_REASONS=new Set(['missing_required_context','visual_evidence_unavailable','output_truncated']);
 type Reason = typeof UNFINISHED_REASONS[number];
 export interface ReviewUnit {
@@ -27,6 +27,7 @@ export interface Coverage {
   id: string;
   sha256: string;
   complete: boolean;
+  completed_files:number;
   attempts: number;
   reasons: Reason[];
 }
@@ -39,7 +40,7 @@ export interface ReviewExecution {
   failure: ExecutionFailure | null;
 }
 const hash = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
-const turnSchema = { type: 'object', additionalProperties: false, required: ['unit_id', 'review', 'unfinished_reasons'], properties: { unit_id: { type: 'string', pattern: '^(group-[0-9]{2}|synthesis)$' }, review: REVIEW_SCHEMA, unfinished_reasons: { type: 'array', maxItems: UNFINISHED_REASONS.length, uniqueItems: true, items: { enum: UNFINISHED_REASONS } } } };
+const turnSchema = { type: 'object', additionalProperties: false, required: ['unit_id', 'review', 'unfinished_reasons','completed_paths'], properties: { unit_id: { type: 'string', pattern: '^(group-[0-9]{2}|synthesis)$' }, review: REVIEW_SCHEMA, completed_paths:{type:'array',maxItems:GROUP_FILES,uniqueItems:true,items:{type:'string',maxLength:512}},unfinished_reasons: { type: 'array', maxItems: UNFINISHED_REASONS.length, uniqueItems: true, items: { enum: UNFINISHED_REASONS } } } };
 const checkTurn = new Ajv().compile(turnSchema);
 // Keep uniqueness/string bounds in Ajv; send only documented Responses constraints.
 function providerSchema(schema: Record<string, unknown>): Record<string, unknown> {
@@ -49,9 +50,11 @@ function providerSchema(schema: Record<string, unknown>): Record<string, unknown
   if (projected.items) projected.items = providerSchema(record(projected.items));
   return projected;
 }
-export function reviewTurnSchema(id: string) { return providerSchema({ ...turnSchema, properties: { ...turnSchema.properties, unit_id: { enum: [id] } } }); }
+export function reviewTurnSchema(id: string,paths?:string[]) { return providerSchema({ ...turnSchema, properties: { ...turnSchema.properties,unit_id: { enum: [id] },completed_paths:{...turnSchema.properties.completed_paths,...(paths?{maxItems:paths.length,items:paths.length?{enum:paths}:{type:'string'}}:{})} } }); }
 /** The credential-owning host writes immutable evidence inputs; the model cannot choose coverage. */
 export async function buildReviewPlan(directory: string, head: string, base: string, binaries: BinaryChange[]): Promise<ReviewPlan> {
+  // Planning runs on the trusted host; the minimal reviewer image has no TypeScript build tools.
+  const {default:ts}=await import('typescript');
   const files = JSON.parse(await readFile(join(directory, 'diff.json'), 'utf8')) as ChangedFile[];
   requireCondition(Array.isArray(files) && files.length <= 200 && files.every(f => safePath(f.filename) && (!f.previous_filename || safePath(f.previous_filename))) && new Set(files.map(f => f.filename)).size === files.length, 'review_plan_unverifiable');
   requireCondition(binaries.length === files.filter(f => !f.patch).length && new Set(binaries.map(b => b.filename)).size === binaries.length && binaries.every(b => files.some(f => f.filename === b.filename && !f.patch)), 'review_plan_unverifiable');
@@ -75,12 +78,30 @@ export async function buildReviewPlan(directory: string, head: string, base: str
   const trusted = await readFile(join(directory, 'trusted-instructions.json'), 'utf8');
   requireCondition(Buffer.byteLength(trusted) <= 1_000_000, 'review_plan_budget');
   const units: ReviewUnit[] = [];
+  const contents=new Map<string,Buffer>(),neighbors=new Map(files.map(f=>[f.filename,new Set<string>()])),byPath=new Map(files.flatMap(f=>[[f.filename,f.filename],...(f.previous_filename?[[f.previous_filename,f.filename]]:[])] as [string,string][]));
+  for(const file of files){
+    if(!file.patch)continue;
+    for(const side of file.status==='added'?['head']:file.status==='removed'?['base']:['base','head']){
+      const filename=side==='base'?(file.previous_filename??file.filename):file.filename,path='source/'+side+'/'+filename;
+      requireCondition(available.includes(path),'review_plan_unverifiable');const bytes=await readFile(join(directory,path));requireCondition(bytes.length<=512_000&&!bytes.includes(0),'review_plan_unverifiable');contents.set(path,bytes);
+      if(!/\.[cm]?[jt]sx?$/.test(filename))continue;
+      for(const {fileName:specifier}of ts.preProcessFile(new TextDecoder('utf8',{fatal:true}).decode(bytes),true,true).importedFiles){
+        if(!/^\.{1,2}\//.test(specifier))continue;
+        const target=posix.normalize(posix.join(posix.dirname(filename),specifier)),stem=target.replace(/\.[cm]?[jt]sx?$/,'');
+        const related=[target,...['.ts','.tsx','.js','.jsx','.mts','.cts','.mjs','.cjs'].map(ext=>stem+ext),...['.ts','.tsx','.js','.jsx'].map(ext=>target+'/index'+ext)].map(p=>byPath.get(p)).find(Boolean);
+        if(related&&related!==file.filename){neighbors.get(file.filename)!.add(related);neighbors.get(related)!.add(file.filename);}
+      }
+    }
+  }
+  const ordered:ChangedFile[]=[],visited=new Set<string>(),byName=new Map(files.map(f=>[f.filename,f]));
+  const visit=(path:string)=>{if(visited.has(path))return;visited.add(path);ordered.push(byName.get(path)!);for(const neighbor of [...neighbors.get(path)!].sort())visit(neighbor);};
+  for(const path of [...byName.keys()].sort())visit(path);
   let changes: ChangedFile[] = [], evidence: {
     path: string;
     sha256: string;
     text?: string;
   }[] = [];
-  const encode = () => JSON.stringify({ changes, evidence, trusted_instructions: trusted, available_source: available, whole_pr: files.map(f => ({ path: f.filename, status: f.status })), instructions: 'Analyze the supplied current/deleted source and complete patches first. Full modified base files remain hash-verified at their evidence paths; read them and shared callers where needed. Do not repeat completed unit analysis. This is a scoped unit, not permission to omit other units or relevant dependencies. All source remains available read-only. Read already supplied paths directly; use /probe only for optional existence and /file for essential missing contents.' });
+  const encode = () => JSON.stringify({ changes, evidence,related_changes:[...new Set(changes.flatMap(f=>[...neighbors.get(f.filename)!]))].filter(path=>!changes.some(f=>f.filename===path)), trusted_instructions: trusted, available_source: available, whole_pr: files.map(f => ({ path: f.filename, status: f.status })), instructions: 'Analyze the supplied current/deleted source and complete patches first. Full modified base files remain hash-verified at their evidence paths; read them and shared callers where needed. Do not repeat completed unit analysis. Report completed_paths only for assigned changes actually analyzed; leave unresolved paths pending. This is a scoped unit, not permission to omit other units or relevant dependencies. All source remains available read-only. Read already supplied paths directly; use /probe only for optional existence and /file for essential missing contents.' });
   await mkdir(join(directory, 'review-units'), { recursive: true, mode: 0o700 });
   const flush = async () => {
     if (!changes.length && units.length) return;
@@ -92,13 +113,14 @@ export async function buildReviewPlan(directory: string, head: string, base: str
     units.push({ id, input: path, sha256: hash(input), paths: changes.map(f => f.filename) });
     changes = []; evidence = [];
   };
-  for (const file of [...files].sort((a, b) => a.filename.localeCompare(b.filename))) {
+  const changedLines=(file:ChangedFile)=>(file.patch??'').split('\n').filter(line=>/^[+-]/.test(line)).length;
+  for (const file of ordered) {
     const additions: typeof evidence = [];
     if (file.patch)
       for (const side of (file.status === 'added' ? ['head'] : file.status === 'removed' ? ['base'] : ['base', 'head'])) {
         const path = 'source/' + side + '/' + (side === 'base' ? (file.previous_filename ?? file.filename) : file.filename);
         requireCondition(available.includes(path), 'review_plan_unverifiable');
-        const bytes = await readFile(join(directory, path));
+        const bytes = contents.get(path)!;
         requireCondition(bytes.length <= 512_000 && !bytes.includes(0), 'review_plan_unverifiable');
         const text=new TextDecoder('utf8',{fatal:true}).decode(bytes);
         // Modified old contents remain hash-verified on disk; the complete patch already supplies removed lines.
@@ -118,7 +140,7 @@ export async function buildReviewPlan(directory: string, head: string, base: str
     const oldChanges = changes, oldEvidence = evidence;
     changes = [...changes, file];
     evidence = [...evidence, ...additions];
-    if (changes.length > GROUP_FILES || Buffer.byteLength(encode()) > GROUP_BYTES) {
+    if (changes.length > GROUP_FILES || Buffer.byteLength(encode()) > GROUP_BYTES || (changes.length>1&&changes.reduce((sum,f)=>sum+changedLines(f),0)>GROUP_CHANGED_LINES)) {
       changes = oldChanges;
       evidence = oldEvidence;
       if (changes.length)
@@ -150,6 +172,7 @@ export async function unitEvidence(directory: string, unit: ReviewUnit): Promise
 function turnReview(value: unknown, id: string, plan: ReviewPlan): {
   review: Review;
   reasons: Reason[];
+  completed:string[];
 } {
   if (scanSecrets(value).length)
     throw new ExecutionError({ component: 'engine', code: 'review_incomplete', rejection_reason: 'quarantined' });
@@ -158,6 +181,9 @@ function turnReview(value: unknown, id: string, plan: ReviewPlan): {
   const item = record(value);
   if (item.unit_id !== id)
     throw new ExecutionError({ component: 'engine', code: 'review_output_invalid', rejection_reason: 'output_invalid' });
+  const assigned=id==='synthesis'?[]:plan.units.find(unit=>unit.id===id)?.paths;
+  requireCondition(assigned&&Array.isArray(item.completed_paths)&&item.completed_paths.every(path=>assigned.includes(String(path))),'review_coverage_invalid');
+  const completed=item.completed_paths as string[];
   let rejected: ReviewRejectionReason | undefined;
   const review = normalizeReview(item.review, plan.head, reason => { rejected = reason; });
   if (rejected && rejected !== 'output_truncated')
@@ -175,39 +201,50 @@ function turnReview(value: unknown, id: string, plan: ReviewPlan): {
       review.result = 'inconclusive';
   }
   if (!review.complete || review.result === 'inconclusive')
-    return { review, reasons: reasons.length ? reasons : ['model_incomplete'] };
-  return { review, reasons: [] };
+    return { review, reasons: reasons.length ? reasons : ['model_incomplete'],completed };
+  return { review, reasons: [],completed };
 }
 /** One execution/thread/proxy owns all turns and the unchanged global inference/time budget. */
-export async function orchestrateReview(plan: ReviewPlan, evidence: (unit: ReviewUnit) => Promise<string>, turn: (id: string, input: string, schema: unknown) => Promise<unknown>): Promise<ReviewExecution> {
+export async function orchestrateReview(plan: ReviewPlan, evidence: (unit: ReviewUnit) => Promise<string>, turn: (id: string, input: string, schema: unknown) => Promise<unknown>,deadline=Infinity): Promise<ReviewExecution> {
   const coverage: Coverage[] = [], reviews: Review[] = [];
   let continuations = 0, synthesis = false, turns = 0, blocked=false, failure: ExecutionFailure | null = null, final: Review | undefined;
   const reasons = new Set<Reason>();
+  const progress=new Map<string,Set<string>>(),latest=new Map<string,Review>();
+  const reserve=Math.min(3*60_000,Math.max(0,(deadline-Date.now())/5));
+  const analyze=async(unit:ReviewUnit,state:Coverage)=>{
+    const input=await evidence(unit),completed=progress.get(unit.id)??new Set<string>();progress.set(unit.id,completed);
+    const pending=unit.paths.filter(path=>!completed.has(path)),continuation=state.attempts>0;
+    state.attempts++;turns++;
+    const result=turnReview(await turn(unit.id,JSON.stringify({unit_id:unit.id,
+      ...(continuation?{evidence_receipt:{input:unit.input,sha256:unit.sha256},previous_review:latest.get(unit.id)}:{evidence:input}),
+      pending_paths:pending,completed_paths:[...completed],final_whole_pr_check:plan.units.length===1,
+      instructions:continuation?'Continue only pending paths or the recorded unresolved analysis. Reuse verified evidence and previous findings; do not restart completed paths. A complete response must resolve every pending path and the unfinished reasons.':plan.units.length===1?'This sole group contains every change. Complete the final whole-PR cross-file, dependency, security and compatibility synthesis in this response; unresolved questions require incomplete.':'Analyze this dependency-aware group with shared context; later groups and a separate final cross-group synthesis follow.',
+      continuation,unfinished_reasons:state.reasons,...(Number.isFinite(deadline)?{remaining_ms:Math.max(0,Math.floor(deadline-Date.now()))}:{})}),reviewTurnSchema(unit.id,unit.paths)),unit.id,plan);
+    reviews.push(result.review);latest.set(unit.id,result.review);for(const path of result.completed)completed.add(path);
+    state.completed_files=completed.size;state.reasons=result.reasons;
+    if(completed.size!==unit.paths.length&&!state.reasons.includes('unreviewed_changes'))state.reasons.push('unreviewed_changes');
+    state.complete=state.reasons.length===0;
+    if(!state.complete){result.review.complete=false;if(result.review.result==='clean')result.review.result='inconclusive';}
+    if(state.reasons.some(reason=>TERMINAL_REASONS.has(reason)))blocked=true;
+  };
   try {
     for (const unit of plan.units) {
-      const input = await evidence(unit), state: Coverage = { id: unit.id, sha256: unit.sha256, complete: false, attempts: 0, reasons: ['unreviewed_changes'] };
+      const state: Coverage = { id: unit.id, sha256: unit.sha256, complete: false,completed_files:0, attempts: 0, reasons: ['unreviewed_changes'] };
       coverage.push(state);
-      for (;;) {
-        state.attempts++;
-        turns++;
-        const result = turnReview(await turn(unit.id, JSON.stringify({ unit_id: unit.id, evidence: input, final_whole_pr_check:plan.units.length===1, instructions:plan.units.length===1?'This sole group contains every change. Complete the final whole-PR cross-file, dependency, security and compatibility synthesis in this response; unresolved questions require incomplete.':'Analyze this group with shared dependencies; a separate final cross-group synthesis follows.', continuation: state.attempts > 1, unfinished_reasons: state.reasons }), reviewTurnSchema(unit.id)), unit.id, plan);
-        reviews.push(result.review);
-        state.reasons = result.reasons;
-        state.complete = result.reasons.length === 0;
-        if (state.complete || state.reasons.some(r => TERMINAL_REASONS.has(r)))
-          break;
-        if (continuations >= MAX_CONTINUATIONS) {
-          reasons.add('continuation_limit');
-          break;
-        }
-        continuations++;
-      }
-      if(state.reasons.some(r=>TERMINAL_REASONS.has(r))){blocked=true;break;}
+      await analyze(unit,state);if(blocked)break;
     }
+    // Give every group its first pass before spending the execution-wide continuation allowance.
+    let next=0;
+    while(!blocked&&coverage.some(state=>!state.complete)&&continuations<MAX_CONTINUATIONS){
+      if(Date.now()+reserve>=deadline){reasons.add('continuation_limit');break;}
+      const pending=coverage.map((state,index)=>({state,index})).filter(item=>!item.state.complete),chosen=pending.find(item=>item.index>=next)??pending[0]!;
+      next=chosen.index+1;continuations++;await analyze(plan.units[chosen.index]!,chosen.state);
+    }
+    if(!blocked&&coverage.some(state=>!state.complete))reasons.add('continuation_limit');
     if(plan.units.length===1){final=reviews.at(-1);synthesis=coverage[0]?.complete===true;}
-    else if(!blocked) for (;;) {
+    else if(!blocked&&coverage.every(state=>state.complete)) for (;;) {
       turns++;
-      const result = turnReview(await turn('synthesis', JSON.stringify({ unit_id: 'synthesis', instructions: 'Reconcile cross-group dependencies, interfaces, security and compatibility across the entire PR. Inspect shared source as needed. Preserve evidence-backed findings; do not claim completion if a unit or consequential question remains unresolved. Missing runtime test execution and a partial supplementary file index alone are expected, not missing analysis.', coverage, unit_reviews: reviews, whole_pr: plan.files.map(f => ({ path: f.filename, status: f.status })) }), reviewTurnSchema('synthesis')), 'synthesis', plan);
+      const result = turnReview(await turn('synthesis', JSON.stringify({ unit_id: 'synthesis', instructions: 'Reconcile cross-group dependencies, interfaces, security and compatibility across the entire PR. Inspect shared source as needed. Preserve evidence-backed findings; do not claim completion if a unit or consequential question remains unresolved. completed_paths must be empty for synthesis. Missing runtime test execution and a partial supplementary file index alone are expected, not missing analysis.', coverage, unit_reviews: [...latest.values()],retained_findings:reviews.flatMap(review=>review.findings), whole_pr: plan.files.map(f => ({ path: f.filename, status: f.status })) }), reviewTurnSchema('synthesis',[])), 'synthesis', plan);
       final = result.review;
       reviews.push(final);
       synthesis = result.reasons.length === 0;
@@ -268,7 +305,7 @@ export function validateExecution(value: unknown, plan: ReviewPlan): ReviewExecu
   let extra = 0;
   for (const [index, value] of input.coverage.entries()) {
     const state = record(value), unit = plan.units[index];
-    requireCondition(unit && Object.keys(state).length === 5 && state.id === unit.id && state.sha256 === unit.sha256 && typeof state.complete === 'boolean' && Number.isInteger(state.attempts) && Number(state.attempts) >= 1 && Number(state.attempts) <= 1 + MAX_CONTINUATIONS && Array.isArray(state.reasons) && state.reasons.every(r => UNFINISHED_REASONS.includes(r as Reason)) && state.complete === (state.reasons.length === 0), 'review_coverage_invalid');
+    requireCondition(unit && Object.keys(state).length === 6 && state.id === unit.id && state.sha256 === unit.sha256 && typeof state.complete === 'boolean' && Number.isInteger(state.completed_files)&&Number(state.completed_files)>=0&&Number(state.completed_files)<=unit.paths.length&&(!state.complete||state.completed_files===unit.paths.length)&&Number.isInteger(state.attempts) && Number(state.attempts) >= 1 && Number(state.attempts) <= 1 + MAX_CONTINUATIONS && Array.isArray(state.reasons) && state.reasons.every(r => UNFINISHED_REASONS.includes(r as Reason)) && state.complete === (state.reasons.length === 0), 'review_coverage_invalid');
     extra += Number(state.attempts) - 1;
   }
   const synthesisTurns = Number(input.turns) - input.coverage.reduce((sum, c) => sum + Number(record(c).attempts), 0);

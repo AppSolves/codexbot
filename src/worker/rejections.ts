@@ -19,7 +19,7 @@ export function rejectionBody(row: RejectionRow): string {
     installation_concurrency_exceeded: 'The installation already has the maximum number of active reviews. Wait for an active review to finish.',
     cooldown_active: 'The cooldown between your review requests is still active.',
     duplicate_review: 'This review request was already accepted for the same commit and review context. Use an authorized --rerun for an intentional repeat, subject to its separate allowance.',
-    invalid_command: 'The command has an invalid, repeated or unsupported option. Check quoting and use review [--model MODEL] [--effort LEVEL] [--rerun] [--merge].',
+    invalid_command: 'The command has an invalid, repeated or unsupported option. Check quoting and use review [--model MODEL] [--effort LEVEL] [--timeout MINUTES] [--rerun] [--merge].',
     merge_not_authorized: 'The requested merge operation is not permitted by the current repository policy or your permissions. Request a review without --merge.',
     rerun_requires_write_permission: 'Explicit reruns require repository write permission. Request a normal review without --rerun.',
     pr_not_reviewable: 'This pull request is closed, a draft, or outside the supported review limits.',

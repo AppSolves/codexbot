@@ -11,7 +11,7 @@ import { DEFAULT_CONFIG } from '../src/core/config.js';
 import { HEAD, BASE, files, clean } from './fixtures.js';
 const finding = { severity: 'high' as const, confidence: 0.99, path: 'src/auth.ts', line: 2, side: 'RIGHT' as const, title: 'Synthetic race', explanation: 'A stale result overwrites a newer state.', remediation: 'Validate identity before updating.' };
 const plan = (count = 2): ReviewPlan => ({ head: HEAD, base: BASE, files, binaries: [], units: Array.from({ length: count }, (_, i) => ({ id: 'group-' + String(i).padStart(2, '0'), input: 'review-units/group-' + String(i).padStart(2, '0') + '.json', sha256: 'a'.repeat(64), paths: files.map(f => f.filename) })) });
-const response = (id: string, complete = true, findings: typeof finding[] = []) => ({ unit_id: id, review: { ...clean(), complete, result: findings.length ? 'findings' : complete ? 'clean' : 'inconclusive', findings }, unfinished_reasons: complete ? [] : ['unreviewed_changes'] });
+const response = (id: string, complete = true, findings: typeof finding[] = []) => ({ unit_id: id, completed_paths:complete&&id!=='synthesis'?files.map(f=>f.filename):[],review: { ...clean(), complete, result: findings.length ? 'findings' : complete ? 'clean' : 'inconclusive', findings }, unfinished_reasons: complete ? [] : ['unreviewed_changes'] });
 await test('added, modified, removed and renamed images retain every immutable side without being decoded as source',async()=>{
  const bytes=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=','base64'),sha=createHash('sha1').update('blob '+bytes.length+'\0').update(bytes).digest('hex');
  for(const status of ['added','modified','removed','renamed']){const directory=await mkdtemp(join(tmpdir(),'cb-plan-png-'));try{
@@ -64,16 +64,14 @@ await test('targeted continuation finishes only unfinished work; synthesis retai
   let first = true;
   const result = await orchestrateReview(p, async (u) => 'verified input ' + u.id, async (id, input) => { calls.push(id); const data = JSON.parse(input); if (id === 'synthesis') {
     assert.equal(data.coverage.length, 2);
-    assert.equal(data.unit_reviews.length, 3);
-    assert(data.unit_reviews.some((r: {
-      findings: unknown[];
-    }) => r.findings.length === 1));
+    assert.equal(data.unit_reviews.length, 2);
+    assert(data.retained_findings.some((r:typeof finding)=>r.path===finding.path&&r.line===finding.line&&r.title===finding.title));
     return response(id, true, [finding]);
-  } assert(data.evidence.includes('verified input')); if (id === 'group-00' && first) {
+  } if(data.continuation){assert.equal(data.evidence,undefined);assert.match(data.evidence_receipt.sha256,/^[a-f0-9]{64}$/);assert.equal(data.previous_review.findings.length,1);}else assert(data.evidence.includes('verified input')); if (id === 'group-00' && first) {
     first = false;
     return response(id, false, [finding]);
   } return response(id); });
-  assert.deepEqual(calls, ['group-00', 'group-00', 'group-01', 'synthesis']);
+  assert.deepEqual(calls, ['group-00', 'group-01', 'group-00', 'synthesis']);
   assert.equal(result.review.complete, true);
   assert.equal(result.review.findings.length, 1);
   assert.deepEqual(result.review.findings[0], finding);
@@ -83,8 +81,8 @@ await test('targeted continuation finishes only unfinished work; synthesis retai
 await test('global continuation cap and explicit synthesis cannot waive unfinished groups or convert partial findings to approval', async () => {
   const p = plan(4), calls: string[] = [];
   const result = await orchestrateReview(p, async () => '', async (id) => { calls.push(id); return response(id, id === 'synthesis', [finding]); });
-  assert.equal(calls.length, 7);
-  assert.equal(calls.filter(id => id === 'group-00').length, 3);
+  assert.equal(calls.length, 6);
+  assert.deepEqual(calls,['group-00','group-01','group-02','group-03','group-00','group-01']);
   assert.equal(result.coverage.reduce((sum, c) => sum + c.attempts - 1, 0), 2);
   assert.equal(result.review.complete, false);
   assert.equal(result.review.findings.length, 1);
@@ -182,4 +180,49 @@ await test('provider schema projection never weakens host uniqueness or review s
  ])await assert.rejects(orchestrateReview(plan(1),async()=>'',async()=>value),error=>error instanceof ExecutionError&&error.detail.rejection_reason==='schema_invalid');
  const result=await orchestrateReview(plan(2),async()=>'',async id=>id==='synthesis'?{...response(id,false),unfinished_reasons:['unresolved_analysis','unresolved_analysis']}:response(id,true,[finding]));
  assert.equal(result.failure?.rejection_reason,'schema_invalid');assert.equal(result.review.complete,false);assert.deepEqual(result.review.findings,[finding]);assert.equal(decision(result.review,DEFAULT_CONFIG,true),'COMMENT');
+});
+await test('file checkpoints target only pending work after every group gets its first pass',async()=>{
+ const p=plan(2);p.units[0]!.paths.push('src/service.ts');const calls:string[]=[];let first=true;
+ const result=await orchestrateReview(p,async unit=>'verified '+unit.id,async(id,text)=>{
+  calls.push(id);const input=JSON.parse(text);
+  if(id==='group-00'&&first){first=false;return{...response(id,false,[finding]),completed_paths:['src/auth.ts']};}
+  if(id==='group-00'){assert.equal(input.evidence,undefined);assert.deepEqual(input.pending_paths,['src/service.ts']);assert.deepEqual(input.completed_paths,['src/auth.ts']);assert.deepEqual(input.previous_review.findings,[finding]);return{...response(id,true,[finding]),completed_paths:['src/service.ts']};}
+  return response(id,true,[finding]);
+ });
+ assert.deepEqual(calls,['group-00','group-01','group-00','synthesis']);assert.equal(result.coverage[0]!.completed_files,2);assert.equal(result.review.complete,true);assert.deepEqual(result.review.findings,[finding]);validateExecution(result,p);
+});
+await test('a complete claim cannot waive unreported files, foreign paths or fabricated coverage counts',async()=>{
+ const p=plan(1);p.units[0]!.paths.push('src/service.ts');const incomplete=await orchestrateReview(p,async()=>'',async id=>response(id));
+ assert.equal(incomplete.review.complete,false);assert.equal(incomplete.coverage[0]!.completed_files,1);assert.equal(decision(incomplete.review,DEFAULT_CONFIG,true),'COMMENT');validateExecution(incomplete,p);
+ await assert.rejects(orchestrateReview(plan(1),async()=>'',async id=>({...response(id),completed_paths:['foreign.ts']})),/review_coverage_invalid/);
+ const valid=await orchestrateReview(plan(1),async()=>'',async id=>response(id));valid.coverage[0]!.completed_files=0;assert.throws(()=>validateExecution(valid,plan(1)),/review_coverage_invalid/);
+});
+await test('dependency grouping keeps distant imported source with its caller without dropping unrelated changes',async()=>{
+ const directory=await mkdtemp(join(tmpdir(),'cb-related-'));try{
+  const paths=['a/caller.ts',...Array.from({length:15},(_,i)=>'m/unrelated-'+i+'.ts'),'z/service.ts'];const changed=[];
+  for(const path of paths){const text=path==='a/caller.ts'?"import { value } from '../z/service.js';\nexport const result=value;":'export const value=1;';await mkdir(join(directory,'source/head',path.split('/')[0]!),{recursive:true});await writeFile(join(directory,'source/head',path),text);changed.push({filename:path,status:'added',patch:'@@ -0,0 +1 @@\n+new'});}
+  await writeFile(join(directory,'diff.json'),JSON.stringify(changed));await writeFile(join(directory,'trusted-instructions.json'),'[]');const p=await buildReviewPlan(directory,HEAD,BASE,[]);
+  assert(p.units[0]!.paths.includes('a/caller.ts'));assert(p.units[0]!.paths.includes('z/service.ts'));assert.deepEqual(p.units.flatMap(u=>u.paths).sort(),paths.sort());assert(p.units.every(u=>u.paths.length<=16));
+ }finally{await rm(directory,{recursive:true,force:true});}
+});
+await test('synthesis reserve cannot authorize unfinished work or spend another continuation at the deadline',async t=>{
+ t.mock.timers.enable({apis:['Date'],now:1700000000000});const started=Date.now();let calls=0;
+ try{const result=await orchestrateReview(plan(2),async()=>'',async id=>{calls++;t.mock.timers.setTime(started+5*60000-1000);return response(id,false,[finding]);},started+5*60000);assert.equal(calls,2);assert.equal(result.synthesis,false);assert.equal(result.review.complete,false);assert.deepEqual(result.review.findings,[finding]);validateExecution(result,plan(2));}finally{t.mock.timers.reset();}
+});
+await test('large textual changes are grouped by changed-line work without splitting or omitting files',async()=>{
+ const directory=await mkdtemp(join(tmpdir(),'cb-lines-'));try{
+  await mkdir(join(directory,'source/head'),{recursive:true});await mkdir(join(directory,'source/base'),{recursive:true});
+  const changed=[];
+  for(let i=0;i<89;i++){
+   const filename=`module-${String(i).padStart(2,'0')}.js`,lines=i===88?800:60;
+   const before=Array.from({length:lines},(_,n)=>`export const before${i}_${n}=${n};`).join('\n')+'\n';
+   const after=Array.from({length:lines},(_,n)=>`export const after${i}_${n}=${n+1};`).join('\n')+'\n';
+   await writeFile(join(directory,'source/base',filename),before);await writeFile(join(directory,'source/head',filename),after);
+   changed.push({filename,status:'modified',patch:`@@ -1,${lines} +1,${lines} @@\n`+before.trimEnd().split('\n').map(line=>'-'+line).join('\n')+'\n'+after.trimEnd().split('\n').map(line=>'+'+line).join('\n')});
+  }
+  await writeFile(join(directory,'diff.json'),JSON.stringify(changed));await writeFile(join(directory,'trusted-instructions.json'),'[]');
+  const p=await buildReviewPlan(directory,HEAD,BASE,[]);assert.equal(p.units.length,9);assert.deepEqual(p.units.flatMap(u=>u.paths).sort(),changed.map(f=>f.filename).sort());
+  for(const unit of p.units){const evidence=JSON.parse(await unitEvidence(directory,unit));const lines=evidence.changes.reduce((total:number,file:{patch:string})=>total+file.patch.split('\n').filter(line=>/^[+-]/.test(line)).length,0);assert(unit.paths.length===1||lines<=1500);}
+  assert.deepEqual(p.units.at(-1)!.paths,['module-88.js']);
+ }finally{await rm(directory,{recursive:true,force:true});}
 });
