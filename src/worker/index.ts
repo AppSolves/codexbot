@@ -70,7 +70,7 @@ async function route(request: Request, env: Env): Promise<Response> {
   requireCondition(publicPage || url.origin === canonical, 'non_canonical_backend_origin', 421);
   const origin = request.headers.get('origin');
   requireCondition(!origin || origin === canonical, 'cross_origin_request_denied', 403);
-  if (url.pathname === '/health' && request.method === 'GET') return Response.json({ status: 'ok', version: '0.1.2' });
+  if (url.pathname === '/health' && request.method === 'GET') return Response.json({ status: 'ok', version: '0.1.3' });
   if (url.pathname === '/' && request.method === 'GET') return onboarding(env);
   const web = await webRoute(request, env); if (web) return web;
   if (url.pathname === '/v1/workload/check' && request.method === 'POST') {

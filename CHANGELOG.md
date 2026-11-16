@@ -1,6 +1,6 @@
 # Security and behavior changes
 
-## Unreleased — targeted continuation and configurable review timeout
+## 0.1.3 — targeted continuation and configurable review timeout
 
 - Default to 30 minutes of isolated execution; support trusted `review.timeout_minutes` and an authorized `--timeout` override. Bound execution by GitHub's six-hour job limit, retaining setup/refresh/cleanup reserves and the existing global inference-request cap.
 - Group changed JS/TS dependencies together within file, byte and changed-line bounds. Track per-file checkpoints, give every group a first pass before targeted continuation, reuse prior findings/evidence, and reserve time for final synthesis. Missing evidence or unfinished analysis still fails the job and cannot approve or merge.
