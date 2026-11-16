@@ -70,8 +70,11 @@ export async function runCodex(snapshot: RequestSnapshot, manifest: string, plan
     }));
     const thread = record(started.thread); requireCondition(typeof thread.id === 'string', 'codex_thread_id_missing');
     let attachedImages=false;
+    const inspectedUnits=new Set<string>();
     const turn = async (unitId:string, evidence:string, schema:unknown):Promise<unknown> => {
       let finalText='',inspectionCompleted=false,turnId:string|undefined;
+      // Final synthesis may reuse verified group inspections; groups still require their own read.
+      const reuseInspections=unitId==='synthesis'&&plan.units.length>0&&plan.units.every(unit=>inspectedUnits.has(unit.id));
       const seen: {method:string;params:unknown}[]=[];let queuedBytes=0;
       let receive=(method:string,params:unknown)=>{seen.push({method,params});};
       const completed=new Promise<unknown>((resolve,reject)=>{
@@ -89,7 +92,7 @@ export async function runCodex(snapshot: RequestSnapshot, manifest: string, plan
           if(method==='turn/completed'){
             const finished=record(input.turn);
             if(finished.status!=='completed'){reject(new ExecutionError({component:'turn',code:finished.status==='interrupted'?'codex_turn_interrupted':'codex_turn_failed'}));return;}
-            if(!inspectionCompleted){reject(new ExecutionError({component:'turn',code:'codex_inspection_not_performed'}));return;}
+            if(!inspectionCompleted&&!reuseInspections){reject(new ExecutionError({component:'turn',code:'codex_inspection_not_performed'}));return;}
             try{resolve(JSON.parse(finalText) as unknown);}catch{reject(new AppError('codex_output_not_json'));}
           }
         };
@@ -105,7 +108,7 @@ export async function runCodex(snapshot: RequestSnapshot, manifest: string, plan
         }));
         turnId=String(record(result.turn).id??'');requireCondition(turnId.length>0,'invalid_codex_protocol');attachedImages=true;
         for(const event of seen.splice(0))receive(event.method,event.params);
-        const outcome=await handled;if(outcome.error)throw outcome.error;return outcome.value;
+        const outcome=await handled;if(outcome.error)throw outcome.error;if(inspectionCompleted)inspectedUnits.add(unitId);return outcome.value;
       } finally {off();}
     };
     const result=await orchestrateReview(plan,unit=>unitEvidence('/workspace',unit),turn);
