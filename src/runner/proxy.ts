@@ -124,7 +124,7 @@ export async function inferenceProxy(request: IncomingMessage, response: ServerR
     stage = 'transport';
     deadline = AbortSignal.timeout(20 * 60_000);
     const upstream = await fetcher('https://api.openai.com/v1/responses', {
-      method: 'POST', headers: { Authorization: 'Bearer '+token, 'Content-Type': 'application/json', 'User-Agent': 'CodexBot/0.1.0',
+      method: 'POST', headers: { Authorization: 'Bearer '+token, 'Content-Type': 'application/json', 'User-Agent': 'CodexBot/0.1.1',
         ...(typeof request.headers['originator'] === 'string' && request.headers['originator'] === 'CodexBot' ? { originator: 'CodexBot' } : {}) },
       body: JSON.stringify(body), redirect: 'error', signal: AbortSignal.any([deadline, disconnected.signal])
     });
