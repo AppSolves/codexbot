@@ -1,10 +1,11 @@
 import { AppError } from './errors.js';
 import { ExecutionError, executionFailure, proxyRequestDiagnostic, UNFINISHED_REASONS, type ProxyRequestDiagnostic, type ExecutionFailure } from './execution.js';
+import { MAX_CONTEXT_PATHS, MAX_CONTEXT_REQUESTS } from './limits.js';
 
 export const REVIEW_STAGES = ['environment','prepare','context','credentials','analyzing','result','publish','release'] as const;
 export const FAILURE_CODES = new Set(['missing_environment_credentials','ambiguous_environment_credentials','credential_owner_mismatch','missing_read_token',
   'api_key_missing_or_ambiguous_credentials','vault_key_missing_or_ambiguous_credentials','invalid_envelope','invalid_vault_key','invalid_saved_session',
-  'review_plan_unverifiable','review_plan_budget','review_coverage_invalid','context_path_missing','context_special_object','context_github_api_failed','context_lookup_rejected','context_api_budget','context_collection_timeout','context_diff_size_limit','context_text_patch_truncated','context_unsupported_binary','context_binary_unverifiable','context_binary_size_limit','context_non_text_source','context_missing_dependency','context_file_size_limit','context_byte_budget','context_required_evidence_unavailable','required_file_missing_or_special','blob_integrity_failure','required_tree_unverifiable','review_incomplete','review_context_incomplete','review_output_invalid','read_token_cleanup_failed',
+  'review_plan_unverifiable','review_plan_budget','review_coverage_invalid','context_path_missing','context_special_object','context_github_api_failed','context_lookup_rejected','context_lookup_limit','context_request_limit','context_api_budget','context_collection_timeout','context_diff_size_limit','context_text_patch_truncated','context_unsupported_binary','context_binary_unverifiable','context_binary_size_limit','context_non_text_source','context_missing_dependency','context_file_size_limit','context_byte_budget','context_required_evidence_unavailable','required_file_missing_or_special','blob_integrity_failure','required_tree_unverifiable','review_incomplete','review_context_incomplete','review_output_invalid','read_token_cleanup_failed',
   'oauth_refresh_too_early','oauth_refresh_window_unavailable',
   'session_too_short_reconnect_required','review_image_missing','isolated_review_failed','proxy_start_failed','docker_unavailable','docker_cleanup_failed_check_runner',
   'oauth_grant_invalid_reconnect_required','chatgpt_plan_usage_permission_missing','oauth_token_endpoint_failed','oauth_token_exchange_uncertain_reconnect_required',
@@ -30,10 +31,12 @@ github_actions_oidc_unavailable invalid_oidc_endpoint github_oidc_request_failed
 export class BrokerError extends AppError {
   constructor(public readonly operation: string, status: number, public readonly remoteCode: string | null) { super(`broker_${operation}_failed`, status); }
 }
+export interface ContextLookupStats { requests:number; paths:number; cache_hits:number; last_failure?:string }
 export interface ReviewCompletion {
   context_complete: boolean; diff_complete: boolean; required_context_complete: boolean;
   output_complete: boolean; output_result: 'clean' | 'findings' | 'inconclusive'; quarantined: boolean; output_truncated: boolean;
   context_failure_code?: string;
+  context_lookups?: ContextLookupStats;
   orchestration?: { planned_units:number; completed_units:number; synthesis_complete:boolean; unfinished_reasons: typeof UNFINISHED_REASONS[number][] };
 }
 /** Only fixed completion conditions leave the trusted runner, never paths or model text. */
@@ -44,13 +47,15 @@ export class ReviewCompletionError extends AppError {
     this.completion={context_complete:value.context_complete===true,diff_complete:value.diff_complete===true,required_context_complete:value.required_context_complete===true,
       output_complete:value.output_complete===true,output_result:value.output_result==='clean'?'clean':value.output_result==='findings'?'findings':'inconclusive',quarantined:value.quarantined===true,output_truncated:value.output_truncated===true,
       ...(typeof value.context_failure_code==='string'&&FAILURE_CODES.has(value.context_failure_code)?{context_failure_code:value.context_failure_code}:{})};
+    const lookups=value.context_lookups;
+    if(lookups&&Number.isInteger(lookups.requests)&&lookups.requests>=0&&lookups.requests<=MAX_CONTEXT_REQUESTS+1&&Number.isInteger(lookups.paths)&&lookups.paths>=0&&lookups.paths<=MAX_CONTEXT_PATHS&&Number.isInteger(lookups.cache_hits)&&lookups.cache_hits>=0&&lookups.cache_hits<=MAX_CONTEXT_REQUESTS)this.completion.context_lookups={requests:lookups.requests,paths:lookups.paths,cache_hits:lookups.cache_hits,...(typeof lookups.last_failure==='string'&&FAILURE_CODES.has(lookups.last_failure)?{last_failure:lookups.last_failure}:{})};
     const coverage=value.orchestration;
     if(coverage&&Number.isInteger(coverage.planned_units)&&coverage.planned_units>=1&&coverage.planned_units<=32&&Number.isInteger(coverage.completed_units)&&coverage.completed_units>=0&&coverage.completed_units<=coverage.planned_units)this.completion.orchestration={planned_units:coverage.planned_units,completed_units:coverage.completed_units,synthesis_complete:coverage.synthesis_complete===true,unfinished_reasons:Array.isArray(coverage.unfinished_reasons)?[...new Set(coverage.unfinished_reasons.filter(r=>UNFINISHED_REASONS.includes(r)))].slice(0,UNFINISHED_REASONS.length):[]};
   }
 }
-export function diagnostic(error: unknown, stage: string): { event: string; stage: string; code: string; status?: number; broker_code?: string; execution?: ExecutionFailure; proxy_failure?: ExecutionFailure; proxy_cleanup?: ExecutionFailure; proxy_request?: Omit<ProxyRequestDiagnostic,'primary'|'cleanup'>; completion?: ReviewCompletion } {
+export function diagnostic(error: unknown, stage: string, completion?: ReviewCompletion): { event: string; stage: string; code: string; status?: number; broker_code?: string; execution?: ExecutionFailure; proxy_failure?: ExecutionFailure; proxy_cleanup?: ExecutionFailure; proxy_request?: Omit<ProxyRequestDiagnostic,'primary'|'cleanup'>; completion?: ReviewCompletion } {
   const result: ReturnType<typeof diagnostic> = {
-    event: 'review_failed', stage: REVIEW_STAGES.includes(stage as typeof REVIEW_STAGES[number]) ? stage : 'environment', code: 'external_or_execution_failure'
+    event: 'review_failed', stage: REVIEW_STAGES.includes(stage as typeof REVIEW_STAGES[number]) ? stage : 'environment', code: 'external_or_execution_failure',...(completion?{completion:new ReviewCompletionError(completion).completion}:{})
   };
   if(error instanceof ReviewCompletionError){result.code=error.code;result.completion=error.completion;return result;}
   if (error instanceof ExecutionError) {

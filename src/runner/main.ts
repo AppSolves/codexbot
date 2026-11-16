@@ -6,7 +6,7 @@ import type { RequestSnapshot } from '../worker/store.js';
 import type { Envelope } from '../core/crypto.js';
 import { unseal, seal, sessionBinding } from '../core/crypto.js';
 import { record, requireCondition, AppError } from '../core/errors.js';
-import { diagnostic, FAILURE_CODES, BROKER_CODES, ReviewCompletionError } from '../core/diagnostics.js';
+import { diagnostic, FAILURE_CODES, BROKER_CODES, ReviewCompletionError, type ReviewCompletion } from '../core/diagnostics.js';
 import { OAuth, validateSession } from '../auth/oauth.js';
 import { broker, backendUrl, checkWorkload } from './broker.js';
 import { collectContext } from './context.js';
@@ -31,6 +31,7 @@ export async function reviewJob(): Promise<void> {
   let backend = '', temporary: string | undefined;
   let snapshot: RequestSnapshot | null = null;
   let submission: { output: unknown; context_complete: boolean; failure?: ReturnType<typeof diagnostic> } | null = null;
+  let completion:ReviewCompletion|undefined;
   let stage = 'environment';
   let closeContext: (() => Promise<void>) | undefined, revokeContext: (() => Promise<unknown>) | undefined;
   try {
@@ -84,7 +85,7 @@ export async function reviewJob(): Promise<void> {
     const image = process.env.CODEXBOT_IMAGE; requireCondition(image, 'review_image_missing');
     const sockets = join(temporary, 'sockets'); await mkdir(sockets, { mode: 0o700 });
     requireCondition(lookup, 'review_context_incomplete');
-    closeContext = await contextServer(process.platform === 'win32' ? `\\\\.\\pipe\\codexbot-${crypto.randomUUID()}` : join(sockets, 'context.sock'), lookup, () => contextCancellation.abort());
+    closeContext = await contextServer(process.platform === 'win32' ? `\\\\.\\pipe\\codexbot-${crypto.randomUUID()}` : join(sockets, 'context.sock'), lookup, reason => {contextCancellation.abort();if(reason){manifest.complete=false;manifest.requiredContextComplete=false;if(!manifest.failureCodes.includes(reason))manifest.failureCodes.push(reason);}});
     stage = 'analyzing';
     await broker(backend, id, 'stage', { stage: 'analyzing' });
     let partialFailure:ExecutionError|undefined;
@@ -101,15 +102,16 @@ export async function reviewJob(): Promise<void> {
     output=normalizeReview({...output,orchestration:coverage},snapshot.head);
     if(output.output_truncated&&!coverage.unfinished_reasons.includes('output_truncated')){coverage.unfinished_reasons.push('output_truncated');output.orchestration=coverage;}
     submission.output=output;
-    if(partialFailure||execution.failure)throw partialFailure??new ExecutionError(execution.failure!);
-    if(!(manifest.complete&&manifest.diffComplete&&manifest.requiredContextComplete&&output.complete&&output.result!=='inconclusive'&&!output.quarantined&&!output.output_truncated))throw new ReviewCompletionError({
+    completion={
       context_complete:manifest.complete,diff_complete:manifest.diffComplete,required_context_complete:manifest.requiredContextComplete,
       output_complete:output.complete,output_result:output.result,quarantined:output.quarantined===true,output_truncated:output.output_truncated===true,
       orchestration:coverage,
-      ...(manifest.failureCodes[0]?{context_failure_code:manifest.failureCodes[0]}:{})});
+      ...(manifest.failureCodes[0]?{context_failure_code:manifest.failureCodes[0]}:{}),...(manifest.lookups?{context_lookups:manifest.lookups}:{})};
+    if(partialFailure||execution.failure)throw partialFailure??new ExecutionError(execution.failure!);
+    if(!(manifest.complete&&manifest.diffComplete&&manifest.requiredContextComplete&&output.complete&&output.result!=='inconclusive'&&!output.quarantined&&!output.output_truncated))throw new ReviewCompletionError(completion);
     await broker(backend, id, 'result', submission);
   } catch (error) {
-    const report = diagnostic(error, stage); console.error(JSON.stringify(report));
+    const report = diagnostic(error, stage,completion); console.error(JSON.stringify(report));
     // Always leave a deterministic non-approving result when preflight succeeded.
     const failure = { ...report, code: report.broker_code ?? (FAILURE_CODES.has(report.code) || BROKER_CODES.has(report.code) ? report.code : 'external_or_execution_failure') };
     try {

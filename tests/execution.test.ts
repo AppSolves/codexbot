@@ -20,6 +20,13 @@ import { decision } from '../src/core/review.js';
 import { snapshot, clean } from './fixtures.js';
 
 const sensitive = 'Bearer fixture-private-credential OAuth-code private-source prompt-provider-message';
+await test('primary timeouts retain bounded context completion without private diagnostics or invented HTTP status',()=>{
+ const completion:ReviewCompletion={context_complete:false,diff_complete:true,required_context_complete:false,output_complete:false,output_result:'inconclusive',quarantined:false,output_truncated:false,context_failure_code:'context_lookup_limit',context_lookups:{requests:31,paths:24,cache_hits:6,last_failure:'context_lookup_limit'}};
+ const report=diagnostic(new ExecutionError({component:'turn',code:'codex_turn_timeout',timeout_scope:'execution'}),'result',completion);assert.equal(report.execution!.timeout_scope,'execution');assert.equal(report.status,undefined);assert.deepEqual(report.completion,completion);
+ const unsafe={...completion,context_failure_code:sensitive,context_lookups:{requests:10,paths:1,cache_hits:9,last_failure:sensitive,path:sensitive}};const safe=diagnostic(new ExecutionError({component:'turn',code:'codex_turn_timeout'}),'result',unsafe);assert.equal(safe.completion!.context_failure_code,undefined);assert(!JSON.stringify(safe).includes(sensitive));assert.equal(safe.completion!.context_lookups!.last_failure,undefined);
+ assert.equal(diagnostic(new ExecutionError({component:'turn',code:'codex_turn_timeout'}),'result',{...completion,context_lookups:{requests:102,paths:25,cache_hits:101}}).completion!.context_lookups,undefined);
+ assert.equal(executionFailure({component:'provider',code:'codex_turn_timeout',timeout_scope:'execution'})!.timeout_scope,undefined);
+});
 function child(onWrite: (value: string) => void = () => {}) {
   const result = Object.assign(new EventEmitter(), {
     stdout: new PassThrough(), stderr: new PassThrough(),
@@ -137,7 +144,7 @@ await test('actual review job records incomplete fallback, releases acquired lea
   const submissions: Record<string, unknown>[] = [], operations: string[] = [], logs: unknown[][] = [];
   let rejectReporting = false, rejectReadTokenCleanup = false;
   let containerOutput: unknown = null, unavailableContext = false, runs = 0, onDemandMissing = false, probeOnly=false, partialExecutionFailure=false;
-  let contextSocket='',contextListener:http.Server|undefined;
+  let timeoutDuringContext=false;let contextSocket='',contextListener:http.Server|undefined;
   const realServer=http.createServer;
   const serverMock=mock.method(http,'createServer',(...args:Parameters<typeof http.createServer>)=>{const server=realServer(...args);contextListener=server;server.once('listening',()=>{const address=server.address();if(typeof address==='string')contextSocket=address;});return server;});
   const blob=Buffer.from('context\nold\n'),blobSha=createHash('sha1').update('blob '+blob.length+'\0').update(blob).digest('hex');
@@ -152,12 +159,12 @@ await test('actual review job records incomplete fallback, releases acquired lea
       if (args[0] === 'logs' && args.includes('--follow')) { process.stdout.write('codexbot-proxy-ready\n'); return; }
       if (args[0] === 'run') {
         runs++;
-        if(onDemandMissing){await new Promise<void>((resolve,reject)=>{const req=http.request({socketPath:contextSocket,path:probeOnly?'/probe':'/file',method:'POST'},res=>{let body='';res.on('data',x=>{body+=String(x);});res.on('end',()=>{try{assert.deepEqual(JSON.parse(body),probeOnly?{exists:false}:{available:false});resolve();}catch(error){reject(error);}});});req.on('error',reject);req.end(JSON.stringify({snapshot:'head',path:'private-missing-name.ts'}));});}
+        if(onDemandMissing){await new Promise<void>((resolve,reject)=>{const req=http.request({socketPath:contextSocket,path:probeOnly?'/probe':'/file',method:'POST'},res=>{let body='';res.on('data',x=>{body+=String(x);});res.on('end',()=>{try{assert.deepEqual(JSON.parse(body),probeOnly?{exists:false}:{available:false,reason:'context_path_missing'});resolve();}catch(error){reject(error);}});});req.on('error',reject);req.end(JSON.stringify({snapshot:'head',path:'private-missing-name.ts'}));});}
         if (containerOutput !== null) {
           const mount=args.find(arg=>arg.startsWith('type=bind,src=')&&arg.endsWith(',dst=/workspace,readonly'))!;
           const directory=mount.slice('type=bind,src='.length,-',dst=/workspace,readonly'.length),plan=JSON.parse(await readFile(join(directory,'review-plan.json'),'utf8')) as ReviewPlan;
           const review=containerOutput as {complete:boolean;result:string};const complete=review.complete&&review.result!=='inconclusive';
-          process.stdout.write(JSON.stringify({review:containerOutput,coverage:plan.units.map(u=>({id:u.id,sha256:u.sha256,complete,attempts:1,reasons:complete?[]:['model_incomplete']})),synthesis:complete,turns:plan.units.length+(plan.units.length===1?0:1),reasons:complete?[]:['model_incomplete'],failure:partialExecutionFailure?{component:'turn',code:'codex_turn_failed'}:null}));
+          process.stdout.write(JSON.stringify({review:containerOutput,coverage:plan.units.map(u=>({id:u.id,sha256:u.sha256,complete,attempts:1,reasons:complete?[]:['model_incomplete']})),synthesis:complete,turns:plan.units.length+(plan.units.length===1?0:1),reasons:complete?[]:['model_incomplete'],failure:partialExecutionFailure?{component:'turn',code:timeoutDuringContext?'codex_turn_timeout':'codex_turn_failed',...(timeoutDuringContext?{timeout_scope:'execution'}:{})}:null}));
         }
         else process.stderr.write(executionEnvelope({ component: 'turn', code: 'codex_turn_failed' }) + '\n');
       }
@@ -211,6 +218,10 @@ await test('actual review job records incomplete fallback, releases acquired lea
     containerOutput={...clean(),result:'findings',findings:[{severity:'high',confidence:0.99,path:'auth.ts',line:2,side:'RIGHT',title:'Synthetic race condition',explanation:'A stale value can overwrite a newer result.',remediation:'Guard the update.'}]};
     await assert.rejects(reviewJob(),error=>{assert(error instanceof ReviewCompletionError);assert.equal(error.completion.context_complete,false);assert.equal(error.completion.required_context_complete,false);assert.equal(error.completion.diff_complete,true);assert.equal(error.completion.output_complete,true);assert.equal(error.completion.output_result,'findings');assert.equal(error.completion.context_failure_code,'context_path_missing');return true;});
     assert.deepEqual(withoutStatus(submissions.at(-1)!.output),containerOutput);assert.equal(submissions.at(-1)!.context_complete,false);assert.equal(decision(submissions.at(-1)!.output as ReturnType<typeof clean>,request.config,false),'COMMENT');assert.equal((submissions.at(-1)!.failure as {stage:string}).stage,'result');assert(!JSON.stringify(logs).includes('private-missing-name'));assert.equal(operations.at(-1),'release');
+    timeoutDuringContext=true;partialExecutionFailure=true;containerOutput={...(containerOutput as object),complete:false};
+    await assert.rejects(reviewJob(),error=>{assert(error instanceof ExecutionError);assert.equal(error.detail.code,'codex_turn_timeout');assert.equal(error.detail.timeout_scope,'execution');return true;});
+    const combined=submissions.at(-1)!.failure as ReturnType<typeof diagnostic>;assert.equal(combined.execution!.code,'codex_turn_timeout');assert.equal(combined.completion!.context_failure_code,'context_path_missing');assert.equal(combined.completion!.context_complete,false);assert.deepEqual(combined.completion!.context_lookups,{requests:1,paths:1,cache_hits:0,last_failure:'context_path_missing'});assert.equal((submissions.at(-1)!.output as {findings:unknown[]}).findings.length,1);assert(!JSON.stringify(logs).includes('private-missing-name'));
+    timeoutDuringContext=false;partialExecutionFailure=false;
     onDemandMissing=false;containerOutput=clean();
     rejectReadTokenCleanup = true;
     await assert.rejects(reviewJob(), /read_token_cleanup_failed/); assert.equal(operations.at(-1), 'release');
@@ -220,7 +231,7 @@ await test('actual review job records incomplete fallback, releases acquired lea
     assert.equal(submissions.at(-1)!.context_complete, false);
     assert.equal((submissions.at(-1)!.output as { result: string }).result, 'inconclusive');
     assert.equal((submissions.at(-1)!.failure as { code: string }).code, 'review_incomplete');
-    assert.deepEqual((submissions.at(-1)!.failure as {completion:unknown}).completion,{context_complete:true,diff_complete:true,required_context_complete:true,output_complete:false,output_result:'inconclusive',quarantined:false,output_truncated:false,orchestration:{planned_units:1,completed_units:0,synthesis_complete:false,unfinished_reasons:['model_incomplete']}});
+    assert.deepEqual((submissions.at(-1)!.failure as {completion:unknown}).completion,{context_complete:true,diff_complete:true,required_context_complete:true,output_complete:false,output_result:'inconclusive',quarantined:false,output_truncated:false,context_lookups:{requests:0,paths:0,cache_hits:0},orchestration:{planned_units:1,completed_units:0,synthesis_complete:false,unfinished_reasons:['model_incomplete']}});
     containerOutput = { ...clean(), complete: false }; // A clean label cannot override incomplete analysis.
     await assert.rejects(reviewJob(), /review_output_invalid/);
     assert.equal((submissions.at(-1)!.output as { result: string }).result, 'inconclusive');

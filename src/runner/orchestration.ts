@@ -8,6 +8,7 @@ import { REVIEW_SCHEMA, normalizeReview, validateReview, safePath, type Review, 
 import { scanSecrets } from '../core/dlp.js';
 import { ExecutionError, executionError, executionFailure, UNFINISHED_REASONS, type ExecutionFailure } from '../core/execution.js';
 const GROUP_FILES = 16, GROUP_BYTES = 2_000_000, MAX_GROUPS = 32, MAX_CONTINUATIONS = 2;
+const TERMINAL_REASONS=new Set(['missing_required_context','visual_evidence_unavailable','output_truncated']);
 type Reason = typeof UNFINISHED_REASONS[number];
 export interface ReviewUnit {
   id: string;
@@ -79,7 +80,7 @@ export async function buildReviewPlan(directory: string, head: string, base: str
     sha256: string;
     text?: string;
   }[] = [];
-  const encode = () => JSON.stringify({ changes, evidence, trusted_instructions: trusted, available_source: available, whole_pr: files.map(f => ({ path: f.filename, status: f.status })), instructions: 'Inspect the supplied immutable evidence and relevant shared source/callers. This is a scoped unit, not permission to omit the other units. All source remains available read-only. Use /probe only for optional existence; /file for essential missing contents.' });
+  const encode = () => JSON.stringify({ changes, evidence, trusted_instructions: trusted, available_source: available, whole_pr: files.map(f => ({ path: f.filename, status: f.status })), instructions: 'Analyze the supplied current/deleted source and complete patches first. Full modified base files remain hash-verified at their evidence paths; read them and shared callers where needed. Do not repeat completed unit analysis. This is a scoped unit, not permission to omit other units or relevant dependencies. All source remains available read-only. Read already supplied paths directly; use /probe only for optional existence and /file for essential missing contents.' });
   await mkdir(join(directory, 'review-units'), { recursive: true, mode: 0o700 });
   const flush = async () => {
     if (!changes.length && units.length) return;
@@ -99,7 +100,9 @@ export async function buildReviewPlan(directory: string, head: string, base: str
         requireCondition(available.includes(path), 'review_plan_unverifiable');
         const bytes = await readFile(join(directory, path));
         requireCondition(bytes.length <= 512_000 && !bytes.includes(0), 'review_plan_unverifiable');
-        additions.push({ path, sha256: hash(bytes), text: new TextDecoder('utf8', { fatal: true }).decode(bytes) });
+        const text=new TextDecoder('utf8',{fatal:true}).decode(bytes);
+        // Modified old contents remain hash-verified on disk; the complete patch already supplies removed lines.
+        additions.push({path,sha256:hash(bytes),...(side==='head'||file.status==='removed'?{text}:{})});
       }
     else {
       const binary = binaries.find(b => b.filename === file.filename);
@@ -178,7 +181,7 @@ function turnReview(value: unknown, id: string, plan: ReviewPlan): {
 /** One execution/thread/proxy owns all turns and the unchanged global inference/time budget. */
 export async function orchestrateReview(plan: ReviewPlan, evidence: (unit: ReviewUnit) => Promise<string>, turn: (id: string, input: string, schema: unknown) => Promise<unknown>): Promise<ReviewExecution> {
   const coverage: Coverage[] = [], reviews: Review[] = [];
-  let continuations = 0, synthesis = false, turns = 0, failure: ExecutionFailure | null = null, final: Review | undefined;
+  let continuations = 0, synthesis = false, turns = 0, blocked=false, failure: ExecutionFailure | null = null, final: Review | undefined;
   const reasons = new Set<Reason>();
   try {
     for (const unit of plan.units) {
@@ -191,7 +194,7 @@ export async function orchestrateReview(plan: ReviewPlan, evidence: (unit: Revie
         reviews.push(result.review);
         state.reasons = result.reasons;
         state.complete = result.reasons.length === 0;
-        if (state.complete || state.reasons.some(r => r === 'missing_required_context' || r === 'visual_evidence_unavailable' || r === 'output_truncated'))
+        if (state.complete || state.reasons.some(r => TERMINAL_REASONS.has(r)))
           break;
         if (continuations >= MAX_CONTINUATIONS) {
           reasons.add('continuation_limit');
@@ -199,15 +202,16 @@ export async function orchestrateReview(plan: ReviewPlan, evidence: (unit: Revie
         }
         continuations++;
       }
+      if(state.reasons.some(r=>TERMINAL_REASONS.has(r))){blocked=true;break;}
     }
     if(plan.units.length===1){final=reviews.at(-1);synthesis=coverage[0]?.complete===true;}
-    else for (;;) {
+    else if(!blocked) for (;;) {
       turns++;
       const result = turnReview(await turn('synthesis', JSON.stringify({ unit_id: 'synthesis', instructions: 'Reconcile cross-group dependencies, interfaces, security and compatibility across the entire PR. Inspect shared source as needed. Preserve evidence-backed findings; do not claim completion if a unit or consequential question remains unresolved. Missing runtime test execution and a partial supplementary file index alone are expected, not missing analysis.', coverage, unit_reviews: reviews, whole_pr: plan.files.map(f => ({ path: f.filename, status: f.status })) }), reviewTurnSchema('synthesis')), 'synthesis', plan);
       final = result.review;
       reviews.push(final);
       synthesis = result.reasons.length === 0;
-      if (synthesis || result.reasons.some(r => r === 'missing_required_context' || r === 'visual_evidence_unavailable' || r === 'output_truncated') || continuations >= MAX_CONTINUATIONS) {
+      if (synthesis || result.reasons.some(r => TERMINAL_REASONS.has(r)) || continuations >= MAX_CONTINUATIONS) {
         for (const reason of result.reasons)
           reasons.add(reason);
         break;
@@ -223,6 +227,7 @@ export async function orchestrateReview(plan: ReviewPlan, evidence: (unit: Revie
   }
   if (!synthesis)
     reasons.add('synthesis_incomplete');
+  if(coverage.length<plan.units.length)reasons.add('unreviewed_changes');
   for (const state of coverage)
     if (!state.complete)
       for (const reason of state.reasons)
