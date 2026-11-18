@@ -39,7 +39,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   credential-scope:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     timeout-minutes: 1
     permissions: {}
     steps:

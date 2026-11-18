@@ -14,7 +14,7 @@ on:
 permissions: {}
 jobs:
   source:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     timeout-minutes: 3
     permissions:
       id-token: write
@@ -41,7 +41,7 @@ jobs:
           JS
   review:
     needs: source
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     timeout-minutes: 360 # GitHub-hosted platform ceiling; the trusted per-review timer normally stops at 30m.
     environment: codexbot-${{ inputs.installation_id }}-${{ inputs.credential_owner }}
     permissions:
@@ -71,7 +71,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '24.22.3'
+          node-version: "24.22.3"
           package-manager-cache: false
       - run: npm ci --ignore-scripts
       - run: npm run build
@@ -104,8 +104,8 @@ jobs:
           cache-from: type=gha,version=2,scope=codexbot-${{ github.repository_id }}-${{ needs.source.outputs.ref }}-${{ hashFiles('Dockerfile', 'package.json', 'package-lock.json', '.dockerignore') }},timeout=10s
           cache-to: type=gha,version=2,scope=codexbot-${{ github.repository_id }}-${{ needs.source.outputs.ref }}-${{ hashFiles('Dockerfile', 'package.json', 'package-lock.json', '.dockerignore') }},mode=min,timeout=10s,ignore-error=true
         env:
-          DOCKER_BUILD_RECORD_UPLOAD: 'false'
-          DOCKER_BUILD_SUMMARY: 'false'
+          DOCKER_BUILD_RECORD_UPLOAD: "false"
+          DOCKER_BUILD_SUMMARY: "false"
       - id: image
         name: Bind execution to the built image ID
         if: ${{ !inputs.credential_check_only }}
@@ -136,7 +136,7 @@ jobs:
   publish:
     needs: [source, review]
     if: ${{ always() && !inputs.credential_check_only && needs.source.result == 'success' && (needs.review.result == 'success' || needs.review.result == 'failure') }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     environment: codexbot-publish-${{ inputs.installation_id }}
     permissions:
@@ -150,7 +150,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '24.22.3'
+          node-version: "24.22.3"
       - run: npm ci --ignore-scripts
       - run: npm run build
       - name: Publish validated result through the App backend

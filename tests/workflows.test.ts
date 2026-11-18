@@ -1,19 +1,19 @@
-import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
+import { test } from 'node:test';
 import { parse } from 'yaml';
 import { record } from '../src/core/errors.js';
-import { spawnSync } from 'node:child_process';
 import { callerWorkflow } from '../src/setup.js';
 import { RELEASE } from './fixtures.js';
 await test('reusable workflow has no GitHub write permissions, shared secrets or PR-head checkout', async () => {
   const text = await readFile('.github/workflows/review.yml', 'utf8'), workflow = record(parse(text));
   assert.deepEqual(workflow.permissions, {});
   const jobs = record(workflow.jobs);
-  assert.equal(record(jobs.review)['timeout-minutes'],360);
+  assert.equal(record(jobs.review)['timeout-minutes'], 360);
   for (const [name, value] of Object.entries(jobs)) {
     const job = record(value), permissions = record(job.permissions);
-    assert.equal(job['runs-on'], 'ubuntu-24.04');
+    assert.equal(job['runs-on'], 'ubuntu-latest');
     for (const [permission, access] of Object.entries(permissions)) assert.ok(access !== 'write' || permission === 'id-token');
     if (name !== 'source') assert.ok(typeof job.environment === 'string');
     for (const value of job.steps as unknown[]) {
@@ -28,7 +28,7 @@ await test('reusable workflow has no GitHub write permissions, shared secrets or
 await test('named Environment references require a successful caller scope guard, without credential values or blanket inheritance', async () => {
   const workflow = record(parse(await readFile('.github/workflows/review.yml', 'utf8')));
   const contract = record(record(workflow.on).workflow_call);
-  assert.deepEqual(Object.keys(record(contract.secrets)).sort(), ['CODEXBOT_API_KEY','CODEXBOT_VAULT_KEY']);
+  assert.deepEqual(Object.keys(record(contract.secrets)).sort(), ['CODEXBOT_API_KEY', 'CODEXBOT_VAULT_KEY']);
   const caller = record(parse(callerWorkflow('operator/codexbot', RELEASE, 'https://self.invalid')));
   const jobs = record(caller.jobs), review = record(jobs.review), guard = record(jobs['credential-scope']);
   assert.deepEqual(review.secrets, { CODEXBOT_VAULT_KEY: '${{ secrets.CODEXBOT_VAULT_KEY }}', CODEXBOT_API_KEY: '${{ secrets.CODEXBOT_API_KEY }}' });
@@ -52,9 +52,9 @@ await test('named Environment references require a successful caller scope guard
   assert.deepEqual(record(record(manual.jobs).review).secrets, review.secrets);
   const steps = record(record(workflow.jobs).review).steps as Record<string, unknown>[];
   const check = String(steps[0]!.run).split("<<'JS'\n")[1]!.replace(/\nJS\s*$/, '');
-  for (const [vault, api, status] of [['','',1],['opaque-vault','',0],['','opaque-api',0],['opaque-vault','opaque-api',1]] as const) {
+  for (const [vault, api, status] of [['', '', 1], ['opaque-vault', '', 0], ['', 'opaque-api', 0], ['opaque-vault', 'opaque-api', 1]] as const) {
     const env = Object.assign(Object.create(null) as NodeJS.ProcessEnv, { CODEXBOT_VAULT_KEY: vault, CODEXBOT_API_KEY: api });
-    const result = spawnSync(process.execPath, ['--input-type=module','-e',check], { env, encoding: 'utf8' });
+    const result = spawnSync(process.execPath, ['--input-type=module', '-e', check], { env, encoding: 'utf8' });
     assert.equal(result.status, status, result.stderr); assert.ok(!result.stdout.includes('opaque-')); assert.ok(!result.stderr.includes('opaque-'));
   }
 });
@@ -64,7 +64,7 @@ await test('cached builds are opt-in, source/input scoped, pinned and loaded onl
   const steps = record(jobs.review).steps as Record<string, unknown>[];
   const build = steps.find(x => String(x.uses).startsWith('docker/build-push-action@'))!, options = record(build.with);
   assert.match(String(build.if), /inputs.docker_cache/); assert.equal(options.context, '.'); assert.equal(options.load, true); assert.equal(options.push, false);
-  for (const key of ['cache-from','cache-to']) {
+  for (const key of ['cache-from', 'cache-to']) {
     assert.match(String(options[key]), /needs.source.outputs.ref/); assert.match(String(options[key]), /hashFiles\('Dockerfile', 'package.json', 'package-lock.json', '.dockerignore'\)/);
     assert.ok(!String(options[key]).includes('pull_request')); assert.ok(!String(options[key]).includes('inputs.request_id'));
   }
