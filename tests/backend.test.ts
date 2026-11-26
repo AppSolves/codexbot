@@ -11,8 +11,8 @@ await test('hosted config, manifest and generated callers agree on Workers.dev w
   assert.equal(DEFAULT_BACKEND, 'https://codexbot.appsolves.workers.dev');
   const config = JSON.parse(await readFile('wrangler.jsonc', 'utf8'));
   assert.equal(config.name, 'codexbot'); assert.equal(config.workers_dev, true); assert.equal(config.preview_urls, false);
-  assert.equal(config.vars.PUBLIC_URL, DEFAULT_BACKEND); assert.equal(config.vars.MERGE_DEPLOYMENT_AUTHORIZED, 'false');
-  assert.equal(config.vars.TRUSTED_WORKFLOW, 'AppSolves/codexbot/.github/workflows/review.yml@e6bf8f1b1baf1748e1c7ae4171296f6ccaf2d79f');
+  assert.equal(config.vars.PUBLIC_URL, DEFAULT_BACKEND); assert.equal(config.vars.MERGE_DEPLOYMENT_AUTHORIZED, 'true');
+  assert.equal(config.vars.TRUSTED_WORKFLOW, 'AppSolves/codexbot/.github/workflows/review.yml@3da7acea85000bab907e51dec5b9cd7cf046c69b');
   assert.equal(config.vars.WEB_ENABLED,'false');assert.equal(config.vars.OPENAI_HOSTED_INFERENCE_AUTHORIZED,'false');
   assert.equal(config.vars.ACCEPTANCE_USER_PER_DAY,'');assert.equal(config.vars.MERGE_ACCEPTANCE_REPOSITORY_ID,'');assert.equal(config.vars.MERGE_ACCEPTANCE_INSTALLATION_ID,'');
   assert.deepEqual(config.routes, []);
