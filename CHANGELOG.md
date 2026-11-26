@@ -5,7 +5,7 @@
 - Regenerate the committed catalog for Codex 0.172.0: eleven entries, including GPT-6.2 Sol (new default) and Astra. Account entitlement is not inferred from catalog visibility.
 - Compare the full native catalog and installed version during normal tests; cover GPT-6.2 model/effort selection in both credential modes, CLI parsing, browser configuration and native scripted Docker acceptance. Unknown models and unsupported efforts still fail closed.
 - Document atomic dependency/catalog upgrades and a separate non-bypassable required-CI ruleset recommendation. Preserve credential and authorization semantics; coordinate deployment and caller pins through the reviewed maintenance procedure.
-- Update compatible npm dependencies and transitive lockfile resolutions; pin BuildKit 0.35.1 by its verified registry digest. Keep TypeScript 6.0.3 for the required compiler API and the linter's supported peer range; do not force unsupported TypeScript 7 peers.
+- Update compatible npm dependencies and transitive lockfile resolutions, including the explicit minimatch 11.0.9 override; pin BuildKit 0.35.1 by its verified registry digest. Keep TypeScript 6.0.3 for the required compiler API and the linter's supported peer range; do not force unsupported TypeScript 7 peers.
 
 ## 0.1.3 — targeted continuation and configurable review timeout
 
