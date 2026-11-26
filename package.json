@@ -31,7 +31,7 @@
   },
   "dependencies": {
     "@octokit/rest": "22.0.1",
-    "@openai/codex": "0.169.0",
+    "@openai/codex": "0.171.0",
     "ajv": "8.20.0",
     "blakejs": "1.2.1",
     "jose": "6.2.17",
