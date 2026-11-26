@@ -151,7 +151,7 @@ function configForm(): URLSearchParams {
 await test('web policy fields use canonical schema and pinned model catalog, with no silent model/effort substitution', () => {
   const form = configForm(); assert.deepEqual(configurationFromForm(form), DEFAULT_CONFIG);
   const unlimited=configForm();unlimited.set('quotas.user_per_day','unlimited');assert.equal(configurationFromForm(unlimited).quotas.user_per_day,'unlimited');
-  form.set('review.model','gpt-6.1-sol'); form.set('review.effort','ultra'); assert.equal(configurationFromForm(form).review.effort, 'ultra');
+  for(const model of ['gpt-6.2-sol','gpt-6.2-astra','gpt-6.1-sol']){form.set('review.model',model);form.set('review.effort','ultra');const selected=configurationFromForm(form);assert.equal(selected.review.model,model);assert.equal(selected.review.effort,'ultra');}
   assert.equal(parseCommand('@CBReview review --model=gpt-6.1-sol --effort ultra', '@CBReview')?.model, 'gpt-6.1-sol');
   form.set('review.model','unknown-model'); assert.throws(() => configurationFromForm(form), /not_in_codex_catalog/);
   form.set('review.model','gpt-5.5'); assert.throws(() => configurationFromForm(form), /effort_not_supported/);

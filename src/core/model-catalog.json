@@ -1,9 +1,45 @@
 {
-  "codexVersion": "0.169.0",
+  "codexVersion": "0.171.0",
   "models": [
     {
-      "model": "gpt-6.1-sol",
+      "model": "gpt-6.2-sol",
       "isDefault": true,
+      "efforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+        "ultra"
+      ]
+    },
+    {
+      "model": "gpt-6.2-astra",
+      "isDefault": false,
+      "efforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+        "ultra"
+      ]
+    },
+    {
+      "model": "gpt-6.1-terra",
+      "isDefault": false,
+      "efforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+        "ultra"
+      ]
+    },
+    {
+      "model": "gpt-6.1-sol",
+      "isDefault": false,
       "efforts": [
         "low",
         "medium",
@@ -50,18 +86,6 @@
     },
     {
       "model": "gpt-5.6-sol",
-      "isDefault": false,
-      "efforts": [
-        "low",
-        "medium",
-        "high",
-        "xhigh",
-        "max",
-        "ultra"
-      ]
-    },
-    {
-      "model": "gpt-6.1-terra",
       "isDefault": false,
       "efforts": [
         "low",

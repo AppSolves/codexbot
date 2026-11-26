@@ -61,7 +61,7 @@ try {
   await page.getByRole('button',{name:'Propose configuration / workflow update'}).click(); await page.getByRole('alert').filter({hasText:'does not support the selected reasoning effort'}).waitFor();
   assert.equal((await (await context.request.get(origin+'/__fixture/state')).json()).pulls,1);
   await page.goto(repository); await page.getByText('Review policy & configuration',{exact:true}).click();
-  await page.locator('[name="review.model"]').selectOption('gpt-6.1-sol'); await page.locator('[name="review.effort"]').selectOption('high'); await page.locator('[name="review.auto_approve"]').uncheck();
+  await page.locator('[name="review.model"]').selectOption('gpt-6.2-sol'); await page.locator('[name="review.effort"]').selectOption('high'); await page.locator('[name="review.auto_approve"]').uncheck();
   await page.getByLabel('Merge mode',{exact:true}).selectOption('0'); await page.locator('[name="merge.auto_merge_on_approval"]').check();
   await page.getByLabel('Merge mode',{exact:true}).selectOption('2');
   await page.getByRole('button',{name:'Propose configuration / workflow update'}).click(); await page.getByRole('heading',{name:'Changes proposed.'}).waitFor();

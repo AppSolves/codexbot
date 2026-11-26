@@ -1,3 +1,4 @@
+import catalog from '../src/core/model-catalog.json' with { type: 'json' };
 import process from 'node:process';
 import { execFileSync, spawn } from 'node:child_process';
 import { mkdir, writeFile, rm } from 'node:fs/promises';
@@ -41,6 +42,7 @@ import {executionEnvelope,proxyRequestEnvelope} from '/app/dist/src/core/executi
 const assertProviderSchema=${assertProviderSchema.toString()};
 let calls=0;
 globalThis.fetch = async (url, init) => {
+  if(JSON.parse(init.body).model!==${JSON.stringify(catalog.models.find(model=>model.isDefault).model)})throw new Error('Unexpected native default model');
   if(url !== 'https://api.openai.com/v1/responses' || init.headers.Authorization !== 'Bearer fixture-only') throw new Error('Invalid inference boundary');
   const request=JSON.parse(init.body);
   assert.equal(request.text?.format?.strict,true);assertProviderSchema(request.text.format.schema);
