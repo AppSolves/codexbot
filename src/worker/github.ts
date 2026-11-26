@@ -18,7 +18,7 @@ export async function appClient(env: GitHubCredentials): Promise<Octokit> {
 }
 export function client(token: string): Octokit {
   // Request errors can contain authorization headers: callers never log raw errors.
-  return new Octokit({ auth: token, log: { debug() {}, info() {}, warn() {}, error() {} }, request: { timeout: 20_000 }, userAgent: 'CodexBot/0.1.3' });
+  return new Octokit({ auth: token, log: { debug() {}, info() {}, warn() {}, error() {} }, request: { timeout: 20_000 }, userAgent: 'CodexBot/0.1.4' });
 }
 export async function installationClient(env: GitHubCredentials, installation: number, repositoryId: number, permissions: { contents?: 'read' | 'write'; pull_requests?: 'read' | 'write'; actions?: 'read' | 'write'; workflows?: 'write'; checks?: 'write'; administration?: 'read' }): Promise<{ github: Octokit; token: string }> {
   const app = await appClient(env);
