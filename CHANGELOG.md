@@ -1,5 +1,11 @@
 # Security and behavior changes
 
+## Unreleased — Codex 0.171.0 catalog synchronization
+
+- Regenerate the committed catalog for the retained Codex 0.171.0 dependency: eleven entries, including GPT-6.2 Sol (new default) and Astra. Account entitlement is not inferred from catalog visibility.
+- Compare the full native catalog and installed version during normal tests; cover GPT-6.2 model/effort selection in both credential modes, CLI parsing, browser configuration and native scripted Docker acceptance. Unknown models and unsupported efforts still fail closed.
+- Document atomic dependency/catalog upgrades and a separate non-bypassable required-CI ruleset recommendation. No deployment, credential, authorization or caller-pin change.
+
 ## 0.1.3 — targeted continuation and configurable review timeout
 
 - Default to 30 minutes of isolated execution; support trusted `review.timeout_minutes` and an authorized `--timeout` override. Bound execution by GitHub's six-hour job limit, retaining setup/refresh/cleanup reserves and the existing global inference-request cap.

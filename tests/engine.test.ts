@@ -3,6 +3,23 @@ import assert from 'node:assert/strict';
 import { selectReviewModel,reviewImages } from '../src/runner/engine.js';
 import {inspectMedia} from '../src/runner/proxy.js';
 import { snapshot } from './fixtures.js';
+import catalog from '../src/core/model-catalog.json' with {type:'json'};
+import {parseCommand} from '../src/core/command.js';
+await test('pinned GPT-6.2 catalog selects the new default and validates CLI overrides without fallback',()=>{
+  const native=catalog.models.map(model=>({...model,supportedReasoningEfforts:model.efforts.map(reasoningEffort=>({reasoningEffort}))}));
+  for(const mode of ['chatgpt','api-key'] as const){
+    const request=snapshot();request.config.credentials.mode=mode;
+    assert.deepEqual(selectReviewModel(native,request),{model:'gpt-6.2-sol',effort:null});
+    for(const model of ['gpt-6.2-sol','gpt-6.2-astra']){
+      request.command=parseCommand(`@CBReview review --model ${model} --effort ultra`,'@CBReview')!;
+      assert.deepEqual(selectReviewModel(native,request),{model,effort:'ultra'});
+      request.command.effort='none';assert.throws(()=>selectReviewModel(native,request),/effort_not_supported/);
+    }
+    request.command=parseCommand('@CBReview review --model gpt-6.1-sol','@CBReview')!;
+    assert.equal(selectReviewModel(native,request).model,'gpt-6.1-sol');
+    request.command.model='gpt-6.2-unknown';assert.throws(()=>selectReviewModel(native,request),/not_in_codex_catalog/);
+  }
+});
 const models = [{ model: 'codex-fixture', isDefault: true, supportedReasoningEfforts: [{ reasoningEffort: 'low' }, { reasoningEffort: 'high' }] }, { model: 'codex-deep', isDefault: false, supportedReasoningEfforts: [{ reasoningEffort: 'xhigh' }] }];
 await test('vision attachments are bounded local immutable snapshots; remote media, audio and file uploads are denied',()=>{
   const sha='a'.repeat(40),asset={filename:'image.png',format:'png',snapshots:[{side:'base',path:'old.png',sha},{side:'head',path:'image.png',sha}]};
